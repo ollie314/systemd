@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -25,6 +23,7 @@
 #include <unistd.h>
 
 #include "alloc-util.h"
+#include "bus-common-errors.h"
 #include "bus-error.h"
 #include "bus-util.h"
 #include "clean-ipc.h"
@@ -44,47 +43,68 @@
 #include "rm-rf.h"
 #include "smack-util.h"
 #include "special.h"
+#include "stdio-util.h"
 #include "string-table.h"
 #include "unit-name.h"
 #include "user-util.h"
 #include "util.h"
 
-User* user_new(Manager *m, uid_t uid, gid_t gid, const char *name) {
-        User *u;
+int user_new(User **out, Manager *m, uid_t uid, gid_t gid, const char *name) {
+        _cleanup_(user_freep) User *u = NULL;
+        char lu[DECIMAL_STR_MAX(uid_t) + 1];
+        int r;
 
+        assert(out);
         assert(m);
         assert(name);
 
         u = new0(User, 1);
         if (!u)
-                return NULL;
-
-        u->name = strdup(name);
-        if (!u->name)
-                goto fail;
-
-        if (asprintf(&u->state_file, "/run/systemd/users/"UID_FMT, uid) < 0)
-                goto fail;
-
-        if (hashmap_put(m->users, UID_TO_PTR(uid), u) < 0)
-                goto fail;
+                return -ENOMEM;
 
         u->manager = m;
         u->uid = uid;
         u->gid = gid;
+        xsprintf(lu, UID_FMT, uid);
 
-        return u;
+        u->name = strdup(name);
+        if (!u->name)
+                return -ENOMEM;
 
-fail:
-        free(u->state_file);
-        free(u->name);
-        free(u);
+        if (asprintf(&u->state_file, "/run/systemd/users/"UID_FMT, uid) < 0)
+                return -ENOMEM;
 
-        return NULL;
+        if (asprintf(&u->runtime_path, "/run/user/"UID_FMT, uid) < 0)
+                return -ENOMEM;
+
+        r = slice_build_subslice(SPECIAL_USER_SLICE, lu, &u->slice);
+        if (r < 0)
+                return r;
+
+        r = unit_name_build("user", lu, ".service", &u->service);
+        if (r < 0)
+                return r;
+
+        r = hashmap_put(m->users, UID_TO_PTR(uid), u);
+        if (r < 0)
+                return r;
+
+        r = hashmap_put(m->user_units, u->slice, u);
+        if (r < 0)
+                return r;
+
+        r = hashmap_put(m->user_units, u->service, u);
+        if (r < 0)
+                return r;
+
+        *out = u;
+        u = NULL;
+        return 0;
 }
 
-void user_free(User *u) {
-        assert(u);
+User *user_free(User *u) {
+        if (!u)
+                return NULL;
 
         if (u->in_gc_queue)
                 LIST_REMOVE(gc_queue, u->manager->user_gc_queue, u);
@@ -92,26 +112,24 @@ void user_free(User *u) {
         while (u->sessions)
                 session_free(u->sessions);
 
-        if (u->slice) {
-                hashmap_remove(u->manager->user_units, u->slice);
-                free(u->slice);
-        }
+        if (u->service)
+                hashmap_remove_value(u->manager->user_units, u->service, u);
 
-        if (u->service) {
-                hashmap_remove(u->manager->user_units, u->service);
-                free(u->service);
-        }
+        if (u->slice)
+                hashmap_remove_value(u->manager->user_units, u->slice, u);
 
-        free(u->slice_job);
-        free(u->service_job);
+        hashmap_remove_value(u->manager->users, UID_TO_PTR(u->uid), u);
 
-        free(u->runtime_path);
+        u->slice_job = mfree(u->slice_job);
+        u->service_job = mfree(u->service_job);
 
-        hashmap_remove(u->manager->users, UID_TO_PTR(u->uid));
+        u->service = mfree(u->service);
+        u->slice = mfree(u->slice);
+        u->runtime_path = mfree(u->runtime_path);
+        u->state_file = mfree(u->state_file);
+        u->name = mfree(u->name);
 
-        free(u->name);
-        free(u->state_file);
-        free(u);
+        return mfree(u);
 }
 
 static int user_save_internal(User *u) {
@@ -139,16 +157,13 @@ static int user_save_internal(User *u) {
                 u->name,
                 user_state_to_string(user_get_state(u)));
 
+        /* LEGACY: no-one reads RUNTIME= anymore, drop it at some point */
         if (u->runtime_path)
                 fprintf(f, "RUNTIME=%s\n", u->runtime_path);
 
-        if (u->service)
-                fprintf(f, "SERVICE=%s\n", u->service);
         if (u->service_job)
                 fprintf(f, "SERVICE_JOB=%s\n", u->service_job);
 
-        if (u->slice)
-                fprintf(f, "SLICE=%s\n", u->slice);
         if (u->slice_job)
                 fprintf(f, "SLICE_JOB=%s\n", u->slice_job);
 
@@ -286,10 +301,7 @@ int user_load(User *u) {
         assert(u);
 
         r = parse_env_file(u->state_file, NEWLINE,
-                           "RUNTIME",     &u->runtime_path,
-                           "SERVICE",     &u->service,
                            "SERVICE_JOB", &u->service_job,
-                           "SLICE",       &u->slice,
                            "SLICE_JOB",   &u->slice_job,
                            "DISPLAY",     &display,
                            "REALTIME",    &realtime,
@@ -299,8 +311,7 @@ int user_load(User *u) {
                 if (r == -ENOENT)
                         return 0;
 
-                log_error_errno(r, "Failed to read %s: %m", u->state_file);
-                return r;
+                return log_error_errno(r, "Failed to read %s: %m", u->state_file);
         }
 
         if (display)
@@ -309,23 +320,15 @@ int user_load(User *u) {
         if (s && s->display && display_is_local(s->display))
                 u->display = s;
 
-        if (realtime) {
-                unsigned long long l;
-                if (sscanf(realtime, "%llu", &l) > 0)
-                        u->timestamp.realtime = l;
-        }
-
-        if (monotonic) {
-                unsigned long long l;
-                if (sscanf(monotonic, "%llu", &l) > 0)
-                        u->timestamp.monotonic = l;
-        }
+        if (realtime)
+                timestamp_deserialize(realtime, &u->timestamp.realtime);
+        if (monotonic)
+                timestamp_deserialize(monotonic, &u->timestamp.monotonic);
 
         return r;
 }
 
 static int user_mkdir_runtime_path(User *u) {
-        char *p;
         int r;
 
         assert(u);
@@ -334,16 +337,10 @@ static int user_mkdir_runtime_path(User *u) {
         if (r < 0)
                 return log_error_errno(r, "Failed to create /run/user: %m");
 
-        if (!u->runtime_path) {
-                if (asprintf(&p, "/run/user/" UID_FMT, u->uid) < 0)
-                        return log_oom();
-        } else
-                p = u->runtime_path;
-
-        if (path_is_mount_point(p, 0) <= 0) {
+        if (path_is_mount_point(u->runtime_path, 0) <= 0) {
                 _cleanup_free_ char *t = NULL;
 
-                (void) mkdir_label(p, 0700);
+                (void) mkdir_label(u->runtime_path, 0700);
 
                 if (mac_smack_use())
                         r = asprintf(&t, "mode=0700,smackfsroot=*,uid=" UID_FMT ",gid=" GID_FMT ",size=%zu", u->uid, u->gid, u->manager->runtime_dir_size);
@@ -354,10 +351,10 @@ static int user_mkdir_runtime_path(User *u) {
                         goto fail;
                 }
 
-                r = mount("tmpfs", p, "tmpfs", MS_NODEV|MS_NOSUID, t);
+                r = mount("tmpfs", u->runtime_path, "tmpfs", MS_NODEV|MS_NOSUID, t);
                 if (r < 0) {
                         if (errno != EPERM) {
-                                r = log_error_errno(errno, "Failed to mount per-user tmpfs directory %s: %m", p);
+                                r = log_error_errno(errno, "Failed to mount per-user tmpfs directory %s: %m", u->runtime_path);
                                 goto fail;
                         }
 
@@ -365,94 +362,76 @@ static int user_mkdir_runtime_path(User *u) {
                          * CAP_SYS_ADMIN-less container? In this case,
                          * just use a normal directory. */
 
-                        r = chmod_and_chown(p, 0700, u->uid, u->gid);
+                        r = chmod_and_chown(u->runtime_path, 0700, u->uid, u->gid);
                         if (r < 0) {
                                 log_error_errno(r, "Failed to change runtime directory ownership and mode: %m");
                                 goto fail;
                         }
                 }
 
-                r = label_fix(p, false, false);
+                r = label_fix(u->runtime_path, false, false);
                 if (r < 0)
-                        log_warning_errno(r, "Failed to fix label of '%s', ignoring: %m", p);
+                        log_warning_errno(r, "Failed to fix label of '%s', ignoring: %m", u->runtime_path);
         }
 
-        u->runtime_path = p;
         return 0;
 
 fail:
-        if (p) {
-                /* Try to clean up, but ignore errors */
-                (void) rmdir(p);
-                free(p);
-        }
-
-        u->runtime_path = NULL;
+        /* Try to clean up, but ignore errors */
+        (void) rmdir(u->runtime_path);
         return r;
 }
 
 static int user_start_slice(User *u) {
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        const char *description;
         char *job;
         int r;
 
         assert(u);
 
-        if (!u->slice) {
-                _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
-                char lu[DECIMAL_STR_MAX(uid_t) + 1], *slice;
-                sprintf(lu, UID_FMT, u->uid);
+        u->slice_job = mfree(u->slice_job);
+        description = strjoina("User Slice of ", u->name);
 
-                r = slice_build_subslice(SPECIAL_USER_SLICE, lu, &slice);
-                if (r < 0)
-                        return r;
-
-                r = manager_start_unit(u->manager, slice, &error, &job);
-                if (r < 0) {
-                        log_error("Failed to start user slice: %s", bus_error_message(&error, r));
-                        free(slice);
-                } else {
-                        u->slice = slice;
-
-                        free(u->slice_job);
-                        u->slice_job = job;
-                }
-        }
-
-        if (u->slice)
-                hashmap_put(u->manager->user_units, u->slice, u);
+        r = manager_start_slice(
+                        u->manager,
+                        u->slice,
+                        description,
+                        "systemd-logind.service",
+                        "systemd-user-sessions.service",
+                        u->manager->user_tasks_max,
+                        &error,
+                        &job);
+        if (r >= 0)
+                u->slice_job = job;
+        else if (!sd_bus_error_has_name(&error, BUS_ERROR_UNIT_EXISTS))
+                /* we don't fail due to this, let's try to continue */
+                log_error_errno(r, "Failed to start user slice %s, ignoring: %s (%s)",
+                                u->slice, bus_error_message(&error, r), error.name);
 
         return 0;
 }
 
 static int user_start_service(User *u) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         char *job;
         int r;
 
         assert(u);
 
-        if (!u->service) {
-                char lu[DECIMAL_STR_MAX(uid_t) + 1], *service;
-                sprintf(lu, UID_FMT, u->uid);
+        u->service_job = mfree(u->service_job);
 
-                r = unit_name_build("user", lu, ".service", &service);
-                if (r < 0)
-                        return log_error_errno(r, "Failed to build service name: %m");
-
-                r = manager_start_unit(u->manager, service, &error, &job);
-                if (r < 0) {
-                        log_error("Failed to start user service: %s", bus_error_message(&error, r));
-                        free(service);
-                } else {
-                        u->service = service;
-
-                        free(u->service_job);
-                        u->service_job = job;
-                }
+        r = manager_start_unit(
+                        u->manager,
+                        u->service,
+                        &error,
+                        &job);
+        if (r < 0) {
+                /* we don't fail due to this, let's try to continue */
+                log_error_errno(r, "Failed to start user service, ignoring: %s", bus_error_message(&error, r));
+        } else {
+                u->service_job = job;
         }
-
-        if (u->service)
-                hashmap_put(u->manager->user_units, u->service, u);
 
         return 0;
 }
@@ -462,15 +441,32 @@ int user_start(User *u) {
 
         assert(u);
 
-        if (u->started)
+        if (u->started && !u->stopping)
                 return 0;
 
-        log_debug("New user %s logged in.", u->name);
+        /*
+         * If u->stopping is set, the user is marked for removal and the slice
+         * and service stop-jobs are queued. We have to clear that flag before
+         * queing the start-jobs again. If they succeed, the user object can be
+         * re-used just fine (pid1 takes care of job-ordering and proper
+         * restart), but if they fail, we want to force another user_stop() so
+         * possibly pending units are stopped.
+         * Note that we don't clear u->started, as we have no clue what state
+         * the user is in on failure here. Hence, we pretend the user is
+         * running so it will be properly taken down by GC. However, we clearly
+         * return an error from user_start() in that case, so no further
+         * reference to the user is taken.
+         */
+        u->stopping = false;
 
-        /* Make XDG_RUNTIME_DIR */
-        r = user_mkdir_runtime_path(u);
-        if (r < 0)
-                return r;
+        if (!u->started) {
+                log_debug("New user %s logged in.", u->name);
+
+                /* Make XDG_RUNTIME_DIR */
+                r = user_mkdir_runtime_path(u);
+                if (r < 0)
+                        return r;
+        }
 
         /* Create cgroup */
         r = user_start_slice(u);
@@ -488,28 +484,25 @@ int user_start(User *u) {
         if (r < 0)
                 return r;
 
-        if (!dual_timestamp_is_set(&u->timestamp))
-                dual_timestamp_get(&u->timestamp);
-
-        u->started = true;
+        if (!u->started) {
+                if (!dual_timestamp_is_set(&u->timestamp))
+                        dual_timestamp_get(&u->timestamp);
+                user_send_signal(u, true);
+                u->started = true;
+        }
 
         /* Save new user data */
         user_save(u);
-
-        user_send_signal(u, true);
 
         return 0;
 }
 
 static int user_stop_slice(User *u) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         char *job;
         int r;
 
         assert(u);
-
-        if (!u->slice)
-                return 0;
 
         r = manager_stop_unit(u->manager, u->slice, &error, &job);
         if (r < 0) {
@@ -524,14 +517,11 @@ static int user_stop_slice(User *u) {
 }
 
 static int user_stop_service(User *u) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         char *job;
         int r;
 
         assert(u);
-
-        if (!u->service)
-                return 0;
 
         r = manager_stop_unit(u->manager, u->service, &error, &job);
         if (r < 0) {
@@ -550,9 +540,6 @@ static int user_remove_runtime_path(User *u) {
 
         assert(u);
 
-        if (!u->runtime_path)
-                return 0;
-
         r = rm_rf(u->runtime_path, 0);
         if (r < 0)
                 log_error_errno(r, "Failed to remove runtime directory %s: %m", u->runtime_path);
@@ -567,8 +554,6 @@ static int user_remove_runtime_path(User *u) {
         r = rm_rf(u->runtime_path, REMOVE_ROOT);
         if (r < 0)
                 log_error_errno(r, "Failed to remove runtime directory %s: %m", u->runtime_path);
-
-        u->runtime_path = mfree(u->runtime_path);
 
         return r;
 }
@@ -761,9 +746,6 @@ UserState user_get_state(User *u) {
 int user_kill(User *u, int signo) {
         assert(u);
 
-        if (!u->slice)
-                return -ESRCH;
-
         return manager_kill_unit(u->manager, u->slice, KILL_ALL, signo, NULL);
 }
 
@@ -860,7 +842,6 @@ int config_parse_tmpfs_size(
                 void *userdata) {
 
         size_t *sz = data;
-        const char *e;
         int r;
 
         assert(filename);
@@ -868,29 +849,17 @@ int config_parse_tmpfs_size(
         assert(rvalue);
         assert(data);
 
-        e = endswith(rvalue, "%");
-        if (e) {
-                unsigned long ul;
-                char *f;
-
-                errno = 0;
-                ul = strtoul(rvalue, &f, 10);
-                if (errno != 0 || f != e) {
-                        log_syntax(unit, LOG_ERR, filename, line, errno, "Failed to parse percentage value, ignoring: %s", rvalue);
-                        return 0;
-                }
-
-                if (ul <= 0 || ul >= 100) {
-                        log_syntax(unit, LOG_ERR, filename, line, 0, "Percentage value out of range, ignoring: %s", rvalue);
-                        return 0;
-                }
-
-                *sz = PAGE_ALIGN((size_t) ((physical_memory() * (uint64_t) ul) / (uint64_t) 100));
-        } else {
+        /* First, try to parse as percentage */
+        r = parse_percent(rvalue);
+        if (r > 0 && r < 100)
+                *sz = physical_memory_scale(r, 100U);
+        else {
                 uint64_t k;
 
+                /* If the passed argument was not a percentage, or out of range, parse as byte size */
+
                 r = parse_size(rvalue, 1024, &k);
-                if (r < 0 || (uint64_t) (size_t) k != k) {
+                if (r < 0 || k <= 0 || (uint64_t) (size_t) k != k) {
                         log_syntax(unit, LOG_ERR, filename, line, r, "Failed to parse size value, ignoring: %s", rvalue);
                         return 0;
                 }
@@ -898,5 +867,50 @@ int config_parse_tmpfs_size(
                 *sz = PAGE_ALIGN((size_t) k);
         }
 
+        return 0;
+}
+
+int config_parse_user_tasks_max(
+                const char* unit,
+                const char *filename,
+                unsigned line,
+                const char *section,
+                unsigned section_line,
+                const char *lvalue,
+                int ltype,
+                const char *rvalue,
+                void *data,
+                void *userdata) {
+
+        uint64_t *m = data;
+        uint64_t k;
+        int r;
+
+        assert(filename);
+        assert(lvalue);
+        assert(rvalue);
+        assert(data);
+
+        /* First, try to parse as percentage */
+        r = parse_percent(rvalue);
+        if (r >= 0)
+                k = system_tasks_max_scale(r, 100U);
+        else {
+
+                /* If the passed argument was not a percentage, or out of range, parse as byte size */
+
+                r = safe_atou64(rvalue, &k);
+                if (r < 0) {
+                        log_syntax(unit, LOG_ERR, filename, line, r, "Failed to parse tasks maximum, ignoring: %s", rvalue);
+                        return 0;
+                }
+        }
+
+        if (k <= 0 || k >= UINT64_MAX) {
+                log_syntax(unit, LOG_ERR, filename, line, 0, "Tasks maximum out of range, ignoring: %s", rvalue);
+                return 0;
+        }
+
+        *m = k;
         return 0;
 }

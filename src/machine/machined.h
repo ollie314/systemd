@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -31,9 +29,10 @@
 
 typedef struct Manager Manager;
 
-#include "machine.h"
-#include "machine-dbus.h"
 #include "image-dbus.h"
+#include "machine-dbus.h"
+#include "machine.h"
+#include "operation.h"
 
 struct Manager {
         sd_event *event;
@@ -51,6 +50,9 @@ struct Manager {
         LIST_HEAD(Machine, machine_gc_queue);
 
         Machine *host_machine;
+
+        LIST_HEAD(Operation, operations);
+        unsigned n_operations;
 };
 
 Manager *manager_new(void);

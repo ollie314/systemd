@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -25,12 +23,12 @@
 
 #include "alloc-util.h"
 #include "fileio.h"
+#include "hostname-setup.h"
 #include "hostname-util.h"
 #include "log.h"
 #include "macro.h"
 #include "string-util.h"
 #include "util.h"
-#include "hostname-setup.h"
 
 int hostname_setup(void) {
         int r;
@@ -61,8 +59,9 @@ int hostname_setup(void) {
                 hn = "localhost";
         }
 
-        if (sethostname_idempotent(hn) < 0)
-                return log_warning_errno(errno, "Failed to set hostname to <%s>: %m", hn);
+        r = sethostname_idempotent(hn);
+        if (r < 0)
+                return log_warning_errno(r, "Failed to set hostname to <%s>: %m", hn);
 
         log_info("Set hostname to <%s>.", hn);
         return 0;

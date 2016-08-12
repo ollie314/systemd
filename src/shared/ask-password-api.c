@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -21,13 +19,22 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
+#include <limits.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/inotify.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
+#include <sys/time.h>
+#include <sys/uio.h>
 #include <sys/un.h>
 #include <termios.h>
 #include <unistd.h>
@@ -38,6 +45,8 @@
 #include "fileio.h"
 #include "formats-util.h"
 #include "io-util.h"
+#include "log.h"
+#include "macro.h"
 #include "missing.h"
 #include "mkdir.h"
 #include "random-util.h"
@@ -46,7 +55,9 @@
 #include "string-util.h"
 #include "strv.h"
 #include "terminal-util.h"
+#include "time-util.h"
 #include "umask-util.h"
+#include "utf8.h"
 #include "util.h"
 
 #define KEYRING_TIMEOUT_USEC ((5 * USEC_PER_MINUTE) / 2)
@@ -59,7 +70,7 @@ static int lookup_key(const char *keyname, key_serial_t *ret) {
 
         serial = request_key("user", keyname, NULL, 0);
         if (serial == -1)
-                return -errno;
+                return negative_errno();
 
         *ret = serial;
         return 0;
@@ -128,11 +139,7 @@ static int add_to_keyring(const char *keyname, AskPasswordFlags flags, char **pa
         if (r < 0)
                 return r;
 
-        /* Truncate trailing NUL */
-        assert(n > 0);
-        assert(p[n-1] == 0);
-
-        serial = add_key("user", keyname, p, n-1, KEY_SPEC_USER_KEYRING);
+        serial = add_key("user", keyname, p, n, KEY_SPEC_USER_KEYRING);
         memory_erase(p, n);
         if (serial == -1)
                 return -errno;
@@ -201,8 +208,8 @@ int ask_password_tty(
                 char **ret) {
 
         struct termios old_termios, new_termios;
-        char passphrase[LINE_MAX], *x;
-        size_t p = 0;
+        char passphrase[LINE_MAX + 1] = {}, *x;
+        size_t p = 0, codepoint = 0;
         int r;
         _cleanup_close_ int ttyfd = -1, notify = -1;
         struct pollfd pollfd[2];
@@ -242,10 +249,12 @@ int ask_password_tty(
                         goto finish;
                 }
 
-                loop_write(ttyfd, ANSI_HIGHLIGHT, strlen(ANSI_HIGHLIGHT), false);
+                if (colors_enabled())
+                        loop_write(ttyfd, ANSI_HIGHLIGHT, strlen(ANSI_HIGHLIGHT), false);
                 loop_write(ttyfd, message, strlen(message), false);
                 loop_write(ttyfd, " ", 1, false);
-                loop_write(ttyfd, ANSI_NORMAL, strlen(ANSI_NORMAL), false);
+                if (colors_enabled())
+                        loop_write(ttyfd, ANSI_NORMAL, strlen(ANSI_NORMAL), false);
 
                 new_termios = old_termios;
                 new_termios.c_lflag &= ~(ICANON|ECHO);
@@ -366,8 +375,13 @@ int ask_password_tty(
 
                         passphrase[p++] = c;
 
-                        if (!(flags & ASK_PASSWORD_SILENT) && ttyfd >= 0)
-                                loop_write(ttyfd, (flags & ASK_PASSWORD_ECHO) ? &c : "*", 1, false);
+                        if (!(flags & ASK_PASSWORD_SILENT) && ttyfd >= 0) {
+                                n = utf8_encoded_valid_unichar(passphrase + codepoint);
+                                if (n >= 0) {
+                                        codepoint = p;
+                                        loop_write(ttyfd, (flags & ASK_PASSWORD_ECHO) ? &c : "*", 1, false);
+                                }
+                        }
 
                         dirty = true;
                 }
@@ -415,7 +429,7 @@ static int create_socket(char **name) {
         snprintf(sa.un.sun_path, sizeof(sa.un.sun_path)-1, "/run/systemd/ask-password/sck.%" PRIx64, random_u64());
 
         RUN_WITH_UMASK(0177) {
-                if (bind(fd, &sa.sa, offsetof(struct sockaddr_un, sun_path) + strlen(sa.un.sun_path)) < 0)
+                if (bind(fd, &sa.sa, SOCKADDR_UN_LEN(sa.un)) < 0)
                         return -errno;
         }
 
@@ -472,7 +486,7 @@ int ask_password_agent(
 
         fd = mkostemp_safe(temp, O_WRONLY|O_CLOEXEC);
         if (fd < 0) {
-                r = -errno;
+                r = fd;
                 goto finish;
         }
 

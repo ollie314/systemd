@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -79,68 +77,25 @@ int config_parse_address_family_boolean_with_kernel(
         assert(rvalue);
         assert(data);
 
+        /* This function is mostly obsolete now. It simply redirects
+         * "kernel" to "no". In older networkd versions we used to
+         * distuingish IPForward=off from IPForward=kernel, where the
+         * former would explicitly turn off forwarding while the
+         * latter would simply not touch the setting. But that logic
+         * is gone, hence silently accept the old setting, but turn it
+         * to "no". */
+
         s = address_family_boolean_from_string(rvalue);
         if (s < 0) {
                 if (streq(rvalue, "kernel"))
-                        s = _ADDRESS_FAMILY_BOOLEAN_INVALID;
+                        s = ADDRESS_FAMILY_NO;
                 else {
-                        log_syntax(unit, LOG_ERR, filename, line, 0, "Failed to parse IPForwarding= option, ignoring: %s", rvalue);
+                        log_syntax(unit, LOG_ERR, filename, line, 0, "Failed to parse IPForward= option, ignoring: %s", rvalue);
                         return 0;
                 }
         }
 
         *fwd = s;
-
-        return 0;
-}
-
-static const char* const resolve_support_table[_RESOLVE_SUPPORT_MAX] = {
-        [RESOLVE_SUPPORT_NO] = "no",
-        [RESOLVE_SUPPORT_YES] = "yes",
-        [RESOLVE_SUPPORT_RESOLVE] = "resolve",
-};
-
-DEFINE_STRING_TABLE_LOOKUP(resolve_support, ResolveSupport);
-
-int config_parse_resolve(
-                const char* unit,
-                const char *filename,
-                unsigned line,
-                const char *section,
-                unsigned section_line,
-                const char *lvalue,
-                int ltype,
-                const char *rvalue,
-                void *data,
-                void *userdata) {
-
-        ResolveSupport *resolve = data;
-        int k;
-
-        assert(filename);
-        assert(lvalue);
-        assert(rvalue);
-        assert(resolve);
-
-        /* Our enum shall be a superset of booleans, hence first try
-         * to parse as boolean, and then as enum */
-
-        k = parse_boolean(rvalue);
-        if (k > 0)
-                *resolve = RESOLVE_SUPPORT_YES;
-        else if (k == 0)
-                *resolve = RESOLVE_SUPPORT_NO;
-        else {
-                ResolveSupport s;
-
-                s = resolve_support_from_string(rvalue);
-                if (s < 0){
-                        log_syntax(unit, LOG_ERR, filename, line, 0, "Failed to parse %s= option, ignoring: %s", lvalue, rvalue);
-                        return 0;
-                }
-
-                *resolve = s;
-        }
 
         return 0;
 }

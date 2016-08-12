@@ -83,6 +83,7 @@
     <filename>remote-fs.target</filename>,
     <filename>remote-fs-pre.target</filename>,
     <filename>rescue.target</filename>,
+    <filename>initrd-root-device.target</filename>,
     <filename>initrd-root-fs.target</filename>,
     <filename>rpcbind.target</filename>,
     <filename>runlevel2.target</filename>,
@@ -92,6 +93,7 @@
     <filename>shutdown.target</filename>,
     <filename>sigpwr.target</filename>,
     <filename>sleep.target</filename>,
+    <filename>slices.target</filename>,
     <filename>smartcard.target</filename>,
     <filename>sockets.target</filename>,
     <filename>sound.target</filename>,
@@ -125,12 +127,12 @@
         <listitem>
           <para>A special target unit covering basic boot-up.</para>
 
-          <para>systemd automatically adds dependencies of the types
-          <varname>Requires=</varname> and <varname>After=</varname>
-          for this target unit to all services (except for those with
+          <para>systemd automatically adds dependency of the type
+          <varname>After=</varname> for this target unit to all
+          services (except for those with
           <varname>DefaultDependencies=no</varname>).</para>
 
-          <para>Usually this should pull-in all local mount points plus
+          <para>Usually, this should pull-in all local mount points plus
           <filename>/var</filename>, <filename>/tmp</filename> and
           <filename>/var/tmp</filename>, swap devices, sockets, timers,
           path units and other basic initialization necessary for general
@@ -152,7 +154,7 @@
         <term><filename>ctrl-alt-del.target</filename></term>
         <listitem>
           <para>systemd starts this target whenever Control+Alt+Del is
-          pressed on the console. Usually this should be aliased
+          pressed on the console. Usually, this should be aliased
           (symlinked) to <filename>reboot.target</filename>.</para>
         </listitem>
       </varlistentry>
@@ -182,7 +184,7 @@
       <varlistentry>
         <term><filename>default.target</filename></term>
         <listitem>
-          <para>The default unit systemd starts at bootup. Usually
+          <para>The default unit systemd starts at bootup. Usually,
           this should be aliased (symlinked) to
           <filename>multi-user.target</filename> or
           <filename>graphical.target</filename>.</para>
@@ -195,7 +197,7 @@
       <varlistentry>
         <term><filename>display-manager.service</filename></term>
         <listitem>
-          <para>The display manager service. Usually this should be
+          <para>The display manager service. Usually, this should be
           aliased (symlinked) to <filename>gdm.service</filename> or a
           similar display manager service.</para>
         </listitem>
@@ -203,12 +205,22 @@
       <varlistentry>
         <term><filename>emergency.target</filename></term>
         <listitem>
-          <para>A special target unit that starts an emergency shell
-          on the main console. This unit is supposed to be used with
-          the kernel command line option
-          <varname>systemd.unit=</varname> and has otherwise little
-          use.
-          </para>
+          <para>A special target unit that starts an emergency shell on the main console. This target does not pull in
+          any services or mounts. It is the most minimal version of starting the system in order to acquire an
+          interactive shell; the only processes running are usually just the system manager (PID 1) and the shell
+          process. This unit is supposed to be used with the kernel command line option
+          <varname>systemd.unit=</varname>; it is also used when a file system check on a required file system fails,
+          and boot-up cannot continue. Compare with <filename>rescue.target</filename>, which serves a similar purpose,
+          but also starts the most basic services and mounts all file systems.</para>
+
+          <para>Use the <literal>systemd.unit=emergency.target</literal> kernel command line option to boot into this
+          mode. A short alias for this kernel command line option is <literal>emergency</literal>, for compatibility
+          with SysV.</para>
+
+          <para>In many ways booting into <filename>emergency.target</filename> is similar to the effect of booting
+          with <literal>init=/bin/sh</literal> on the kernel command line, except that emergency mode provides you with
+          the full system and service manager, and allows starting individual units in order to continue the boot
+          process in steps.</para>
         </listitem>
       </varlistentry>
       <varlistentry>
@@ -225,7 +237,7 @@
           signal when running as user service daemon.</para>
 
           <para>Normally, this (indirectly) pulls in
-          <filename>shutdown.target</filename> which in turn should be
+          <filename>shutdown.target</filename>, which in turn should be
           conflicted by all units that want to be scheduled for
           shutdown when the service manager starts to exit.</para>
         </listitem>
@@ -439,11 +451,30 @@
       <varlistentry>
         <term><filename>rescue.target</filename></term>
         <listitem>
-          <para>A special target unit for setting up the base system
-          and a rescue shell.</para>
+          <para>A special target unit that pulls in the base system (including system mounts) and spawns a rescue
+          shell. Isolate to this target in order to administer the system in single-user mode with all file systems
+          mounted but with no services running, except for the most basic. Compare with
+          <filename>emergency.target</filename>, which is much more reduced and does not provide the file systems or
+          most basic services.</para>
 
-          <para><filename>runlevel1.target</filename> is an alias for
-          this target unit, for compatibility with SysV.</para>
+          <para><filename>runlevel1.target</filename> is an alias for this target unit, for compatibility with
+          SysV.</para>
+
+          <para>Use the <literal>systemd.unit=rescue.target</literal> kernel command line option to boot into this
+          mode. A short alias for this kernel command line option is <literal>1</literal>, for compatibility with
+          SysV.</para>
+        </listitem>
+      </varlistentry>
+      <varlistentry>
+        <term><filename>initrd-root-device.target</filename></term>
+        <listitem>
+          <para>A special initrd target unit that is reached when the root filesystem device is available, but before
+          it has been mounted.
+          <citerefentry><refentrytitle>systemd-fstab-generator</refentrytitle><manvolnum>3</manvolnum></citerefentry>
+          and
+          <citerefentry><refentrytitle>systemd-gpt-auto-generator</refentrytitle><manvolnum>3</manvolnum></citerefentry>
+          automatically setup the appropriate dependencies to make this happen.
+          </para>
         </listitem>
       </varlistentry>
       <varlistentry>
@@ -466,8 +497,8 @@
           <para>These are targets that are called whenever the SysV
           compatibility code asks for runlevel 2, 3, 4, 5,
           respectively. It is a good idea to make this an alias for
-          (i.e. symlink to) <filename>multi-user.target</filename>
-          (for runlevel 2) or <filename>graphical.target</filename>
+          (i.e. symlink to) <filename>graphical.target</filename>
+          (for runlevel 5) or <filename>multi-user.target</filename>
           (the others).</para>
         </listitem>
       </varlistentry>
@@ -478,8 +509,9 @@
           system shutdown.</para>
 
           <para>Services that shall be terminated on system shutdown
-          shall add <varname>Conflicts=</varname> dependencies to this
-          unit for their service unit, which is implicitly done when
+          shall add <varname>Conflicts=</varname> and
+          <varname>Before=</varname> dependencies to this unit for
+          their service unit, which is implicitly done when
           <varname>DefaultDependencies=yes</varname> is set (the
           default).</para>
         </listitem>
@@ -503,10 +535,23 @@
         </listitem>
       </varlistentry>
       <varlistentry>
+        <term><filename>slices.target</filename></term>
+        <listitem>
+          <para>A special target unit that sets up all slice units (see
+          <citerefentry><refentrytitle>systemd.slice</refentrytitle><manvolnum>5</manvolnum></citerefentry> for
+          details) that shall be active after boot. By default the generic <filename>user.slice</filename>,
+          <filename>system.slice</filename>, <filename>machines.slice</filename> slice units, as well as the root
+          slice unit <filename>-.slice</filename> are pulled in and ordered before this unit (see below).</para>
+
+          <para>It's a good idea to add <varname>WantedBy=slices.target</varname> lines to the <literal>[Install]</literal>
+          section of all slices units that may be installed dynamically.</para>
+        </listitem>
+      </varlistentry>
+      <varlistentry>
         <term><filename>sockets.target</filename></term>
         <listitem>
           <para>A special target unit that sets up all socket
-          units.(see
+          units (see
           <citerefentry><refentrytitle>systemd.socket</refentrytitle><manvolnum>5</manvolnum></citerefentry>
           for details) that shall be active after boot.</para>
 
@@ -535,6 +580,11 @@
       <varlistentry>
         <term><filename>sysinit.target</filename></term>
         <listitem>
+          <para>systemd automatically adds dependencies of the types
+          <varname>Requires=</varname> and <varname>After=</varname>
+          for this target unit to all services (except for those with
+          <varname>DefaultDependencies=no</varname>).</para>
+
           <para>This target pulls in the services required for system
           initialization. System services pulled in by this target should
           declare <varname>DefaultDependencies=no</varname> and specify
@@ -587,7 +637,7 @@
       <varlistentry>
         <term><filename>umount.target</filename></term>
         <listitem>
-          <para>A special target unit that umounts all mount and
+          <para>A special target unit that unmounts all mount and
           automount points on system shutdown.</para>
 
           <para>Mounts that shall be unmounted on system shutdown
@@ -711,7 +761,7 @@
           defined what that is supposed to mean, with one exception:
           at shutdown, a unit that is ordered after
           <filename>network.target</filename> will be stopped before
-          the network -- to whatever level it might be set up then --
+          the network — to whatever level it might be set up then —
           is shut down. It is hence useful when writing service files
           that require network access on shutdown, which should order
           themselves after this target, but not pull it in. Also see
@@ -826,6 +876,70 @@
     <filename>printer.target</filename>,
     <filename>smartcard.target</filename>,
     <filename>sound.target</filename>.</para>
+  </refsect1>
+
+  <refsect1>
+    <title>Special Passive User Units</title>
+
+    <refsect2>
+      <title>graphical-session.target</title>
+
+      <para>This target is active whenever any graphical session is running. It
+      is used to stop user services which only apply to a graphical (X,
+      Wayland, etc.) session when the session is terminated. Such services
+      should have <literal>PartOf=graphical-session.target</literal> in their
+      <literal>[Unit]</literal> section. A target for a particular session
+      (e. g.  <filename>gnome-session.target</filename>) starts and stops
+      <literal>graphical-session.target</literal> with
+      <literal>BindsTo=graphical-session.target</literal>.</para>
+
+      <para>Which services are started by a session target is determined by the
+      <literal>Wants=</literal> and <literal>Requires=</literal> dependencies.
+      For services that can be enabled independently, symlinks in
+      <literal>.wants/</literal> and <literal>.requires/</literal> should be
+      used, see
+      <citerefentry><refentrytitle>systemd.unit</refentrytitle><manvolnum>5</manvolnum></citerefentry>.
+      Those symlinks should either be shipped in packages, or should be added
+      dynamically after installation, for example using <literal>systemctl add-wants</literal>, see
+      <citerefentry><refentrytitle>systemctl</refentrytitle><manvolnum>1</manvolnum></citerefentry>.
+      </para>
+
+      <example>
+        <title>Nautilus as part of a GNOME session</title>
+
+        <para><literal>gnome-session.target</literal> pulls in Nautilus as
+        top-level service:</para>
+
+        <programlisting>[Unit]
+Description=User systemd services for GNOME graphical session
+Wants=nautilus.service
+BindsTo=graphical-session.target
+        </programlisting>
+
+        <para><literal>nautilus.service</literal> gets stopped when the session stops:</para>
+
+        <programlisting>[Unit]
+Description=Render the desktop icons with Nautilus
+PartOf=graphical-session.target
+
+[Service]
+...
+        </programlisting>
+      </example>
+    </refsect2>
+
+    <refsect2>
+      <title>graphical-session-pre.target</title>
+
+      <para>This target contains services which set up the environment or
+      global configuration of a graphical session, such as SSH/GPG agents
+      (which need to export an environment variable into all desktop processes)
+      or migration of obsolete d-conf keys after an OS upgrade (which needs to
+      happen before starting any process that might use them). This target must
+      be started before starting a graphical session
+      like <filename>gnome-session.target</filename>.</para>
+    </refsect2>
+
   </refsect1>
 
   <refsect1>

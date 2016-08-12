@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -21,12 +19,18 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <printf.h>
+#include <inttypes.h>
+#include <limits.h>
 #include <stdarg.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
+#include <sys/signalfd.h>
 #include <sys/socket.h>
+#include <sys/time.h>
+#include <sys/uio.h>
 #include <sys/un.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "sd-messages.h"
@@ -48,6 +52,7 @@
 #include "string-util.h"
 #include "syslog-util.h"
 #include "terminal-util.h"
+#include "time-util.h"
 #include "util.h"
 
 #define SNDBUF_SIZE (8*1024*1024)
@@ -160,7 +165,7 @@ static int log_open_syslog(void) {
                 goto fail;
         }
 
-        if (connect(syslog_fd, &sa.sa, offsetof(struct sockaddr_un, sun_path) + strlen(sa.un.sun_path)) < 0) {
+        if (connect(syslog_fd, &sa.sa, SOCKADDR_UN_LEN(sa.un)) < 0) {
                 safe_close(syslog_fd);
 
                 /* Some legacy syslog systems still use stream
@@ -172,7 +177,7 @@ static int log_open_syslog(void) {
                         goto fail;
                 }
 
-                if (connect(syslog_fd, &sa.sa, offsetof(struct sockaddr_un, sun_path) + strlen(sa.un.sun_path)) < 0) {
+                if (connect(syslog_fd, &sa.sa, SOCKADDR_UN_LEN(sa.un)) < 0) {
                         r = -errno;
                         goto fail;
                 }
@@ -210,7 +215,7 @@ static int log_open_journal(void) {
                 goto fail;
         }
 
-        if (connect(journal_fd, &sa.sa, offsetof(struct sockaddr_un, sun_path) + strlen(sa.un.sun_path)) < 0) {
+        if (connect(journal_fd, &sa.sa, SOCKADDR_UN_LEN(sa.un)) < 0) {
                 r = -errno;
                 goto fail;
         }
@@ -329,7 +334,7 @@ static int write_to_console(
                 const char *object,
                 const char *buffer) {
 
-        char location[64], prefix[1 + DECIMAL_STR_MAX(int) + 2];
+        char location[256], prefix[1 + DECIMAL_STR_MAX(int) + 2];
         struct iovec iovec[6] = {};
         unsigned n = 0;
         bool highlight;
@@ -445,7 +450,7 @@ static int write_to_syslog(
 static int write_to_kmsg(
                 int level,
                 int error,
-                const char*file,
+                const char *file,
                 int line,
                 const char *func,
                 const char *object_field,
@@ -516,7 +521,7 @@ static int log_do_header(
 static int write_to_journal(
                 int level,
                 int error,
-                const char*file,
+                const char *file,
                 int line,
                 const char *func,
                 const char *object_field,
@@ -650,7 +655,7 @@ int log_dump_internal(
 int log_internalv(
                 int level,
                 int error,
-                const char*file,
+                const char *file,
                 int line,
                 const char *func,
                 const char *format,
@@ -677,7 +682,7 @@ int log_internalv(
 int log_internal(
                 int level,
                 int error,
-                const char*file,
+                const char *file,
                 int line,
                 const char *func,
                 const char *format, ...) {
@@ -695,7 +700,7 @@ int log_internal(
 int log_object_internalv(
                 int level,
                 int error,
-                const char*file,
+                const char *file,
                 int line,
                 const char *func,
                 const char *object_field,
@@ -739,7 +744,7 @@ int log_object_internalv(
 int log_object_internal(
                 int level,
                 int error,
-                const char*file,
+                const char *file,
                 int line,
                 const char *func,
                 const char *object_field,
@@ -770,7 +775,7 @@ static void log_assert(
                 return;
 
         DISABLE_WARNING_FORMAT_NONLITERAL;
-        snprintf(buffer, sizeof(buffer), format, text, file, line, func);
+        xsprintf(buffer, format, text, file, line, func);
         REENABLE_WARNING;
 
         log_abort_msg = buffer;
@@ -796,6 +801,52 @@ void log_assert_failed_return(const char *text, const char *file, int line, cons
 int log_oom_internal(const char *file, int line, const char *func) {
         log_internal(LOG_ERR, ENOMEM, file, line, func, "Out of memory.");
         return -ENOMEM;
+}
+
+int log_format_iovec(
+                struct iovec *iovec,
+                unsigned iovec_len,
+                unsigned *n,
+                bool newline_separator,
+                int error,
+                const char *format,
+                va_list ap) {
+
+        static const char nl = '\n';
+
+        while (format && *n + 1 < iovec_len) {
+                va_list aq;
+                char *m;
+                int r;
+
+                /* We need to copy the va_list structure,
+                 * since vasprintf() leaves it afterwards at
+                 * an undefined location */
+
+                if (error != 0)
+                        errno = error;
+
+                va_copy(aq, ap);
+                r = vasprintf(&m, format, aq);
+                va_end(aq);
+                if (r < 0)
+                        return -EINVAL;
+
+                /* Now, jump enough ahead, so that we point to
+                 * the next format string */
+                VA_FORMAT_ADVANCE(format, ap);
+
+                IOVEC_SET_STRING(iovec[(*n)++], m);
+
+                if (newline_separator) {
+                        iovec[*n].iov_base = (char*) &nl;
+                        iovec[*n].iov_len = 1;
+                        (*n)++;
+                }
+
+                format = va_arg(ap, char *);
+        }
+        return 0;
 }
 
 int log_struct_internal(
@@ -830,10 +881,10 @@ int log_struct_internal(
                 char header[LINE_MAX];
                 struct iovec iovec[17] = {};
                 unsigned n = 0, i;
+                int r;
                 struct msghdr mh = {
                         .msg_iov = iovec,
                 };
-                static const char nl = '\n';
                 bool fallback = false;
 
                 /* If the journal is available do structured logging */
@@ -841,43 +892,14 @@ int log_struct_internal(
                 IOVEC_SET_STRING(iovec[n++], header);
 
                 va_start(ap, format);
-                while (format && n + 1 < ELEMENTSOF(iovec)) {
-                        va_list aq;
-                        char *m;
-
-                        /* We need to copy the va_list structure,
-                         * since vasprintf() leaves it afterwards at
-                         * an undefined location */
-
-                        if (error != 0)
-                                errno = error;
-
-                        va_copy(aq, ap);
-                        if (vasprintf(&m, format, aq) < 0) {
-                                va_end(aq);
-                                fallback = true;
-                                goto finish;
-                        }
-                        va_end(aq);
-
-                        /* Now, jump enough ahead, so that we point to
-                         * the next format string */
-                        VA_FORMAT_ADVANCE(format, ap);
-
-                        IOVEC_SET_STRING(iovec[n++], m);
-
-                        iovec[n].iov_base = (char*) &nl;
-                        iovec[n].iov_len = 1;
-                        n++;
-
-                        format = va_arg(ap, char *);
+                r = log_format_iovec(iovec, ELEMENTSOF(iovec), &n, true, error, format, ap);
+                if (r < 0)
+                        fallback = true;
+                else {
+                        mh.msg_iovlen = n;
+                        (void) sendmsg(journal_fd, &mh, MSG_NOSIGNAL);
                 }
 
-                mh.msg_iovlen = n;
-
-                (void) sendmsg(journal_fd, &mh, MSG_NOSIGNAL);
-
-        finish:
                 va_end(ap);
                 for (i = 1; i < n; i += 2)
                         free(iovec[i].iov_base);

@@ -19,13 +19,12 @@
 ***/
 
 #include <errno.h>
-#include <string.h>
 #include <net/ethernet.h>
 #include <net/if_arp.h>
+#include <string.h>
 
-
-#include "dhcp-protocol.h"
 #include "dhcp-internal.h"
+#include "dhcp-protocol.h"
 
 #define DHCP_CLIENT_MIN_OPTIONS_SIZE            312
 
@@ -45,7 +44,7 @@ int dhcp_message_init(DHCPMessage *message, uint8_t op, uint32_t xid,
         message->magic = htobe32(DHCP_MAGIC_COOKIE);
 
         r = dhcp_option_append(message, optlen, &offset, 0,
-                               DHCP_OPTION_MESSAGE_TYPE, 1, &type);
+                               SD_DHCP_OPTION_MESSAGE_TYPE, 1, &type);
         if (r < 0)
                 return r;
 
@@ -67,7 +66,7 @@ uint16_t dhcp_packet_checksum(uint8_t *buf, size_t len) {
                         /* wrap around in one's complement */
                         sum++;
 
-                buf_64 ++;
+                buf_64++;
         }
 
         if (len % sizeof(uint64_t)) {

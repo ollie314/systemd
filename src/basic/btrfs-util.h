@@ -1,4 +1,4 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
+#pragma once
 
 /***
   This file is part of systemd.
@@ -19,10 +19,11 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#pragma once
-
 #include <stdbool.h>
+#include <stdint.h>
 #include <sys/types.h>
+
+#include "sd-id128.h"
 
 #include "time-util.h"
 
@@ -56,7 +57,9 @@ typedef enum BtrfsRemoveFlags {
 } BtrfsRemoveFlags;
 
 int btrfs_is_filesystem(int fd);
-int btrfs_is_subvol(int fd);
+
+int btrfs_is_subvol_fd(int fd);
+int btrfs_is_subvol(const char *path);
 
 int btrfs_reflink(int infd, int outfd);
 int btrfs_clone_range(int infd, uint64_t in_offset, int ofd, uint64_t out_offset, uint64_t sz);

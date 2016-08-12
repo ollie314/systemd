@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -20,9 +18,9 @@
 ***/
 
 #include "alloc-util.h"
+#include "string-util.h"
 #include "utf8.h"
 #include "util.h"
-#include "string-util.h"
 
 static void test_utf8_is_printable(void) {
         assert_se(utf8_is_printable("ascii is valid\tunicode", 22));

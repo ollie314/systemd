@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -65,7 +63,7 @@ static int map_simple_field(const char *field, const char **p, struct iovec **io
 
         (*iov)[*n_iov].iov_base = c;
         (*iov)[*n_iov].iov_len = l;
-        (*n_iov) ++;
+        (*n_iov)++;
 
         *p = e;
         c = NULL;
@@ -144,7 +142,7 @@ static int map_string_field_internal(const char *field, const char **p, struct i
 
         (*iov)[*n_iov].iov_base = c;
         (*iov)[*n_iov].iov_len = l;
-        (*n_iov) ++;
+        (*n_iov)++;
 
         *p = e;
         c = NULL;
@@ -202,7 +200,7 @@ static int map_generic_field(const char *prefix, const char **p, struct iovec **
         }
         strcpy(t, "=");
 
-        e ++;
+        e++;
 
         r = map_simple_field(c, &e, iov, n_iov_allocated, n_iov);
         if (r < 0)
@@ -397,8 +395,8 @@ static void process_audit_string(Server *s, int type, const char *data, size_t s
         sprintf(id_field, "_AUDIT_ID=%" PRIu64, id);
         IOVEC_SET_STRING(iov[n_iov++], id_field);
 
-        assert_cc(32 == LOG_AUTH);
-        IOVEC_SET_STRING(iov[n_iov++], "SYSLOG_FACILITY=32");
+        assert_cc(4 == LOG_FAC(LOG_AUTH));
+        IOVEC_SET_STRING(iov[n_iov++], "SYSLOG_FACILITY=4");
         IOVEC_SET_STRING(iov[n_iov++], "SYSLOG_IDENTIFIER=audit");
 
         type_name = audit_type_name_alloca(type);

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -34,7 +32,7 @@
 #define LIST_HEAD_INIT(head)                                            \
         do {                                                            \
                 (head) = NULL; }                                        \
-        while(false)
+        while (false)
 
 /* Initialize a list item */
 #define LIST_INIT(name,item)                                            \
@@ -42,7 +40,7 @@
                 typeof(*(item)) *_item = (item);                        \
                 assert(_item);                                          \
                 _item->name##_prev = _item->name##_next = NULL;         \
-        } while(false)
+        } while (false)
 
 /* Prepend an item to the list */
 #define LIST_PREPEND(name,head,item)                                    \
@@ -53,7 +51,7 @@
                         _item->name##_next->name##_prev = _item;        \
                 _item->name##_prev = NULL;                              \
                 *_head = _item;                                         \
-        } while(false)
+        } while (false)
 
 /* Append an item to the list */
 #define LIST_APPEND(name,head,item)                                     \
@@ -61,7 +59,7 @@
                 typeof(*(head)) *_tail;                                 \
                 LIST_FIND_TAIL(name,head,_tail);                        \
                 LIST_INSERT_AFTER(name,head,_tail,item);                \
-        } while(false)
+        } while (false)
 
 /* Remove an item from the list */
 #define LIST_REMOVE(name,head,item)                                     \
@@ -77,7 +75,7 @@
                         *_head = _item->name##_next;                    \
                 }                                                       \
                 _item->name##_next = _item->name##_prev = NULL;         \
-        } while(false)
+        } while (false)
 
 /* Find the head of the list */
 #define LIST_FIND_HEAD(name,item,head)                                  \
@@ -121,7 +119,7 @@
                         _b->name##_prev = _a;                           \
                         _a->name##_next = _b;                           \
                 }                                                       \
-        } while(false)
+        } while (false)
 
 /* Insert an item before another one (a = where, b = what) */
 #define LIST_INSERT_BEFORE(name,head,a,b)                               \
@@ -147,7 +145,7 @@
                         _b->name##_next = _a;                           \
                         _a->name##_prev = _b;                           \
                 }                                                       \
-        } while(false)
+        } while (false)
 
 #define LIST_JUST_US(name,item)                                         \
         (!(item)->name##_prev && !(item)->name##_next)                  \

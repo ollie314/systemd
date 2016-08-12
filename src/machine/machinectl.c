@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -34,13 +32,14 @@
 #include "sd-bus.h"
 
 #include "alloc-util.h"
+#include "bus-common-errors.h"
 #include "bus-error.h"
+#include "bus-unit-util.h"
 #include "bus-util.h"
 #include "cgroup-show.h"
 #include "cgroup-util.h"
 #include "copy.h"
 #include "env-util.h"
-#include "event-util.h"
 #include "fd-util.h"
 #include "hostname-util.h"
 #include "import-util.h"
@@ -64,6 +63,7 @@
 
 static char **arg_property = NULL;
 static bool arg_all = false;
+static bool arg_value = false;
 static bool arg_full = false;
 static bool arg_no_pager = false;
 static bool arg_legend = true;
@@ -79,18 +79,9 @@ static unsigned arg_lines = 10;
 static OutputMode arg_output = OUTPUT_SHORT;
 static bool arg_force = false;
 static ImportVerify arg_verify = IMPORT_VERIFY_SIGNATURE;
-static const char* arg_dkr_index_url = NULL;
 static const char* arg_format = NULL;
 static const char *arg_uid = NULL;
 static char **arg_setenv = NULL;
-
-static void pager_open_if_enabled(void) {
-
-        if (arg_no_pager)
-                return;
-
-        pager_open(false);
-}
 
 static void polkit_agent_open_if_enabled(void) {
 
@@ -110,7 +101,7 @@ static OutputFlags get_output_flags(void) {
                 arg_all * OUTPUT_SHOW_ALL |
                 arg_full * OUTPUT_FULL_WIDTH |
                 (!on_tty() || pager_have()) * OUTPUT_FULL_WIDTH |
-                on_tty() * OUTPUT_COLOR |
+                colors_enabled() * OUTPUT_COLOR |
                 !arg_quiet * OUTPUT_WARN_CUTOFF;
 }
 
@@ -129,8 +120,8 @@ static int compare_machine_info(const void *a, const void *b) {
 static int list_machines(int argc, char *argv[], void *userdata) {
 
         size_t max_name = strlen("MACHINE"), max_class = strlen("CLASS"), max_service = strlen("SERVICE");
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         _cleanup_free_ MachineInfo *machines = NULL;
         const char *name, *class, *service, *object;
         size_t n_machines = 0, n_allocated = 0, j;
@@ -139,17 +130,16 @@ static int list_machines(int argc, char *argv[], void *userdata) {
 
         assert(bus);
 
-        pager_open_if_enabled();
+        pager_open(arg_no_pager, false);
 
-        r = sd_bus_call_method(
-                                bus,
-                                "org.freedesktop.machine1",
-                                "/org/freedesktop/machine1",
-                                "org.freedesktop.machine1.Manager",
-                                "ListMachines",
-                                &error,
-                                &reply,
-                                NULL);
+        r = sd_bus_call_method(bus,
+                               "org.freedesktop.machine1",
+                               "/org/freedesktop/machine1",
+                               "org.freedesktop.machine1.Manager",
+                               "ListMachines",
+                               &error,
+                               &reply,
+                               NULL);
         if (r < 0) {
                 log_error("Could not get machines: %s", bus_error_message(&error, -r));
                 return r;
@@ -184,7 +174,7 @@ static int list_machines(int argc, char *argv[], void *userdata) {
                 if (l > max_service)
                         max_service = l;
 
-                n_machines ++;
+                n_machines++;
         }
         if (r < 0)
                 return bus_log_parse_error(r);
@@ -195,7 +185,7 @@ static int list_machines(int argc, char *argv[], void *userdata) {
 
         qsort_safe(machines, n_machines, sizeof(MachineInfo), compare_machine_info);
 
-        if (arg_legend)
+        if (arg_legend && n_machines > 0)
                 printf("%-*s %-*s %-*s\n",
                        (int) max_name, "MACHINE",
                        (int) max_class, "CLASS",
@@ -207,8 +197,10 @@ static int list_machines(int argc, char *argv[], void *userdata) {
                        (int) max_class, machines[j].class,
                        (int) max_service, machines[j].service);
 
-        if (arg_legend)
+        if (arg_legend && n_machines > 0)
                 printf("\n%zu machines listed.\n", n_machines);
+        else
+                printf("No machines.\n");
 
         return 0;
 }
@@ -230,9 +222,9 @@ static int compare_image_info(const void *a, const void *b) {
 
 static int list_images(int argc, char *argv[], void *userdata) {
 
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         size_t max_name = strlen("NAME"), max_type = strlen("TYPE"), max_size = strlen("USAGE"), max_crtime = strlen("CREATED"), max_mtime = strlen("MODIFIED");
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         _cleanup_free_ ImageInfo *images = NULL;
         size_t n_images = 0, n_allocated = 0, j;
         const char *name, *type, *object;
@@ -242,17 +234,16 @@ static int list_images(int argc, char *argv[], void *userdata) {
 
         assert(bus);
 
-        pager_open_if_enabled();
+        pager_open(arg_no_pager, false);
 
-        r = sd_bus_call_method(
-                                bus,
-                                "org.freedesktop.machine1",
-                                "/org/freedesktop/machine1",
-                                "org.freedesktop.machine1.Manager",
-                                "ListImages",
-                                &error,
-                                &reply,
-                                "");
+        r = sd_bus_call_method(bus,
+                               "org.freedesktop.machine1",
+                               "/org/freedesktop/machine1",
+                               "org.freedesktop.machine1.Manager",
+                               "ListImages",
+                               &error,
+                               &reply,
+                               "");
         if (r < 0) {
                 log_error("Could not get images: %s", bus_error_message(&error, -r));
                 return r;
@@ -316,7 +307,7 @@ static int list_images(int argc, char *argv[], void *userdata) {
 
         qsort_safe(images, n_images, sizeof(ImageInfo), compare_image_info);
 
-        if (arg_legend)
+        if (arg_legend && n_images > 0)
                 printf("%-*s %-*s %-3s %-*s %-*s %-*s\n",
                        (int) max_name, "NAME",
                        (int) max_type, "TYPE",
@@ -337,15 +328,17 @@ static int list_images(int argc, char *argv[], void *userdata) {
                        (int) max_mtime, strna(format_timestamp(mtime_buf, sizeof(mtime_buf), images[j].mtime)));
         }
 
-        if (arg_legend)
+        if (arg_legend && n_images > 0)
                 printf("\n%zu images listed.\n", n_images);
+        else
+                printf("No images.\n");
 
         return 0;
 }
 
 static int show_unit_cgroup(sd_bus *bus, const char *unit, pid_t leader) {
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         _cleanup_free_ char *path = NULL;
         const char *cgroup;
         int r;
@@ -353,9 +346,6 @@ static int show_unit_cgroup(sd_bus *bus, const char *unit, pid_t leader) {
 
         assert(bus);
         assert(unit);
-
-        if (arg_transport == BUS_TRANSPORT_REMOTE)
-                return 0;
 
         path = unit_dbus_path_from_name(unit);
         if (!path)
@@ -370,16 +360,14 @@ static int show_unit_cgroup(sd_bus *bus, const char *unit, pid_t leader) {
                         &error,
                         &reply,
                         "s");
-        if (r < 0) {
-                log_error("Failed to query ControlGroup: %s", bus_error_message(&error, -r));
-                return r;
-        }
+        if (r < 0)
+                return log_error_errno(r, "Failed to query ControlGroup: %s", bus_error_message(&error, r));
 
         r = sd_bus_message_read(reply, "s", &cgroup);
         if (r < 0)
                 return bus_log_parse_error(r);
 
-        if (cg_is_empty_recursive(SYSTEMD_CGROUP_CONTROLLER, cgroup) != 0 && leader <= 0)
+        if (isempty(cgroup))
                 return 0;
 
         c = columns();
@@ -388,12 +376,26 @@ static int show_unit_cgroup(sd_bus *bus, const char *unit, pid_t leader) {
         else
                 c = 0;
 
-        show_cgroup_and_extra(SYSTEMD_CGROUP_CONTROLLER, cgroup, "\t\t  ", c, false, &leader, leader > 0, get_output_flags());
+        r = unit_show_processes(bus, unit, cgroup, "\t\t  ", c, get_output_flags(), &error);
+        if (r == -EBADR) {
+
+                if (arg_transport == BUS_TRANSPORT_REMOTE)
+                        return 0;
+
+                /* Fallback for older systemd versions where the GetUnitProcesses() call is not yet available */
+
+                if (cg_is_empty_recursive(SYSTEMD_CGROUP_CONTROLLER, cgroup) != 0 && leader <= 0)
+                        return 0;
+
+                show_cgroup_and_extra(SYSTEMD_CGROUP_CONTROLLER, cgroup, "\t\t  ", c, &leader, leader > 0, get_output_flags());
+        } else if (r < 0)
+                return log_error_errno(r, "Failed to dump process list: %s", bus_error_message(&error, r));
+
         return 0;
 }
 
 static int print_addresses(sd_bus *bus, const char *name, int ifi, const char *prefix, const char *prefix2) {
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         int r;
 
         assert(bus);
@@ -454,7 +456,7 @@ static int print_addresses(sd_bus *bus, const char *name, int ifi, const char *p
 }
 
 static int print_os_release(sd_bus *bus, const char *name, const char *prefix) {
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         const char *k, *v, *pretty = NULL;
         int r;
 
@@ -530,7 +532,7 @@ static void print_machine_status_info(sd_bus *bus, MachineStatusInfo *i) {
 
         fputs(strna(i->name), stdout);
 
-        if (!sd_id128_equal(i->id, SD_ID128_NULL))
+        if (!sd_id128_is_null(i->id))
                 printf("(" SD_ID128_FORMAT_STR ")\n", SD_ID128_FORMAT_VAL(i->id));
         else
                 putchar('\n');
@@ -692,7 +694,7 @@ static int show_machine_properties(sd_bus *bus, const char *path, bool *new_line
 
         *new_line = true;
 
-        r = bus_print_all_properties(bus, "org.freedesktop.machine1", path, arg_property, arg_all);
+        r = bus_print_all_properties(bus, "org.freedesktop.machine1", path, arg_property, arg_value, arg_all);
         if (r < 0)
                 log_error_errno(r, "Could not get properties: %m");
 
@@ -701,8 +703,8 @@ static int show_machine_properties(sd_bus *bus, const char *path, bool *new_line
 
 static int show_machine(int argc, char *argv[], void *userdata) {
 
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         bool properties, new_line = false;
         sd_bus *bus = userdata;
         int r = 0, i;
@@ -711,7 +713,7 @@ static int show_machine(int argc, char *argv[], void *userdata) {
 
         properties = !strstr(argv[0], "status");
 
-        pager_open_if_enabled();
+        pager_open(arg_no_pager, false);
 
         if (properties && argc <= 1) {
 
@@ -725,15 +727,14 @@ static int show_machine(int argc, char *argv[], void *userdata) {
         for (i = 1; i < argc; i++) {
                 const char *path = NULL;
 
-                r = sd_bus_call_method(
-                                        bus,
-                                        "org.freedesktop.machine1",
-                                        "/org/freedesktop/machine1",
-                                        "org.freedesktop.machine1.Manager",
-                                        "GetMachine",
-                                        &error,
-                                        &reply,
-                                        "s", argv[i]);
+                r = sd_bus_call_method(bus,
+                                       "org.freedesktop.machine1",
+                                       "/org/freedesktop/machine1",
+                                       "org.freedesktop.machine1.Manager",
+                                       "GetMachine",
+                                       &error,
+                                       &reply,
+                                       "s", argv[i]);
                 if (r < 0) {
                         log_error("Could not get path to machine: %s", bus_error_message(&error, -r));
                         return r;
@@ -941,7 +942,7 @@ static int show_image_properties(sd_bus *bus, const char *path, bool *new_line) 
 
         *new_line = true;
 
-        r = bus_print_all_properties(bus, "org.freedesktop.machine1", path, arg_property, arg_all);
+        r = bus_print_all_properties(bus, "org.freedesktop.machine1", path, arg_property, arg_value, arg_all);
         if (r < 0)
                 log_error_errno(r, "Could not get properties: %m");
 
@@ -950,8 +951,8 @@ static int show_image_properties(sd_bus *bus, const char *path, bool *new_line) 
 
 static int show_image(int argc, char *argv[], void *userdata) {
 
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         bool properties, new_line = false;
         sd_bus *bus = userdata;
         int r = 0, i;
@@ -960,7 +961,7 @@ static int show_image(int argc, char *argv[], void *userdata) {
 
         properties = !strstr(argv[0], "status");
 
-        pager_open_if_enabled();
+        pager_open(arg_no_pager, false);
 
         if (argc <= 1) {
 
@@ -1006,7 +1007,7 @@ static int show_image(int argc, char *argv[], void *userdata) {
 }
 
 static int kill_machine(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         sd_bus *bus = userdata;
         int r, i;
 
@@ -1051,7 +1052,7 @@ static int poweroff_machine(int argc, char *argv[], void *userdata) {
 }
 
 static int terminate_machine(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         sd_bus *bus = userdata;
         int r, i;
 
@@ -1079,7 +1080,8 @@ static int terminate_machine(int argc, char *argv[], void *userdata) {
 }
 
 static int copy_files(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
         _cleanup_free_ char *abs_host_path = NULL;
         char *dest, *host_path, *container_path;
         sd_bus *bus = userdata;
@@ -1103,18 +1105,27 @@ static int copy_files(int argc, char *argv[], void *userdata) {
                 host_path = abs_host_path;
         }
 
-        r = sd_bus_call_method(
+        r = sd_bus_message_new_method_call(
                         bus,
+                        &m,
                         "org.freedesktop.machine1",
                         "/org/freedesktop/machine1",
                         "org.freedesktop.machine1.Manager",
-                        copy_from ? "CopyFromMachine" : "CopyToMachine",
-                        &error,
-                        NULL,
+                        copy_from ? "CopyFromMachine" : "CopyToMachine");
+        if (r < 0)
+                return bus_log_create_error(r);
+
+        r = sd_bus_message_append(
+                        m,
                         "sss",
                         argv[1],
                         copy_from ? container_path : host_path,
                         copy_from ? host_path : container_path);
+        if (r < 0)
+                return bus_log_create_error(r);
+
+        /* This is a slow operation, hence turn off any method call timeouts */
+        r = sd_bus_call(bus, m, USEC_INFINITY, &error, NULL);
         if (r < 0)
                 return log_error_errno(r, "Failed to copy: %s", bus_error_message(&error, r));
 
@@ -1122,7 +1133,7 @@ static int copy_files(int argc, char *argv[], void *userdata) {
 }
 
 static int bind_mount(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         sd_bus *bus = userdata;
         int r;
 
@@ -1226,11 +1237,11 @@ static int process_forward(sd_event *event, PTYForward **forward, int master, PT
 }
 
 static int login_machine(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(pty_forward_freep) PTYForward *forward = NULL;
-        _cleanup_bus_slot_unref_ sd_bus_slot *slot = NULL;
-        _cleanup_event_unref_ sd_event *event = NULL;
+        _cleanup_(sd_bus_slot_unrefp) sd_bus_slot *slot = NULL;
+        _cleanup_(sd_event_unrefp) sd_event *event = NULL;
         int master = -1, r;
         sd_bus *bus = userdata;
         const char *pty, *match, *machine;
@@ -1293,11 +1304,11 @@ static int login_machine(int argc, char *argv[], void *userdata) {
 }
 
 static int shell_machine(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL, *m = NULL;
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL, *m = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(pty_forward_freep) PTYForward *forward = NULL;
-        _cleanup_bus_slot_unref_ sd_bus_slot *slot = NULL;
-        _cleanup_event_unref_ sd_event *event = NULL;
+        _cleanup_(sd_bus_slot_unrefp) sd_bus_slot *slot = NULL;
+        _cleanup_(sd_event_unrefp) sd_event *event = NULL;
         int master = -1, r;
         sd_bus *bus = userdata;
         const char *pty, *match, *machine, *path, *uid = NULL;
@@ -1397,7 +1408,6 @@ static int shell_machine(int argc, char *argv[], void *userdata) {
 }
 
 static int remove_image(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
         sd_bus *bus = userdata;
         int r, i;
 
@@ -1406,26 +1416,34 @@ static int remove_image(int argc, char *argv[], void *userdata) {
         polkit_agent_open_if_enabled();
 
         for (i = 1; i < argc; i++) {
-                r = sd_bus_call_method(
+                _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+                _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
+
+                r = sd_bus_message_new_method_call(
                                 bus,
+                                &m,
                                 "org.freedesktop.machine1",
                                 "/org/freedesktop/machine1",
                                 "org.freedesktop.machine1.Manager",
-                                "RemoveImage",
-                                &error,
-                                NULL,
-                                "s", argv[i]);
-                if (r < 0) {
-                        log_error("Could not remove image: %s", bus_error_message(&error, -r));
-                        return r;
-                }
+                                "RemoveImage");
+                if (r < 0)
+                        return bus_log_create_error(r);
+
+                r = sd_bus_message_append(m, "s", argv[i]);
+                if (r < 0)
+                        return bus_log_create_error(r);
+
+                /* This is a slow operation, hence turn off any method call timeouts */
+                r = sd_bus_call(bus, m, USEC_INFINITY, &error, NULL);
+                if (r < 0)
+                        return log_error_errno(r, "Could not remove image: %s", bus_error_message(&error, r));
         }
 
         return 0;
 }
 
 static int rename_image(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         sd_bus *bus = userdata;
         int r;
 
@@ -1449,31 +1467,37 @@ static int rename_image(int argc, char *argv[], void *userdata) {
 }
 
 static int clone_image(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
         sd_bus *bus = userdata;
         int r;
 
         polkit_agent_open_if_enabled();
 
-        r = sd_bus_call_method(
+        r = sd_bus_message_new_method_call(
                         bus,
+                        &m,
                         "org.freedesktop.machine1",
                         "/org/freedesktop/machine1",
                         "org.freedesktop.machine1.Manager",
-                        "CloneImage",
-                        &error,
-                        NULL,
-                        "ssb", argv[1], argv[2], arg_read_only);
-        if (r < 0) {
-                log_error("Could not clone image: %s", bus_error_message(&error, -r));
-                return r;
-        }
+                        "CloneImage");
+        if (r < 0)
+                return bus_log_create_error(r);
+
+        r = sd_bus_message_append(m, "ssb", argv[1], argv[2], arg_read_only);
+        if (r < 0)
+                return bus_log_create_error(r);
+
+        /* This is a slow operation, hence turn off any method call timeouts */
+        r = sd_bus_call(bus, m, USEC_INFINITY, &error, NULL);
+        if (r < 0)
+                return log_error_errno(r, "Could not clone image: %s", bus_error_message(&error, r));
 
         return 0;
 }
 
 static int read_only_image(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         sd_bus *bus = userdata;
         int b = true, r;
 
@@ -1504,8 +1528,33 @@ static int read_only_image(int argc, char *argv[], void *userdata) {
         return 0;
 }
 
+static int image_exists(sd_bus *bus, const char *name) {
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        int r;
+
+        assert(bus);
+        assert(name);
+
+        r = sd_bus_call_method(
+                        bus,
+                        "org.freedesktop.machine1",
+                        "/org/freedesktop/machine1",
+                        "org.freedesktop.machine1.Manager",
+                        "GetImage",
+                        &error,
+                        NULL,
+                        "s", name);
+        if (r < 0) {
+                if (sd_bus_error_has_name(&error, BUS_ERROR_NO_SUCH_IMAGE))
+                        return 0;
+
+                return log_error_errno(r, "Failed to check whether image %s exists: %s", name, bus_error_message(&error, -r));
+        }
+
+        return 1;
+}
+
 static int make_service_name(const char *name, char **ret) {
-        _cleanup_free_ char *e = NULL;
         int r;
 
         assert(name);
@@ -1516,11 +1565,7 @@ static int make_service_name(const char *name, char **ret) {
                 return -EINVAL;
         }
 
-        e = unit_name_escape(name);
-        if (!e)
-                return log_oom();
-
-        r = unit_name_build("systemd-nspawn", e, ".service", ret);
+        r = unit_name_build("systemd-nspawn", name, ".service", ret);
         if (r < 0)
                 return log_error_errno(r, "Failed to build unit name: %m");
 
@@ -1528,7 +1573,7 @@ static int make_service_name(const char *name, char **ret) {
 }
 
 static int start_machine(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(bus_wait_for_jobs_freep) BusWaitForJobs *w = NULL;
         sd_bus *bus = userdata;
         int r, i;
@@ -1542,13 +1587,21 @@ static int start_machine(int argc, char *argv[], void *userdata) {
                 return log_oom();
 
         for (i = 1; i < argc; i++) {
-                _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
+                _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
                 _cleanup_free_ char *unit = NULL;
                 const char *object;
 
                 r = make_service_name(argv[i], &unit);
                 if (r < 0)
                         return r;
+
+                r = image_exists(bus, argv[i]);
+                if (r < 0)
+                        return r;
+                if (r == 0) {
+                        log_error("Machine image '%s' does not exist.", argv[1]);
+                        return -ENXIO;
+                }
 
                 r = sd_bus_call_method(
                                 bus,
@@ -1573,7 +1626,7 @@ static int start_machine(int argc, char *argv[], void *userdata) {
                         return log_oom();
         }
 
-        r = bus_wait_for_jobs(w, arg_quiet);
+        r = bus_wait_for_jobs(w, arg_quiet, NULL);
         if (r < 0)
                 return r;
 
@@ -1581,8 +1634,10 @@ static int start_machine(int argc, char *argv[], void *userdata) {
 }
 
 static int enable_machine(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_message_unref_ sd_bus_message *m = NULL, *reply = NULL;
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL, *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        UnitFileChange *changes = NULL;
+        unsigned n_changes = 0;
         int carries_install_info = 0;
         const char *method = NULL;
         sd_bus *bus = userdata;
@@ -1615,6 +1670,14 @@ static int enable_machine(int argc, char *argv[], void *userdata) {
                 if (r < 0)
                         return r;
 
+                r = image_exists(bus, argv[i]);
+                if (r < 0)
+                        return r;
+                if (r == 0) {
+                        log_error("Machine image '%s' does not exist.", argv[1]);
+                        return -ENXIO;
+                }
+
                 r = sd_bus_message_append(m, "s", unit);
                 if (r < 0)
                         return bus_log_create_error(r);
@@ -1643,9 +1706,9 @@ static int enable_machine(int argc, char *argv[], void *userdata) {
                         return bus_log_parse_error(r);
         }
 
-        r = bus_deserialize_and_dump_unit_file_changes(reply, arg_quiet, NULL, NULL);
+        r = bus_deserialize_and_dump_unit_file_changes(reply, arg_quiet, &changes, &n_changes);
         if (r < 0)
-                return r;
+                goto finish;
 
         r = sd_bus_call_method(
                         bus,
@@ -1658,10 +1721,15 @@ static int enable_machine(int argc, char *argv[], void *userdata) {
                         NULL);
         if (r < 0) {
                 log_error("Failed to reload daemon: %s", bus_error_message(&error, -r));
-                return r;
+                goto finish;
         }
 
-        return 0;
+        r = 0;
+
+finish:
+        unit_file_changes_free(changes, n_changes);
+
+        return r;
 }
 
 static int match_log_message(sd_bus_message *m, void *userdata, sd_bus_error *error) {
@@ -1721,10 +1789,10 @@ static int transfer_signal_handler(sd_event_source *s, const struct signalfd_sig
 }
 
 static int transfer_image_common(sd_bus *bus, sd_bus_message *m) {
-        _cleanup_bus_slot_unref_ sd_bus_slot *slot_job_removed = NULL, *slot_log_message = NULL;
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
-        _cleanup_event_unref_ sd_event* event = NULL;
+        _cleanup_(sd_bus_slot_unrefp) sd_bus_slot *slot_job_removed = NULL, *slot_log_message = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
+        _cleanup_(sd_event_unrefp) sd_event* event = NULL;
         const char *path = NULL;
         uint32_t id;
         int r;
@@ -1767,7 +1835,7 @@ static int transfer_image_common(sd_bus *bus, sd_bus_message *m) {
 
         r = sd_bus_call(bus, m, 0, &error, &reply);
         if (r < 0) {
-                log_error("Failed transfer image: %s", bus_error_message(&error, -r));
+                log_error("Failed to transfer image: %s", bus_error_message(&error, -r));
                 return r;
         }
 
@@ -1791,7 +1859,7 @@ static int transfer_image_common(sd_bus *bus, sd_bus_message *m) {
 }
 
 static int import_tar(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_message_unref_ sd_bus_message *m = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
         _cleanup_free_ char *ll = NULL;
         _cleanup_close_ int fd = -1;
         const char *local = NULL, *path = NULL;
@@ -1858,7 +1926,7 @@ static int import_tar(int argc, char *argv[], void *userdata) {
 }
 
 static int import_raw(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_message_unref_ sd_bus_message *m = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
         _cleanup_free_ char *ll = NULL;
         _cleanup_close_ int fd = -1;
         const char *local = NULL, *path = NULL;
@@ -1940,7 +2008,7 @@ static void determine_compression_from_filename(const char *p) {
 }
 
 static int export_tar(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_message_unref_ sd_bus_message *m = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
         _cleanup_close_ int fd = -1;
         const char *local = NULL, *path = NULL;
         sd_bus *bus = userdata;
@@ -1990,7 +2058,7 @@ static int export_tar(int argc, char *argv[], void *userdata) {
 }
 
 static int export_raw(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_message_unref_ sd_bus_message *m = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
         _cleanup_close_ int fd = -1;
         const char *local = NULL, *path = NULL;
         sd_bus *bus = userdata;
@@ -2040,7 +2108,7 @@ static int export_raw(int argc, char *argv[], void *userdata) {
 }
 
 static int pull_tar(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_message_unref_ sd_bus_message *m = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
         _cleanup_free_ char *l = NULL, *ll = NULL;
         const char *local, *remote;
         sd_bus *bus = userdata;
@@ -2104,7 +2172,7 @@ static int pull_tar(int argc, char *argv[], void *userdata) {
 }
 
 static int pull_raw(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_message_unref_ sd_bus_message *m = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
         _cleanup_free_ char *l = NULL, *ll = NULL;
         const char *local, *remote;
         sd_bus *bus = userdata;
@@ -2167,78 +2235,6 @@ static int pull_raw(int argc, char *argv[], void *userdata) {
         return transfer_image_common(bus, m);
 }
 
-static int pull_dkr(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_message_unref_ sd_bus_message *m = NULL;
-        const char *local, *remote, *tag;
-        sd_bus *bus = userdata;
-        int r;
-
-        if (arg_verify != IMPORT_VERIFY_NO) {
-                log_error("Imports from DKR do not support image verification, please pass --verify=no.");
-                return -EINVAL;
-        }
-
-        remote = argv[1];
-        tag = strchr(remote, ':');
-        if (tag) {
-                remote = strndupa(remote, tag - remote);
-                tag++;
-        }
-
-        if (!dkr_name_is_valid(remote)) {
-                log_error("DKR name '%s' is invalid.", remote);
-                return -EINVAL;
-        }
-        if (tag && !dkr_tag_is_valid(tag)) {
-                log_error("DKR tag '%s' is invalid.", remote);
-                return -EINVAL;
-        }
-
-        if (argc >= 3)
-                local = argv[2];
-        else {
-                local = strchr(remote, '/');
-                if (local)
-                        local++;
-                else
-                        local = remote;
-        }
-
-        if (isempty(local) || streq(local, "-"))
-                local = NULL;
-
-        if (local) {
-                if (!machine_name_is_valid(local)) {
-                        log_error("Local name %s is not a suitable machine name.", local);
-                        return -EINVAL;
-                }
-        }
-
-        r = sd_bus_message_new_method_call(
-                        bus,
-                        &m,
-                        "org.freedesktop.import1",
-                        "/org/freedesktop/import1",
-                        "org.freedesktop.import1.Manager",
-                        "PullDkr");
-        if (r < 0)
-                return bus_log_create_error(r);
-
-        r = sd_bus_message_append(
-                        m,
-                        "sssssb",
-                        arg_dkr_index_url,
-                        remote,
-                        tag,
-                        local,
-                        import_verify_to_string(arg_verify),
-                        arg_force);
-        if (r < 0)
-                return bus_log_create_error(r);
-
-        return transfer_image_common(bus, m);
-}
-
 typedef struct TransferInfo {
         uint32_t id;
         const char *type;
@@ -2255,8 +2251,8 @@ static int compare_transfer_info(const void *a, const void *b) {
 
 static int list_transfers(int argc, char *argv[], void *userdata) {
         size_t max_type = strlen("TYPE"), max_local = strlen("LOCAL"), max_remote = strlen("REMOTE");
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_free_ TransferInfo *transfers = NULL;
         size_t n_transfers = 0, n_allocated = 0, j;
         const char *type, *remote, *local, *object;
@@ -2265,17 +2261,16 @@ static int list_transfers(int argc, char *argv[], void *userdata) {
         double progress;
         int r;
 
-        pager_open_if_enabled();
+        pager_open(arg_no_pager, false);
 
-        r = sd_bus_call_method(
-                                bus,
-                                "org.freedesktop.import1",
-                                "/org/freedesktop/import1",
-                                "org.freedesktop.import1.Manager",
-                                "ListTransfers",
-                                &error,
-                                &reply,
-                                NULL);
+        r = sd_bus_call_method(bus,
+                               "org.freedesktop.import1",
+                               "/org/freedesktop/import1",
+                               "org.freedesktop.import1.Manager",
+                               "ListTransfers",
+                               &error,
+                               &reply,
+                               NULL);
         if (r < 0) {
                 log_error("Could not get transfers: %s", bus_error_message(&error, -r));
                 return r;
@@ -2312,7 +2307,7 @@ static int list_transfers(int argc, char *argv[], void *userdata) {
                 if (id > max_id)
                         max_id = id;
 
-                n_transfers ++;
+                n_transfers++;
         }
         if (r < 0)
                 return bus_log_parse_error(r);
@@ -2323,7 +2318,7 @@ static int list_transfers(int argc, char *argv[], void *userdata) {
 
         qsort_safe(transfers, n_transfers, sizeof(TransferInfo), compare_transfer_info);
 
-        if (arg_legend)
+        if (arg_legend && n_transfers > 0)
                 printf("%-*s %-*s %-*s %-*s %-*s\n",
                        (int) MAX(2U, DECIMAL_STR_WIDTH(max_id)), "ID",
                        (int) 7, "PERCENT",
@@ -2339,14 +2334,16 @@ static int list_transfers(int argc, char *argv[], void *userdata) {
                        (int) max_local, transfers[j].local,
                        (int) max_remote, transfers[j].remote);
 
-        if (arg_legend)
+        if (arg_legend && n_transfers > 0)
                 printf("\n%zu transfers listed.\n", n_transfers);
+        else
+                printf("No transfers.\n");
 
         return 0;
 }
 
 static int cancel_transfer(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         sd_bus *bus = userdata;
         int r, i;
 
@@ -2380,7 +2377,7 @@ static int cancel_transfer(int argc, char *argv[], void *userdata) {
 }
 
 static int set_limit(int argc, char *argv[], void *userdata) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         sd_bus *bus = userdata;
         uint64_t limit;
         int r;
@@ -2425,6 +2422,57 @@ static int set_limit(int argc, char *argv[], void *userdata) {
         return 0;
 }
 
+static int clean_images(int argc, char *argv[], void *userdata) {
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL, *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        uint64_t usage, total = 0;
+        char fb[FORMAT_BYTES_MAX];
+        sd_bus *bus = userdata;
+        const char *name;
+        unsigned c = 0;
+        int r;
+
+        r = sd_bus_message_new_method_call(
+                        bus,
+                        &m,
+                        "org.freedesktop.machine1",
+                        "/org/freedesktop/machine1",
+                        "org.freedesktop.machine1.Manager",
+                        "CleanPool");
+        if (r < 0)
+                return bus_log_create_error(r);
+
+        r = sd_bus_message_append(m, "s", arg_all ? "all" : "hidden");
+        if (r < 0)
+                return bus_log_create_error(r);
+
+        /* This is a slow operation, hence permit a longer time for completion. */
+        r = sd_bus_call(bus, m, USEC_INFINITY, &error, &reply);
+        if (r < 0)
+                return log_error_errno(r, "Could not clean pool: %s", bus_error_message(&error, r));
+
+        r = sd_bus_message_enter_container(reply, 'a', "(st)");
+        if (r < 0)
+                return bus_log_parse_error(r);
+
+        while ((r = sd_bus_message_read(reply, "(st)", &name, &usage)) > 0) {
+                log_info("Removed image '%s'. Freed exclusive disk space: %s",
+                         name, format_bytes(fb, sizeof(fb), usage));
+
+                total += usage;
+                c++;
+        }
+
+        r = sd_bus_message_exit_container(reply);
+        if (r < 0)
+                return bus_log_parse_error(r);
+
+        log_info("Removed %u images in total. Total freed exclusive disk space %s.",
+                 c, format_bytes(fb, sizeof(fb), total));
+
+        return 0;
+}
+
 static int help(int argc, char *argv[], void *userdata) {
 
         printf("%s [OPTIONS...] {COMMAND} ...\n\n"
@@ -2440,11 +2488,12 @@ static int help(int argc, char *argv[], void *userdata) {
                "  -p --property=NAME          Show only properties by this name\n"
                "  -q --quiet                  Suppress output\n"
                "  -a --all                    Show all properties, including empty ones\n"
+               "     --value                  When showing properties, only print the value\n"
                "  -l --full                   Do not ellipsize output\n"
                "     --kill-who=WHO           Who to send signal to\n"
                "  -s --signal=SIGNAL          Which signal to send\n"
                "     --uid=USER               Specify user ID to invoke shell as\n"
-               "     --setenv=VAR=VALUE       Add an environment variable for shell\n"
+               "  -E --setenv=VAR=VALUE       Add an environment variable for shell\n"
                "     --read-only              Create read-only bind mount\n"
                "     --mkdir                  Create directory before bind mounting, if missing\n"
                "  -n --lines=INTEGER          Number of journal entries to show\n"
@@ -2453,9 +2502,7 @@ static int help(int argc, char *argv[], void *userdata) {
                "                              json-pretty, json-sse, cat)\n"
                "      --verify=MODE           Verification mode for downloaded images (no,\n"
                "                              checksum, signature)\n"
-               "      --force                 Download image even if already exists\n"
-               "      --dkr-index-url=URL     Specify the index URL to use for DKR image\n"
-               "                              downloads\n\n"
+               "      --force                 Download image even if already exists\n\n"
                "Machine Commands:\n"
                "  list                        List running VMs and containers\n"
                "  status NAME...              Show VM/container details\n"
@@ -2483,11 +2530,11 @@ static int help(int argc, char *argv[], void *userdata) {
                "  rename NAME NAME            Rename an image\n"
                "  read-only NAME [BOOL]       Mark or unmark image read-only\n"
                "  remove NAME...              Remove an image\n"
-               "  set-limit [NAME] BYTES      Set image or pool size limit (disk quota)\n\n"
+               "  set-limit [NAME] BYTES      Set image or pool size limit (disk quota)\n"
+               "  clean                       Remove hidden (or all) images\n\n"
                "Image Transfer Commands:\n"
                "  pull-tar URL [NAME]         Download a TAR container image\n"
                "  pull-raw URL [NAME]         Download a RAW container or VM image\n"
-               "  pull-dkr REMOTE [NAME]      Download a DKR container image\n"
                "  import-tar FILE [NAME]      Import a local TAR container image\n"
                "  import-raw FILE [NAME]      Import a local RAW container or VM image\n"
                "  export-tar NAME [FILE]      Export a TAR container image locally\n"
@@ -2505,16 +2552,15 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_VERSION = 0x100,
                 ARG_NO_PAGER,
                 ARG_NO_LEGEND,
+                ARG_VALUE,
                 ARG_KILL_WHO,
                 ARG_READ_ONLY,
                 ARG_MKDIR,
                 ARG_NO_ASK_PASSWORD,
                 ARG_VERIFY,
                 ARG_FORCE,
-                ARG_DKR_INDEX_URL,
                 ARG_FORMAT,
                 ARG_UID,
-                ARG_SETENV,
         };
 
         static const struct option options[] = {
@@ -2522,6 +2568,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "version",         no_argument,       NULL, ARG_VERSION         },
                 { "property",        required_argument, NULL, 'p'                 },
                 { "all",             no_argument,       NULL, 'a'                 },
+                { "value",           no_argument,       NULL, ARG_VALUE           },
                 { "full",            no_argument,       NULL, 'l'                 },
                 { "no-pager",        no_argument,       NULL, ARG_NO_PAGER        },
                 { "no-legend",       no_argument,       NULL, ARG_NO_LEGEND       },
@@ -2537,21 +2584,72 @@ static int parse_argv(int argc, char *argv[]) {
                 { "no-ask-password", no_argument,       NULL, ARG_NO_ASK_PASSWORD },
                 { "verify",          required_argument, NULL, ARG_VERIFY          },
                 { "force",           no_argument,       NULL, ARG_FORCE           },
-                { "dkr-index-url",   required_argument, NULL, ARG_DKR_INDEX_URL   },
                 { "format",          required_argument, NULL, ARG_FORMAT          },
                 { "uid",             required_argument, NULL, ARG_UID             },
-                { "setenv",          required_argument, NULL, ARG_SETENV          },
+                { "setenv",          required_argument, NULL, 'E'                 },
                 {}
         };
 
-        int c, r;
+        bool reorder = false;
+        int c, r, shell = -1;
 
         assert(argc >= 0);
         assert(argv);
 
-        while ((c = getopt_long(argc, argv, "hp:als:H:M:qn:o:", options, NULL)) >= 0)
+        for (;;) {
+                static const char option_string[] = "-hp:als:H:M:qn:o:";
+
+                c = getopt_long(argc, argv, option_string + reorder, options, NULL);
+                if (c < 0)
+                        break;
 
                 switch (c) {
+
+                case 1: /* getopt_long() returns 1 if "-" was the first character of the option string, and a
+                         * non-option argument was discovered. */
+
+                        assert(!reorder);
+
+                        /* We generally are fine with the fact that getopt_long() reorders the command line, and looks
+                         * for switches after the main verb. However, for "shell" we really don't want that, since we
+                         * want that switches specified after the machine name are passed to the program to execute,
+                         * and not processed by us. To make this possible, we'll first invoke getopt_long() with
+                         * reordering disabled (i.e. with the "-" prefix in the option string), looking for the first
+                         * non-option parameter. If it's the verb "shell" we remember its position and continue
+                         * processing options. In this case, as soon as we hit the next non-option argument we found
+                         * the machine name, and stop further processing. If the first non-option argument is any other
+                         * verb than "shell" we switch to normal reordering mode and continue processing arguments
+                         * normally. */
+
+                        if (shell >= 0) {
+                                /* If we already found the "shell" verb on the command line, and now found the next
+                                 * non-option argument, then this is the machine name and we should stop processing
+                                 * further arguments.  */
+                                optind --; /* don't process this argument, go one step back */
+                                goto done;
+                        }
+                        if (streq(optarg, "shell"))
+                                /* Remember the position of the "shell" verb, and continue processing normally. */
+                                shell = optind - 1;
+                        else {
+                                int saved_optind;
+
+                                /* OK, this is some other verb. In this case, turn on reordering again, and continue
+                                 * processing normally. */
+                                reorder = true;
+
+                                /* We changed the option string. getopt_long() only looks at it again if we invoke it
+                                 * at least once with a reset option index. Hence, let's reset the option index here,
+                                 * then invoke getopt_long() again (ignoring what it has to say, after all we most
+                                 * likely already processed it), and the bump the option index so that we read the
+                                 * intended argument again. */
+                                saved_optind = optind;
+                                optind = 0;
+                                (void) getopt_long(argc, argv, option_string + reorder, options, NULL);
+                                optind = saved_optind - 1; /* go one step back, process this argument again */
+                        }
+
+                        break;
 
                 case 'h':
                         return help(0, NULL, NULL);
@@ -2572,6 +2670,10 @@ static int parse_argv(int argc, char *argv[]) {
 
                 case 'a':
                         arg_all = true;
+                        break;
+
+                case ARG_VALUE:
+                        arg_value = true;
                         break;
 
                 case 'l':
@@ -2651,15 +2753,6 @@ static int parse_argv(int argc, char *argv[]) {
                         arg_force = true;
                         break;
 
-                case ARG_DKR_INDEX_URL:
-                        if (!http_url_is_valid(optarg)) {
-                                log_error("Index URL is invalid: %s", optarg);
-                                return -EINVAL;
-                        }
-
-                        arg_dkr_index_url = optarg;
-                        break;
-
                 case ARG_FORMAT:
                         if (!STR_IN_SET(optarg, "uncompressed", "xz", "gzip", "bzip2")) {
                                 log_error("Unknown format: %s", optarg);
@@ -2673,7 +2766,7 @@ static int parse_argv(int argc, char *argv[]) {
                         arg_uid = optarg;
                         break;
 
-                case ARG_SETENV:
+                case 'E':
                         if (!env_assignment_is_valid(optarg)) {
                                 log_error("Environment assignment invalid: %s", optarg);
                                 return -EINVAL;
@@ -2690,6 +2783,23 @@ static int parse_argv(int argc, char *argv[]) {
                 default:
                         assert_not_reached("Unhandled option");
                 }
+        }
+
+done:
+        if (shell >= 0) {
+                char *t;
+                int i;
+
+                /* We found the "shell" verb while processing the argument list. Since we turned off reordering of the
+                 * argument list initially let's readjust it now, and move the "shell" verb to the back. */
+
+                optind -= 1; /* place the option index where the "shell" verb will be placed */
+
+                t = argv[shell];
+                for (i = shell; i < optind; i++)
+                        argv[i] = argv[i+1];
+                argv[optind] = t;
+        }
 
         return 1;
 }
@@ -2707,6 +2817,7 @@ static int machinectl_main(int argc, char *argv[], sd_bus *bus) {
                 { "terminate",       2,        VERB_ANY, 0,            terminate_machine },
                 { "reboot",          2,        VERB_ANY, 0,            reboot_machine    },
                 { "poweroff",        2,        VERB_ANY, 0,            poweroff_machine  },
+                { "stop",            2,        VERB_ANY, 0,            poweroff_machine  }, /* Convenience alias */
                 { "kill",            2,        VERB_ANY, 0,            kill_machine      },
                 { "login",           VERB_ANY, 2,        0,            login_machine     },
                 { "shell",           VERB_ANY, VERB_ANY, 0,            shell_machine     },
@@ -2726,10 +2837,10 @@ static int machinectl_main(int argc, char *argv[], sd_bus *bus) {
                 { "export-raw",      2,        3,        0,            export_raw        },
                 { "pull-tar",        2,        3,        0,            pull_tar          },
                 { "pull-raw",        2,        3,        0,            pull_raw          },
-                { "pull-dkr",        2,        3,        0,            pull_dkr          },
                 { "list-transfers",  VERB_ANY, 1,        0,            list_transfers    },
                 { "cancel-transfer", 2,        VERB_ANY, 0,            cancel_transfer   },
                 { "set-limit",       2,        3,        0,            set_limit         },
+                { "clean",           VERB_ANY, 1,        0,            clean_images      },
                 {}
         };
 
@@ -2737,7 +2848,7 @@ static int machinectl_main(int argc, char *argv[], sd_bus *bus) {
 }
 
 int main(int argc, char*argv[]) {
-        _cleanup_bus_flush_close_unref_ sd_bus *bus = NULL;
+        sd_bus *bus = NULL;
         int r;
 
         setlocale(LC_ALL, "");
@@ -2759,6 +2870,7 @@ int main(int argc, char*argv[]) {
         r = machinectl_main(argc, argv, bus);
 
 finish:
+        sd_bus_flush_close_unref(bus);
         pager_close();
         polkit_agent_close();
 

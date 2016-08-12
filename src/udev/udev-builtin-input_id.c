@@ -31,6 +31,7 @@
 #include <linux/input.h>
 
 #include "fd-util.h"
+#include "stdio-util.h"
 #include "string-util.h"
 #include "udev.h"
 #include "util.h"
@@ -64,8 +65,8 @@ static void extract_info(struct udev_device *dev, const char *devpath, bool test
         if (xabsinfo.resolution <= 0 || yabsinfo.resolution <= 0)
                 return;
 
-        snprintf(width, sizeof(width), "%d", abs_size_mm(&xabsinfo));
-        snprintf(height, sizeof(height), "%d", abs_size_mm(&yabsinfo));
+        xsprintf(width, "%d", abs_size_mm(&xabsinfo));
+        xsprintf(height, "%d", abs_size_mm(&yabsinfo));
 
         udev_builtin_add_property(dev, test, "ID_INPUT_WIDTH_MM", width);
         udev_builtin_add_property(dev, test, "ID_INPUT_HEIGHT_MM", height);
@@ -91,7 +92,7 @@ static void get_cap_mask(struct udev_device *dev,
         if (!v)
                 v = "";
 
-        snprintf(text, sizeof(text), "%s", v);
+        xsprintf(text, "%s", v);
         log_debug("%s raw kernel attribute: %s", attr, text);
 
         memzero(bitmask, bitmask_size);
@@ -113,7 +114,8 @@ static void get_cap_mask(struct udev_device *dev,
 
         if (test) {
                 /* printf pattern with the right unsigned long number of hex chars */
-                snprintf(text, sizeof(text), "  bit %%4u: %%0%zulX\n", 2 * sizeof(unsigned long));
+                xsprintf(text, "  bit %%4u: %%0%zulX\n",
+                         2 * sizeof(unsigned long));
                 log_debug("%s decoded bit map:", attr);
                 val = bitmask_size / sizeof (unsigned long);
                 /* skip over leading zeros */
@@ -175,7 +177,7 @@ static bool test_pointers(struct udev_device *dev,
         has_mt_coordinates = test_bit(ABS_MT_POSITION_X, bitmask_abs) && test_bit(ABS_MT_POSITION_Y, bitmask_abs);
 
         /* unset has_mt_coordinates if devices claims to have all abs axis */
-        if(has_mt_coordinates && test_bit(ABS_MT_SLOT, bitmask_abs) && test_bit(ABS_MT_SLOT - 1, bitmask_abs))
+        if (has_mt_coordinates && test_bit(ABS_MT_SLOT, bitmask_abs) && test_bit(ABS_MT_SLOT - 1, bitmask_abs))
                 has_mt_coordinates = false;
         is_direct = test_bit(INPUT_PROP_DIRECT, bitmask_props);
         has_touch = test_bit(BTN_TOUCH, bitmask_key);
@@ -203,13 +205,19 @@ static bool test_pointers(struct udev_device *dev,
                         /* This path is taken by VMware's USB mouse, which has
                          * absolute axes, but no touch/pressure button. */
                         is_mouse = true;
-                else if (has_touch)
+                else if (has_touch || is_direct)
                         is_touchscreen = true;
                 else if (has_joystick_axes_or_buttons)
                         is_joystick = true;
         }
-        if (has_mt_coordinates && is_direct)
-                is_touchscreen = true;
+        if (has_mt_coordinates) {
+                if (stylus_or_pen)
+                        is_tablet = true;
+                else if (finger_but_no_pen && !is_direct)
+                        is_touchpad = true;
+                else if (has_touch || is_direct)
+                        is_touchscreen = true;
+        }
 
         if (has_rel_coordinates && has_mouse_button)
                 is_mouse = true;

@@ -1,4 +1,4 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
+#pragma once
 
 /***
   This file is part of systemd.
@@ -19,24 +19,34 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#pragma once
-
 #include <arpa/inet.h>
 
+#include "sd-bus.h"
 #include "sd-event.h"
 #include "sd-netlink.h"
-#include "sd-bus.h"
 #include "udev.h"
 
+#include "dhcp-identifier.h"
 #include "hashmap.h"
 #include "list.h"
 
-typedef struct Manager Manager;
-
-#include "networkd-network.h"
 #include "networkd-address-pool.h"
 #include "networkd-link.h"
+#include "networkd-netdev-bond.h"
+#include "networkd-netdev-bridge.h"
+#include "networkd-netdev-dummy.h"
+#include "networkd-netdev-ipvlan.h"
+#include "networkd-netdev-macvlan.h"
+#include "networkd-netdev-tunnel.h"
+#include "networkd-netdev-tuntap.h"
+#include "networkd-netdev-veth.h"
+#include "networkd-netdev-vlan.h"
+#include "networkd-netdev-vrf.h"
+#include "networkd-netdev-vxlan.h"
+#include "networkd-network.h"
 #include "networkd-util.h"
+
+extern const char* const network_dirs[];
 
 struct Manager {
         sd_netlink *rtnl;
@@ -63,11 +73,16 @@ struct Manager {
         LIST_HEAD(AddressPool, address_pools);
 
         usec_t network_dirs_ts_usec;
+
+        DUID duid;
 };
 
-extern const char* const network_dirs[];
-
-/* Manager */
+static inline const DUID* link_duid(const Link *link) {
+        if (link->network->duid.type != _DUID_TYPE_INVALID)
+                return &link->network->duid;
+        else
+                return &link->manager->duid;
+}
 
 extern const sd_bus_vtable manager_vtable[];
 
@@ -82,8 +97,10 @@ bool manager_should_reload(Manager *m);
 
 int manager_rtnl_enumerate_links(Manager *m);
 int manager_rtnl_enumerate_addresses(Manager *m);
+int manager_rtnl_enumerate_routes(Manager *m);
 
 int manager_rtnl_process_address(sd_netlink *nl, sd_netlink_message *message, void *userdata);
+int manager_rtnl_process_route(sd_netlink *nl, sd_netlink_message *message, void *userdata);
 
 int manager_send_changed(Manager *m, const char *property, ...) _sentinel_;
 void manager_dirty(Manager *m);

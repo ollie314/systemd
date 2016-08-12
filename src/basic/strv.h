@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -24,8 +22,11 @@
 #include <fnmatch.h>
 #include <stdarg.h>
 #include <stdbool.h>
+#include <stddef.h>
 
+#include "alloc-util.h"
 #include "extract-word.h"
+#include "macro.h"
 #include "util.h"
 
 char *strv_find(char **l, const char *name) _pure_;
@@ -49,6 +50,7 @@ int strv_extend_strv(char ***a, char **b, bool filter_duplicates);
 int strv_extend_strv_concat(char ***a, char **b, const char *suffix);
 int strv_extend(char ***l, const char *value);
 int strv_extendf(char ***l, const char *format, ...) _printf_(2,0);
+int strv_extend_front(char ***l, const char *value);
 int strv_push(char ***l, char *value);
 int strv_push_pair(char ***l, char *a, char *b);
 int strv_push_prepend(char ***l, char *value);
@@ -67,8 +69,10 @@ bool strv_equal(char **a, char **b);
 char **strv_new(const char *x, ...) _sentinel_;
 char **strv_new_ap(const char *x, va_list ap);
 
+#define STRV_IGNORE ((const char *) -1)
+
 static inline const char* STRV_IFNOTNULL(const char *x) {
-        return x ? x : (const char *) -1;
+        return x ? x : STRV_IGNORE;
 }
 
 static inline bool strv_isempty(char * const *l) {
@@ -166,3 +170,5 @@ char ***strv_free_free(char ***l);
 char **strv_skip(char **l, size_t n);
 
 int strv_extend_n(char ***l, const char *value, size_t n);
+
+int fputstrv(FILE *f, char **l, const char *separator, bool *space);

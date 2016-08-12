@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,6 +17,15 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
+#include <stdarg.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h>
 
 #include "alloc-util.h"
@@ -28,13 +35,19 @@
 #include "fileio.h"
 #include "fs-util.h"
 #include "hexdecoct.h"
+#include "log.h"
+#include "macro.h"
+#include "parse-util.h"
 #include "path-util.h"
 #include "random-util.h"
+#include "stdio-util.h"
 #include "string-util.h"
 #include "strv.h"
+#include "time-util.h"
 #include "umask-util.h"
 #include "utf8.h"
-#include "util.h"
+
+#define READ_FULL_BYTES_MAX (4U*1024U*1024U)
 
 int write_string_stream(FILE *f, const char *line, bool enforce_newline) {
 
@@ -76,6 +89,7 @@ static int write_string_file_atomic(const char *fn, const char *line, bool enfor
 
 int write_string_file(const char *fn, const char *line, WriteStringFileFlags flags) {
         _cleanup_fclose_ FILE *f = NULL;
+        int q, r;
 
         assert(fn);
         assert(line);
@@ -83,30 +97,58 @@ int write_string_file(const char *fn, const char *line, WriteStringFileFlags fla
         if (flags & WRITE_STRING_FILE_ATOMIC) {
                 assert(flags & WRITE_STRING_FILE_CREATE);
 
-                return write_string_file_atomic(fn, line, !(flags & WRITE_STRING_FILE_AVOID_NEWLINE));
+                r = write_string_file_atomic(fn, line, !(flags & WRITE_STRING_FILE_AVOID_NEWLINE));
+                if (r < 0)
+                        goto fail;
+
+                return r;
         }
 
         if (flags & WRITE_STRING_FILE_CREATE) {
                 f = fopen(fn, "we");
-                if (!f)
-                        return -errno;
+                if (!f) {
+                        r = -errno;
+                        goto fail;
+                }
         } else {
                 int fd;
 
                 /* We manually build our own version of fopen(..., "we") that
                  * works without O_CREAT */
                 fd = open(fn, O_WRONLY|O_CLOEXEC|O_NOCTTY);
-                if (fd < 0)
-                        return -errno;
+                if (fd < 0) {
+                        r = -errno;
+                        goto fail;
+                }
 
                 f = fdopen(fd, "we");
                 if (!f) {
+                        r = -errno;
                         safe_close(fd);
-                        return -errno;
+                        goto fail;
                 }
         }
 
-        return write_string_stream(f, line, !(flags & WRITE_STRING_FILE_AVOID_NEWLINE));
+        r = write_string_stream(f, line, !(flags & WRITE_STRING_FILE_AVOID_NEWLINE));
+        if (r < 0)
+                goto fail;
+
+        return 0;
+
+fail:
+        if (!(flags & WRITE_STRING_FILE_VERIFY_ON_FAILURE))
+                return r;
+
+        f = safe_fclose(f);
+
+        /* OK, the operation failed, but let's see if the right
+         * contents in place already. If so, eat up the error. */
+
+        q = verify_file(fn, line, !(flags & WRITE_STRING_FILE_AVOID_NEWLINE));
+        if (q <= 0)
+                return r;
+
+        return 0;
 }
 
 int read_one_line_file(const char *fn, char **line) {
@@ -123,7 +165,7 @@ int read_one_line_file(const char *fn, char **line) {
         if (!fgets(t, sizeof(t), f)) {
 
                 if (ferror(f))
-                        return errno ? -errno : -EIO;
+                        return errno > 0 ? -errno : -EIO;
 
                 t[0] = 0;
         }
@@ -137,15 +179,41 @@ int read_one_line_file(const char *fn, char **line) {
         return 0;
 }
 
-int verify_one_line_file(const char *fn, const char *line) {
-        _cleanup_free_ char *value = NULL;
-        int r;
+int verify_file(const char *fn, const char *blob, bool accept_extra_nl) {
+        _cleanup_fclose_ FILE *f = NULL;
+        _cleanup_free_ char *buf = NULL;
+        size_t l, k;
 
-        r = read_one_line_file(fn, &value);
-        if (r < 0)
-                return r;
+        assert(fn);
+        assert(blob);
 
-        return streq(value, line);
+        l = strlen(blob);
+
+        if (accept_extra_nl && endswith(blob, "\n"))
+                accept_extra_nl = false;
+
+        buf = malloc(l + accept_extra_nl + 1);
+        if (!buf)
+                return -ENOMEM;
+
+        f = fopen(fn, "re");
+        if (!f)
+                return -errno;
+
+        /* We try to read one byte more than we need, so that we know whether we hit eof */
+        errno = 0;
+        k = fread(buf, 1, l + accept_extra_nl + 1, f);
+        if (ferror(f))
+                return errno > 0 ? -errno : -EIO;
+
+        if (k != l && k != l + accept_extra_nl)
+                return 0;
+        if (memcmp(buf, blob, l) != 0)
+                return 0;
+        if (k > l && buf[l] != '\n')
+                return 0;
+
+        return 1;
 }
 
 int read_full_stream(FILE *f, char **contents, size_t *size) {
@@ -164,7 +232,7 @@ int read_full_stream(FILE *f, char **contents, size_t *size) {
         if (S_ISREG(st.st_mode)) {
 
                 /* Safety check */
-                if (st.st_size > 4*1024*1024)
+                if (st.st_size > READ_FULL_BYTES_MAX)
                         return -E2BIG;
 
                 /* Start with the right file size, but be prepared for
@@ -179,26 +247,31 @@ int read_full_stream(FILE *f, char **contents, size_t *size) {
                 char *t;
                 size_t k;
 
-                t = realloc(buf, n+1);
+                t = realloc(buf, n + 1);
                 if (!t)
                         return -ENOMEM;
 
                 buf = t;
                 k = fread(buf + l, 1, n - l, f);
+                if (k > 0)
+                        l += k;
 
-                if (k <= 0) {
-                        if (ferror(f))
-                                return -errno;
+                if (ferror(f))
+                        return -errno;
 
+                if (feof(f))
                         break;
-                }
 
-                l += k;
-                n *= 2;
+                /* We aren't expecting fread() to return a short read outside
+                 * of (error && eof), assert buffer is full and enlarge buffer.
+                 */
+                assert(l == n);
 
                 /* Safety check */
-                if (n > 4*1024*1024)
+                if (n >= READ_FULL_BYTES_MAX)
                         return -E2BIG;
+
+                n = MIN(n * 2, READ_FULL_BYTES_MAX);
         }
 
         buf[l] = 0;
@@ -286,7 +359,7 @@ static int parse_env_file_internal(
                 case KEY:
                         if (strchr(newline, c)) {
                                 state = PRE_KEY;
-                                line ++;
+                                line++;
                                 n_key = 0;
                         } else if (c == '=') {
                                 state = PRE_VALUE;
@@ -310,7 +383,7 @@ static int parse_env_file_internal(
                 case PRE_VALUE:
                         if (strchr(newline, c)) {
                                 state = PRE_KEY;
-                                line ++;
+                                line++;
                                 key[n_key] = 0;
 
                                 if (value)
@@ -350,7 +423,7 @@ static int parse_env_file_internal(
                 case VALUE:
                         if (strchr(newline, c)) {
                                 state = PRE_KEY;
-                                line ++;
+                                line++;
 
                                 key[n_key] = 0;
 
@@ -469,7 +542,7 @@ static int parse_env_file_internal(
                                 state = COMMENT_ESCAPE;
                         else if (strchr(newline, c)) {
                                 state = PRE_KEY;
-                                line ++;
+                                line++;
                         }
                         break;
 
@@ -522,7 +595,7 @@ static int parse_env_file_push(
         va_list aq, *ap = userdata;
 
         if (!utf8_is_valid(key)) {
-                _cleanup_free_ char *p;
+                _cleanup_free_ char *p = NULL;
 
                 p = utf8_escape_invalid(key);
                 log_error("%s:%u: invalid UTF-8 in key '%s', ignoring.", strna(filename), line, p);
@@ -530,7 +603,7 @@ static int parse_env_file_push(
         }
 
         if (value && !utf8_is_valid(value)) {
-                _cleanup_free_ char *p;
+                _cleanup_free_ char *p = NULL;
 
                 p = utf8_escape_invalid(value);
                 log_error("%s:%u: invalid UTF-8 value for key %s: '%s', ignoring.", strna(filename), line, key, p);
@@ -842,7 +915,7 @@ int get_proc_field(const char *filename, const char *pattern, const char *termin
                 /* Back off one char if there's nothing but whitespace
                    and zeros */
                 if (!*t || isspace(*t))
-                        t --;
+                        t--;
         }
 
         len = strcspn(t, terminator);
@@ -996,14 +1069,14 @@ int fflush_and_check(FILE *f) {
         fflush(f);
 
         if (ferror(f))
-                return errno ? -errno : -EIO;
+                return errno > 0 ? -errno : -EIO;
 
         return 0;
 }
 
-/* This is much like like mkostemp() but is subject to umask(). */
+/* This is much like mkostemp() but is subject to umask(). */
 int mkostemp_safe(char *pattern, int flags) {
-        _cleanup_umask_ mode_t u;
+        _cleanup_umask_ mode_t u = 0;
         int fd;
 
         assert(pattern);
@@ -1014,30 +1087,6 @@ int mkostemp_safe(char *pattern, int flags) {
         if (fd < 0)
                 return -errno;
 
-        return fd;
-}
-
-int open_tmpfile(const char *path, int flags) {
-        char *p;
-        int fd;
-
-        assert(path);
-
-#ifdef O_TMPFILE
-        /* Try O_TMPFILE first, if it is supported */
-        fd = open(path, flags|O_TMPFILE|O_EXCL, S_IRUSR|S_IWUSR);
-        if (fd >= 0)
-                return fd;
-#endif
-
-        /* Fall back to unguessable name + unlinking */
-        p = strjoina(path, "/systemd-tmp-XXXXXX");
-
-        fd = mkostemp_safe(p, flags);
-        if (fd < 0)
-                return fd;
-
-        unlink(p);
         return fd;
 }
 
@@ -1119,8 +1168,8 @@ int tempfn_random_child(const char *p, const char *extra, char **ret) {
         char *t, *x;
         uint64_t u;
         unsigned i;
+        int r;
 
-        assert(p);
         assert(ret);
 
         /* Turns this:
@@ -1128,6 +1177,12 @@ int tempfn_random_child(const char *p, const char *extra, char **ret) {
          * Into this:
          *         /foo/bar/waldo/.#<extra>3c2b6219aa75d7d0
          */
+
+        if (!p) {
+                r = tmp_dir(&p);
+                if (r < 0)
+                        return r;
+        }
 
         if (!extra)
                 extra = "";
@@ -1147,5 +1202,213 @@ int tempfn_random_child(const char *p, const char *extra, char **ret) {
         *x = 0;
 
         *ret = path_kill_slashes(t);
+        return 0;
+}
+
+int write_timestamp_file_atomic(const char *fn, usec_t n) {
+        char ln[DECIMAL_STR_MAX(n)+2];
+
+        /* Creates a "timestamp" file, that contains nothing but a
+         * usec_t timestamp, formatted in ASCII. */
+
+        if (n <= 0 || n >= USEC_INFINITY)
+                return -ERANGE;
+
+        xsprintf(ln, USEC_FMT "\n", n);
+
+        return write_string_file(fn, ln, WRITE_STRING_FILE_CREATE|WRITE_STRING_FILE_ATOMIC);
+}
+
+int read_timestamp_file(const char *fn, usec_t *ret) {
+        _cleanup_free_ char *ln = NULL;
+        uint64_t t;
+        int r;
+
+        r = read_one_line_file(fn, &ln);
+        if (r < 0)
+                return r;
+
+        r = safe_atou64(ln, &t);
+        if (r < 0)
+                return r;
+
+        if (t <= 0 || t >= (uint64_t) USEC_INFINITY)
+                return -ERANGE;
+
+        *ret = (usec_t) t;
+        return 0;
+}
+
+int fputs_with_space(FILE *f, const char *s, const char *separator, bool *space) {
+        int r;
+
+        assert(s);
+
+        /* Outputs the specified string with fputs(), but optionally prefixes it with a separator. The *space parameter
+         * when specified shall initially point to a boolean variable initialized to false. It is set to true after the
+         * first invocation. This call is supposed to be use in loops, where a separator shall be inserted between each
+         * element, but not before the first one. */
+
+        if (!f)
+                f = stdout;
+
+        if (space) {
+                if (!separator)
+                        separator = " ";
+
+                if (*space) {
+                        r = fputs(separator, f);
+                        if (r < 0)
+                                return r;
+                }
+
+                *space = true;
+        }
+
+        return fputs(s, f);
+}
+
+int open_tmpfile_unlinkable(const char *directory, int flags) {
+        char *p;
+        int fd, r;
+
+        if (!directory) {
+                r = tmp_dir(&directory);
+                if (r < 0)
+                        return r;
+        }
+
+        /* Returns an unlinked temporary file that cannot be linked into the file system anymore */
+
+#ifdef O_TMPFILE
+        /* Try O_TMPFILE first, if it is supported */
+        fd = open(directory, flags|O_TMPFILE|O_EXCL, S_IRUSR|S_IWUSR);
+        if (fd >= 0)
+                return fd;
+#endif
+
+        /* Fall back to unguessable name + unlinking */
+        p = strjoina(directory, "/systemd-tmp-XXXXXX");
+
+        fd = mkostemp_safe(p, flags);
+        if (fd < 0)
+                return fd;
+
+        (void) unlink(p);
+
+        return fd;
+}
+
+int open_tmpfile_linkable(const char *target, int flags, char **ret_path) {
+        _cleanup_free_ char *tmp = NULL;
+        int r, fd;
+
+        assert(target);
+        assert(ret_path);
+
+        /* Don't allow O_EXCL, as that has a special meaning for O_TMPFILE */
+        assert((flags & O_EXCL) == 0);
+
+        /* Creates a temporary file, that shall be renamed to "target" later. If possible, this uses O_TMPFILE – in
+         * which case "ret_path" will be returned as NULL. If not possible a the tempoary path name used is returned in
+         * "ret_path". Use link_tmpfile() below to rename the result after writing the file in full. */
+
+#ifdef O_TMPFILE
+        {
+                _cleanup_free_ char *dn = NULL;
+
+                dn = dirname_malloc(target);
+                if (!dn)
+                        return -ENOMEM;
+
+                fd = open(dn, O_TMPFILE|flags, 0640);
+                if (fd >= 0) {
+                        *ret_path = NULL;
+                        return fd;
+                }
+
+                log_debug_errno(errno, "Failed to use O_TMPFILE on %s: %m", dn);
+        }
+#endif
+
+        r = tempfn_random(target, NULL, &tmp);
+        if (r < 0)
+                return r;
+
+        fd = open(tmp, O_CREAT|O_EXCL|O_NOFOLLOW|O_NOCTTY|flags, 0640);
+        if (fd < 0)
+                return -errno;
+
+        *ret_path = tmp;
+        tmp = NULL;
+
+        return fd;
+}
+
+int link_tmpfile(int fd, const char *path, const char *target) {
+
+        assert(fd >= 0);
+        assert(target);
+
+        /* Moves a temporary file created with open_tmpfile() above into its final place. if "path" is NULL an fd
+         * created with O_TMPFILE is assumed, and linkat() is used. Otherwise it is assumed O_TMPFILE is not supported
+         * on the directory, and renameat2() is used instead.
+         *
+         * Note that in both cases we will not replace existing files. This is because linkat() does not support this
+         * operation currently (renameat2() does), and there is no nice way to emulate this. */
+
+        if (path) {
+                if (rename_noreplace(AT_FDCWD, path, AT_FDCWD, target) < 0)
+                        return -errno;
+        } else {
+                char proc_fd_path[strlen("/proc/self/fd/") + DECIMAL_STR_MAX(fd) + 1];
+
+                xsprintf(proc_fd_path, "/proc/self/fd/%i", fd);
+
+                if (linkat(AT_FDCWD, proc_fd_path, AT_FDCWD, target, AT_SYMLINK_FOLLOW) < 0)
+                        return -errno;
+        }
+
+        return 0;
+}
+
+int read_nul_string(FILE *f, char **ret) {
+        _cleanup_free_ char *x = NULL;
+        size_t allocated = 0, n = 0;
+
+        assert(f);
+        assert(ret);
+
+        /* Reads a NUL-terminated string from the specified file. */
+
+        for (;;) {
+                int c;
+
+                if (!GREEDY_REALLOC(x, allocated, n+2))
+                        return -ENOMEM;
+
+                c = fgetc(f);
+                if (c == 0) /* Terminate at NUL byte */
+                        break;
+                if (c == EOF) {
+                        if (ferror(f))
+                                return -errno;
+                        break; /* Terminate at EOF */
+                }
+
+                x[n++] = (char) c;
+        }
+
+        if (x)
+                x[n] = 0;
+        else {
+                x = new0(char, 1);
+                if (!x)
+                        return -ENOMEM;
+        }
+
+        *ret = x;
+        x = NULL;
+
         return 0;
 }

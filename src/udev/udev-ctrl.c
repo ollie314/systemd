@@ -10,13 +10,13 @@
  */
 
 #include <errno.h>
-#include <stdlib.h>
-#include <stddef.h>
-#include <string.h>
-#include <unistd.h>
 #include <poll.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/socket.h>
 #include <sys/un.h>
+#include <unistd.h>
 
 #include "alloc-util.h"
 #include "fd-util.h"
@@ -105,7 +105,7 @@ struct udev_ctrl *udev_ctrl_new_from_fd(struct udev *udev, int fd) {
 
         uctrl->saddr.un.sun_family = AF_LOCAL;
         strscpy(uctrl->saddr.un.sun_path, sizeof(uctrl->saddr.un.sun_path), "/run/udev/control");
-        uctrl->addrlen = offsetof(struct sockaddr_un, sun_path) + strlen(uctrl->saddr.un.sun_path);
+        uctrl->addrlen = SOCKADDR_UN_LEN(uctrl->saddr.un);
         return uctrl;
 }
 

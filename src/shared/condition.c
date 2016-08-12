@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -20,9 +18,13 @@
 ***/
 
 #include <errno.h>
+#include <fcntl.h>
 #include <fnmatch.h>
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "sd-id128.h"
@@ -38,6 +40,8 @@
 #include "glob-util.h"
 #include "hostname-util.h"
 #include "ima-util.h"
+#include "list.h"
+#include "macro.h"
 #include "mount-util.h"
 #include "parse-util.h"
 #include "path-util.h"
@@ -178,10 +182,11 @@ static int condition_test_architecture(Condition *c) {
 
         if (streq(c->parameter, "native"))
                 b = native_architecture();
-        else
+        else {
                 b = architecture_from_string(c->parameter);
-        if (b < 0)
-                return b;
+                if (b < 0) /* unknown architecture? Then it's definitely not ours */
+                        return false;
+        }
 
         return a == b;
 }
@@ -231,7 +236,7 @@ static int condition_test_security(Condition *c) {
         assert(c->type == CONDITION_SECURITY);
 
         if (streq(c->parameter, "selinux"))
-                return mac_selinux_use();
+                return mac_selinux_have();
         if (streq(c->parameter, "smack"))
                 return mac_smack_use();
         if (streq(c->parameter, "apparmor"))
@@ -291,7 +296,7 @@ static int condition_test_needs_update(Condition *c) {
                 return false;
 
         /* Any other failure means we should allow the condition to be true,
-         * so that we rather invoke too many update tools then too
+         * so that we rather invoke too many update tools than too
          * few. */
 
         if (!path_is_absolute(c->parameter))

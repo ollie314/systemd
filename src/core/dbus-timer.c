@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -158,7 +156,7 @@ static int property_get_next_elapse_monotonic(
                 usec_t a, b;
 
                 a = now(CLOCK_MONOTONIC);
-                b = now(CLOCK_BOOTTIME);
+                b = now(clock_boottime_or_monotonic());
 
                 if (t->next_elapse_monotonic_or_boottime + a > b)
                         x = t->next_elapse_monotonic_or_boottime + a - b;
@@ -180,8 +178,10 @@ const sd_bus_vtable bus_timer_vtable[] = {
         BUS_PROPERTY_DUAL_TIMESTAMP("LastTriggerUSec", offsetof(Timer, last_trigger), SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
         SD_BUS_PROPERTY("Result", "s", property_get_result, offsetof(Timer, result), SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
         SD_BUS_PROPERTY("AccuracyUSec", "t", bus_property_get_usec, offsetof(Timer, accuracy_usec), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("RandomizedDelayUSec", "t", bus_property_get_usec, offsetof(Timer, random_usec), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("Persistent", "b", bus_property_get_bool, offsetof(Timer, persistent), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("WakeSystem", "b", bus_property_get_bool, offsetof(Timer, wake_system), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("RemainAfterElapse", "b", bus_property_get_bool, offsetof(Timer, remain_after_elapse), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_VTABLE_END
 };
 
@@ -220,7 +220,7 @@ static int bus_timer_set_transient_property(
                 if (mode != UNIT_CHECK) {
                         char time[FORMAT_TIMESPAN_MAX];
 
-                        unit_write_drop_in_private_format(UNIT(t), mode, name, "%s=%s\n", name, format_timespan(time, sizeof(time), u, USEC_PER_MSEC));
+                        unit_write_drop_in_private_format(UNIT(t), mode, name, "%s=%s", name, format_timespan(time, sizeof(time), u, USEC_PER_MSEC));
 
                         v = new0(TimerValue, 1);
                         if (!v)
@@ -249,7 +249,7 @@ static int bus_timer_set_transient_property(
                         if (r < 0)
                                 return r;
 
-                        unit_write_drop_in_private_format(UNIT(t), mode, name, "%s=%s\n", name, str);
+                        unit_write_drop_in_private_format(UNIT(t), mode, name, "%s=%s", name, str);
 
                         v = new0(TimerValue, 1);
                         if (!v) {
@@ -265,8 +265,24 @@ static int bus_timer_set_transient_property(
 
                 return 1;
 
-        } else if (streq(name, "AccuracySec")) {
+        } else if (STR_IN_SET(name, "AccuracyUSec", "AccuracySec")) {
+                usec_t u = 0;
 
+                if (streq(name, "AccuracySec"))
+                        log_notice("Client is using obsolete AccuracySec= transient property, please use AccuracyUSec= instead.");
+
+                r = sd_bus_message_read(message, "t", &u);
+                if (r < 0)
+                        return r;
+
+                if (mode != UNIT_CHECK) {
+                        t->accuracy_usec = u;
+                        unit_write_drop_in_private_format(UNIT(t), mode, name, "AccuracySec=" USEC_FMT "us", u);
+                }
+
+                return 1;
+
+        } else if (streq(name, "RandomizedDelayUSec")) {
                 usec_t u = 0;
 
                 r = sd_bus_message_read(message, "t", &u);
@@ -274,16 +290,13 @@ static int bus_timer_set_transient_property(
                         return r;
 
                 if (mode != UNIT_CHECK) {
-                        char time[FORMAT_TIMESPAN_MAX];
-
-                        t->accuracy_usec = u;
-                        unit_write_drop_in_private_format(UNIT(t), mode, name, "%s=%s\n", name, format_timespan(time, sizeof(time), u, USEC_PER_MSEC));
+                        t->random_usec = u;
+                        unit_write_drop_in_private_format(UNIT(t), mode, name, "RandomizedDelaySec=" USEC_FMT "us", u);
                 }
 
                 return 1;
 
         } else if (streq(name, "WakeSystem")) {
-
                 int b;
 
                 r = sd_bus_message_read(message, "b", &b);
@@ -292,11 +305,24 @@ static int bus_timer_set_transient_property(
 
                 if (mode != UNIT_CHECK) {
                         t->wake_system = b;
-                        unit_write_drop_in_private_format(UNIT(t), mode, name, "%s=%s\n", name, yes_no(t->wake_system));
+                        unit_write_drop_in_private_format(UNIT(t), mode, name, "%s=%s", name, yes_no(b));
                 }
 
                 return 1;
 
+        } else if (streq(name, "RemainAfterElapse")) {
+                int b;
+
+                r = sd_bus_message_read(message, "b", &b);
+                if (r < 0)
+                        return r;
+
+                if (mode != UNIT_CHECK) {
+                        t->remain_after_elapse = b;
+                        unit_write_drop_in_private_format(UNIT(t), mode, name, "%s=%s", name, yes_no(b));
+                }
+
+                return 1;
         }
 
         return 0;

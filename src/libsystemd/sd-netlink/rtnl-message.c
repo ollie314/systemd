@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -84,6 +82,49 @@ int sd_rtnl_message_route_set_scope(sd_netlink_message *m, unsigned char scope) 
         return 0;
 }
 
+int sd_rtnl_message_route_set_flags(sd_netlink_message *m, unsigned flags) {
+        struct rtmsg *rtm;
+
+        assert_return(m, -EINVAL);
+        assert_return(m->hdr, -EINVAL);
+        assert_return(rtnl_message_type_is_route(m->hdr->nlmsg_type), -EINVAL);
+
+        rtm = NLMSG_DATA(m->hdr);
+
+        rtm->rtm_flags = flags;
+
+        return 0;
+}
+
+int sd_rtnl_message_route_get_flags(sd_netlink_message *m, unsigned *flags) {
+        struct rtmsg *rtm;
+
+        assert_return(m, -EINVAL);
+        assert_return(m->hdr, -EINVAL);
+        assert_return(rtnl_message_type_is_route(m->hdr->nlmsg_type), -EINVAL);
+        assert_return(flags, -EINVAL);
+
+        rtm = NLMSG_DATA(m->hdr);
+
+        *flags = rtm->rtm_flags;
+
+        return 0;
+}
+
+int sd_rtnl_message_route_set_table(sd_netlink_message *m, unsigned char table) {
+        struct rtmsg *rtm;
+
+        assert_return(m, -EINVAL);
+        assert_return(m->hdr, -EINVAL);
+        assert_return(rtnl_message_type_is_route(m->hdr->nlmsg_type), -EINVAL);
+
+        rtm = NLMSG_DATA(m->hdr);
+
+        rtm->rtm_table = table;
+
+        return 0;
+}
+
 int sd_rtnl_message_route_get_family(sd_netlink_message *m, int *family) {
         struct rtmsg *rtm;
 
@@ -95,6 +136,20 @@ int sd_rtnl_message_route_get_family(sd_netlink_message *m, int *family) {
         rtm = NLMSG_DATA(m->hdr);
 
         *family = rtm->rtm_family;
+
+        return 0;
+}
+
+int sd_rtnl_message_route_set_family(sd_netlink_message *m, int family) {
+        struct rtmsg *rtm;
+
+        assert_return(m, -EINVAL);
+        assert_return(m->hdr, -EINVAL);
+        assert_return(rtnl_message_type_is_route(m->hdr->nlmsg_type), -EINVAL);
+
+        rtm = NLMSG_DATA(m->hdr);
+
+        rtm->rtm_family = family;
 
         return 0;
 }
@@ -375,7 +430,6 @@ int sd_rtnl_message_new_link(sd_netlink *rtnl, sd_netlink_message **ret,
         int r;
 
         assert_return(rtnl_message_type_is_link(nlmsg_type), -EINVAL);
-        assert_return(nlmsg_type != RTM_DELLINK || index > 0, -EINVAL);
         assert_return(ret, -EINVAL);
 
         r = message_new(rtnl, ret, nlmsg_type);
@@ -589,7 +643,7 @@ int sd_rtnl_message_link_get_flags(sd_netlink_message *m, unsigned *flags) {
         return 0;
 }
 
-int sd_rtnl_message_link_get_type(sd_netlink_message *m, unsigned *type) {
+int sd_rtnl_message_link_get_type(sd_netlink_message *m, unsigned short *type) {
         struct ifinfomsg *ifi;
 
         assert_return(m, -EINVAL);

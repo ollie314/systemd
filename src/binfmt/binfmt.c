@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -29,6 +27,7 @@
 
 #include "alloc-util.h"
 #include "conf-files.h"
+#include "def.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "log.h"
@@ -36,7 +35,7 @@
 #include "strv.h"
 #include "util.h"
 
-static const char conf_file_dirs[] = CONF_DIRS_NULSTR("binfmt");
+static const char conf_file_dirs[] = CONF_PATHS_NULSTR("binfmt.d");
 
 static int delete_rule(const char *rule) {
         _cleanup_free_ char *x = NULL, *fn = NULL;
@@ -93,8 +92,7 @@ static int apply_file(const char *path, bool ignore_enoent) {
                         if (feof(f))
                                 break;
 
-                        log_error_errno(errno, "Failed to read file '%s', ignoring: %m", path);
-                        return -errno;
+                        return log_error_errno(errno, "Failed to read file '%s', ignoring: %m", path);
                 }
 
                 p = strstrip(l);

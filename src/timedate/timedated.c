@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -33,7 +31,6 @@
 #include "bus-util.h"
 #include "clock-util.h"
 #include "def.h"
-#include "event-util.h"
 #include "fileio-label.h"
 #include "fs-util.h"
 #include "path-util.h"
@@ -81,7 +78,7 @@ static int context_read_data(Context *c) {
         c->zone = t;
         t = NULL;
 
-        c->local_rtc = clock_is_localtime() > 0;
+        c->local_rtc = clock_is_localtime(NULL) > 0;
 
         return 0;
 }
@@ -128,30 +125,44 @@ static int context_write_data_local_rtc(Context *c) {
                 if (!w)
                         return -ENOMEM;
         } else {
-                char *p, *e;
+                char *p;
+                const char *e = "\n"; /* default if there is less than 3 lines */
+                const char *prepend = "";
                 size_t a, b;
 
-                p = strchr(s, '\n');
-                if (!p)
-                        return -EIO;
-
-                p = strchr(p+1, '\n');
-                if (!p)
-                        return -EIO;
-
-                p++;
-                e = strchr(p, '\n');
-                if (!e)
-                        return -EIO;
+                p = strchrnul(s, '\n');
+                if (*p == '\0')
+                        /* only one line, no \n terminator */
+                        prepend = "\n0\n";
+                else if (p[1] == '\0') {
+                        /* only one line, with \n terminator */
+                        ++p;
+                        prepend = "0\n";
+                } else {
+                        p = strchr(p+1, '\n');
+                        if (!p) {
+                                /* only two lines, no \n terminator */
+                                prepend = "\n";
+                                p = s + strlen(s);
+                        } else {
+                                char *end;
+                                /* third line might have a \n terminator or not */
+                                p++;
+                                end = strchr(p, '\n');
+                                /* if we actually have a fourth line, use that as suffix "e", otherwise the default \n */
+                                if (end)
+                                        e = end;
+                        }
+                }
 
                 a = p - s;
                 b = strlen(e);
 
-                w = new(char, a + (c->local_rtc ? 5 : 3) + b + 1);
+                w = new(char, a + (c->local_rtc ? 5 : 3) + strlen(prepend) + b + 1);
                 if (!w)
                         return -ENOMEM;
 
-                *(char*) mempcpy(stpcpy(mempcpy(w, s, a), c->local_rtc ? "LOCAL" : "UTC"), e, b) = 0;
+                *(char*) mempcpy(stpcpy(stpcpy(mempcpy(w, s, a), prepend), c->local_rtc ? "LOCAL" : "UTC"), e, b) = 0;
 
                 if (streq(w, NULL_ADJTIME_UTC)) {
                         if (unlink("/etc/adjtime") < 0)
@@ -162,13 +173,13 @@ static int context_write_data_local_rtc(Context *c) {
                 }
         }
 
-        mac_selinux_init("/etc");
+        mac_selinux_init();
         return write_string_file_atomic_label("/etc/adjtime", w);
 }
 
 static int context_read_ntp(Context *c, sd_bus *bus) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         const char *s;
         int r;
 
@@ -626,7 +637,7 @@ static int method_set_ntp(sd_bus_message *m, void *userdata, sd_bus_error *error
                 return r;
 
         c->use_ntp = enabled;
-        log_info("Set NTP to %s", enabled ? "enabled" : "disabled");
+        log_info("Set NTP to %sd", enable_disable(enabled));
 
         (void) sd_bus_emit_properties_changed(sd_bus_message_get_bus(m), "/org/freedesktop/timedate1", "org.freedesktop.timedate1", "NTP", NULL);
 
@@ -650,7 +661,7 @@ static const sd_bus_vtable timedate_vtable[] = {
 };
 
 static int connect_bus(Context *c, sd_event *event, sd_bus **_bus) {
-        _cleanup_bus_flush_close_unref_ sd_bus *bus = NULL;
+        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         int r;
 
         assert(c);
@@ -681,8 +692,8 @@ static int connect_bus(Context *c, sd_event *event, sd_bus **_bus) {
 
 int main(int argc, char *argv[]) {
         Context context = {};
-        _cleanup_event_unref_ sd_event *event = NULL;
-        _cleanup_bus_flush_close_unref_ sd_bus *bus = NULL;
+        _cleanup_(sd_event_unrefp) sd_event *event = NULL;
+        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         int r;
 
         log_set_target(LOG_TARGET_AUTO);

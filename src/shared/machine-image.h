@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -21,9 +19,15 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include "time-util.h"
-#include "lockfile-util.h"
+#include <stdbool.h>
+#include <stdint.h>
+
 #include "hashmap.h"
+#include "lockfile-util.h"
+#include "macro.h"
+#include "path-util.h"
+#include "string-util.h"
+#include "time-util.h"
 
 typedef enum ImageType {
         IMAGE_DIRECTORY,
@@ -73,3 +77,27 @@ int image_path_lock(const char *path, int operation, LockFile *global, LockFile 
 int image_name_lock(const char *name, int operation, LockFile *ret);
 
 int image_set_limit(Image *i, uint64_t referenced_max);
+
+static inline bool IMAGE_IS_HIDDEN(const struct Image *i) {
+        assert(i);
+
+        return i->name && i->name[0] == '.';
+}
+
+static inline bool IMAGE_IS_VENDOR(const struct Image *i) {
+        assert(i);
+
+        return i->path && path_startswith(i->path, "/usr");
+}
+
+static inline bool IMAGE_IS_HOST(const struct Image *i) {
+        assert(i);
+
+        if (i->name && streq(i->name, ".host"))
+                return true;
+
+        if (i->path && path_equal(i->path, "/"))
+                return true;
+
+        return false;
+}

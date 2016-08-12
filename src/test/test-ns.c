@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -22,8 +20,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 
-#include "namespace.h"
 #include "log.h"
+#include "namespace.h"
 
 int main(int argc, char *argv[]) {
         const char * const writable[] = {
@@ -70,7 +68,6 @@ int main(int argc, char *argv[]) {
                             (char **) inaccessible,
                             tmp_dir,
                             var_tmp_dir,
-                            NULL,
                             true,
                             PROTECT_HOME_NO,
                             PROTECT_SYSTEM_NO,

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,16 +17,26 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include <errno.h>
+#include <limits.h>
 #include <poll.h>
+#include <stdio.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "io-util.h"
+#include "time-util.h"
 
 int flush_fd(int fd) {
         struct pollfd pollfd = {
                 .fd = fd,
                 .events = POLLIN,
         };
+
+        /* Read from the specified file descriptor, until POLLIN is not set anymore, throwing away everything
+         * read. Note that some file descriptors (notable IP sockets) will trigger POLLIN even when no data can be read
+         * (due to IP packet checksum mismatches), hence this function is only safe to be non-blocking if the fd used
+         * was set to non-blocking too. */
 
         for (;;) {
                 char buf[LINE_MAX];
@@ -246,7 +254,7 @@ ssize_t sparse_write(int fd, const void *p, size_t sz, size_t run_length) {
                 } else if (n > 0)
                         q += n;
                 else
-                        q ++;
+                        q++;
         }
 
         if (q > w) {

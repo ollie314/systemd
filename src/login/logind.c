@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -31,15 +29,48 @@
 #include "bus-error.h"
 #include "bus-util.h"
 #include "conf-parser.h"
+#include "def.h"
 #include "dirent-util.h"
 #include "fd-util.h"
 #include "formats-util.h"
 #include "logind.h"
+#include "selinux-util.h"
 #include "signal-util.h"
 #include "strv.h"
 #include "udev-util.h"
 
 static void manager_free(Manager *m);
+
+static void manager_reset_config(Manager *m) {
+        m->n_autovts = 6;
+        m->reserve_vt = 6;
+        m->remove_ipc = true;
+        m->inhibit_delay_max = 5 * USEC_PER_SEC;
+        m->handle_power_key = HANDLE_POWEROFF;
+        m->handle_suspend_key = HANDLE_SUSPEND;
+        m->handle_hibernate_key = HANDLE_HIBERNATE;
+        m->handle_lid_switch = HANDLE_SUSPEND;
+        m->handle_lid_switch_docked = HANDLE_IGNORE;
+        m->power_key_ignore_inhibited = false;
+        m->suspend_key_ignore_inhibited = false;
+        m->hibernate_key_ignore_inhibited = false;
+        m->lid_switch_ignore_inhibited = true;
+
+        m->holdoff_timeout_usec = 30 * USEC_PER_SEC;
+
+        m->idle_action_usec = 30 * USEC_PER_MINUTE;
+        m->idle_action = HANDLE_IGNORE;
+
+        m->runtime_dir_size = physical_memory_scale(10U, 100U); /* 10% */
+        m->user_tasks_max = system_tasks_max_scale(33U, 100U); /* 33% */
+        m->sessions_max = 8192;
+        m->inhibitors_max = 8192;
+
+        m->kill_user_processes = KILL_USER_PROCESSES;
+
+        m->kill_only_users = strv_free(m->kill_only_users);
+        m->kill_exclude_users = strv_free(m->kill_exclude_users);
+}
 
 static Manager *manager_new(void) {
         Manager *m;
@@ -52,23 +83,7 @@ static Manager *manager_new(void) {
         m->console_active_fd = -1;
         m->reserve_vt_fd = -1;
 
-        m->n_autovts = 6;
-        m->reserve_vt = 6;
-        m->remove_ipc = true;
-        m->inhibit_delay_max = 5 * USEC_PER_SEC;
-        m->handle_power_key = HANDLE_POWEROFF;
-        m->handle_suspend_key = HANDLE_SUSPEND;
-        m->handle_hibernate_key = HANDLE_HIBERNATE;
-        m->handle_lid_switch = HANDLE_SUSPEND;
-        m->handle_lid_switch_docked = HANDLE_IGNORE;
-        m->lid_switch_ignore_inhibited = true;
-        m->holdoff_timeout_usec = 30 * USEC_PER_SEC;
-
-        m->idle_action_usec = 30 * USEC_PER_MINUTE;
-        m->idle_action = HANDLE_IGNORE;
         m->idle_action_not_before_usec = now(CLOCK_MONOTONIC);
-
-        m->runtime_dir_size = PAGE_ALIGN((size_t) (physical_memory() / 10)); /* 10% */
 
         m->devices = hashmap_new(&string_hash_ops);
         m->seats = hashmap_new(&string_hash_ops);
@@ -83,10 +98,6 @@ static Manager *manager_new(void) {
         if (!m->devices || !m->seats || !m->sessions || !m->users || !m->inhibitors || !m->buttons || !m->user_units || !m->session_units)
                 goto fail;
 
-        m->kill_exclude_users = strv_new("root", NULL);
-        if (!m->kill_exclude_users)
-                goto fail;
-
         m->udev = udev_new();
         if (!m->udev)
                 goto fail;
@@ -96,6 +107,8 @@ static Manager *manager_new(void) {
                 goto fail;
 
         sd_event_set_watchdog(m->event, true);
+
+        manager_reset_config(m);
 
         return m;
 
@@ -296,8 +309,7 @@ static int manager_enumerate_seats(Manager *m) {
                 if (errno == ENOENT)
                         return 0;
 
-                log_error_errno(errno, "Failed to open /run/systemd/seats: %m");
-                return -errno;
+                return log_error_errno(errno, "Failed to open /run/systemd/seats: %m");
         }
 
         FOREACH_DIRENT(de, d, return -errno) {
@@ -333,8 +345,7 @@ static int manager_enumerate_linger_users(Manager *m) {
                 if (errno == ENOENT)
                         return 0;
 
-                log_error_errno(errno, "Failed to open /var/lib/systemd/linger/: %m");
-                return -errno;
+                return log_error_errno(errno, "Failed to open /var/lib/systemd/linger/: %m");
         }
 
         FOREACH_DIRENT(de, d, return -errno) {
@@ -369,8 +380,7 @@ static int manager_enumerate_users(Manager *m) {
                 if (errno == ENOENT)
                         return 0;
 
-                log_error_errno(errno, "Failed to open /run/systemd/users: %m");
-                return -errno;
+                return log_error_errno(errno, "Failed to open /run/systemd/users: %m");
         }
 
         FOREACH_DIRENT(de, d, return -errno) {
@@ -410,8 +420,7 @@ static int manager_enumerate_sessions(Manager *m) {
                 if (errno == ENOENT)
                         return 0;
 
-                log_error_errno(errno, "Failed to open /run/systemd/sessions: %m");
-                return -errno;
+                return log_error_errno(errno, "Failed to open /run/systemd/sessions: %m");
         }
 
         FOREACH_DIRENT(de, d, return -errno) {
@@ -457,8 +466,7 @@ static int manager_enumerate_inhibitors(Manager *m) {
                 if (errno == ENOENT)
                         return 0;
 
-                log_error_errno(errno, "Failed to open /run/systemd/inhibit: %m");
-                return -errno;
+                return log_error_errno(errno, "Failed to open /run/systemd/inhibit: %m");
         }
 
         FOREACH_DIRENT(de, d, return -errno) {
@@ -582,7 +590,7 @@ static int manager_reserve_vt(Manager *m) {
 }
 
 static int manager_connect_bus(Manager *m) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
         assert(m);
@@ -680,7 +688,7 @@ static int manager_connect_bus(Manager *m) {
         if (r < 0)
                 return log_error_errno(r, "Failed to register name: %m");
 
-        r = sd_bus_attach_event(m->bus, m->event, 0);
+        r = sd_bus_attach_event(m->bus, m->event, SD_EVENT_PRIORITY_NORMAL);
         if (r < 0)
                 return log_error_errno(r, "Failed to attach bus to event loop: %m");
 
@@ -748,8 +756,7 @@ static int manager_connect_console(Manager *m) {
                 if (errno == ENOENT)
                         return 0;
 
-                log_error_errno(errno, "Failed to open /sys/class/tty/tty0/active: %m");
-                return -errno;
+                return log_error_errno(errno, "Failed to open /sys/class/tty/tty0/active: %m");
         }
 
         r = sd_event_add_io(m->event, &m->console_active_event_source, m->console_active_fd, 0, manager_dispatch_console, m);
@@ -991,6 +998,30 @@ static int manager_dispatch_idle_action(sd_event_source *s, uint64_t t, void *us
         return 0;
 }
 
+static int manager_parse_config_file(Manager *m) {
+        assert(m);
+
+        return config_parse_many(PKGSYSCONFDIR "/logind.conf",
+                                 CONF_PATHS_NULSTR("systemd/logind.conf.d"),
+                                 "Login\0",
+                                 config_item_perf_lookup, logind_gperf_lookup,
+                                 false, m);
+}
+
+static int manager_dispatch_reload_signal(sd_event_source *s, const struct signalfd_siginfo *si, void *userdata) {
+        Manager *m = userdata;
+        int r;
+
+        manager_reset_config(m);
+        r = manager_parse_config_file(m);
+        if (r < 0)
+                log_warning_errno(r, "Failed to parse config file, using defaults: %m");
+        else
+                log_info("Config file reloaded.");
+
+        return 0;
+}
+
 static int manager_startup(Manager *m) {
         int r;
         Seat *seat;
@@ -1001,6 +1032,12 @@ static int manager_startup(Manager *m) {
         Iterator i;
 
         assert(m);
+
+        assert_se(sigprocmask_many(SIG_SETMASK, NULL, SIGHUP, -1) >= 0);
+
+        r = sd_event_add_signal(m->event, NULL, SIGHUP, manager_dispatch_reload_signal, m);
+        if (r < 0)
+                return log_error_errno(r, "Failed to register SIGHUP handler: %m");
 
         /* Connect to console */
         r = manager_connect_console(m);
@@ -1104,16 +1141,6 @@ static int manager_run(Manager *m) {
         }
 }
 
-static int manager_parse_config_file(Manager *m) {
-        assert(m);
-
-        return config_parse_many("/etc/systemd/logind.conf",
-                                 CONF_DIRS_NULSTR("systemd/logind.conf"),
-                                 "Login\0",
-                                 config_item_perf_lookup, logind_gperf_lookup,
-                                 false, m);
-}
-
 int main(int argc, char *argv[]) {
         Manager *m = NULL;
         int r;
@@ -1128,6 +1155,12 @@ int main(int argc, char *argv[]) {
         if (argc != 1) {
                 log_error("This program takes no arguments.");
                 r = -EINVAL;
+                goto finish;
+        }
+
+        r = mac_selinux_init();
+        if (r < 0) {
+                log_error_errno(r, "Could not initialize labelling: %m");
                 goto finish;
         }
 

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -183,7 +181,7 @@ static void *message_extend_fields(sd_bus_message *m, size_t align, size_t sz, b
                 if (!np)
                         goto poison;
         } else {
-                /* Initially, the header is allocated as part of of
+                /* Initially, the header is allocated as part of
                  * the sd_bus_message itself, let's replace it by
                  * dynamic data */
 
@@ -802,7 +800,7 @@ _public_ int sd_bus_message_new_method_errorf(
                 const char *format,
                 ...) {
 
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         va_list ap;
 
         assert_return(name, -EINVAL);
@@ -821,7 +819,7 @@ _public_ int sd_bus_message_new_method_errno(
                 int error,
                 const sd_bus_error *p) {
 
-        _cleanup_bus_error_free_ sd_bus_error berror = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error berror = SD_BUS_ERROR_NULL;
 
         if (sd_bus_error_is_set(p))
                 return sd_bus_message_new_method_error(call, m, p);
@@ -838,7 +836,7 @@ _public_ int sd_bus_message_new_method_errnof(
                 const char *format,
                 ...) {
 
-        _cleanup_bus_error_free_ sd_bus_error berror = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error berror = SD_BUS_ERROR_NULL;
         va_list ap;
 
         va_start(ap, format);
@@ -919,7 +917,9 @@ fail:
 }
 
 _public_ sd_bus_message* sd_bus_message_ref(sd_bus_message *m) {
-        assert_return(m, NULL);
+
+        if (!m)
+                return NULL;
 
         assert(m->n_ref > 0);
         m->n_ref++;
@@ -1131,10 +1131,7 @@ _public_ int sd_bus_message_set_expect_reply(sd_bus_message *m, int b) {
         assert_return(!m->sealed, -EPERM);
         assert_return(m->header->type == SD_BUS_MESSAGE_METHOD_CALL, -EPERM);
 
-        if (b)
-                m->header->flags &= ~BUS_MESSAGE_NO_REPLY_EXPECTED;
-        else
-                m->header->flags |= BUS_MESSAGE_NO_REPLY_EXPECTED;
+        SET_FLAG(m->header->flags, BUS_MESSAGE_NO_REPLY_EXPECTED, !b);
 
         return 0;
 }
@@ -1143,10 +1140,7 @@ _public_ int sd_bus_message_set_auto_start(sd_bus_message *m, int b) {
         assert_return(m, -EINVAL);
         assert_return(!m->sealed, -EPERM);
 
-        if (b)
-                m->header->flags &= ~BUS_MESSAGE_NO_AUTO_START;
-        else
-                m->header->flags |= BUS_MESSAGE_NO_AUTO_START;
+        SET_FLAG(m->header->flags, BUS_MESSAGE_NO_AUTO_START, !b);
 
         return 0;
 }
@@ -1155,10 +1149,7 @@ _public_ int sd_bus_message_set_allow_interactive_authorization(sd_bus_message *
         assert_return(m, -EINVAL);
         assert_return(!m->sealed, -EPERM);
 
-        if (b)
-                m->header->flags |= BUS_MESSAGE_ALLOW_INTERACTIVE_AUTHORIZATION;
-        else
-                m->header->flags &= ~BUS_MESSAGE_ALLOW_INTERACTIVE_AUTHORIZATION;
+        SET_FLAG(m->header->flags, BUS_MESSAGE_ALLOW_INTERACTIVE_AUTHORIZATION, b);
 
         return 0;
 }
@@ -1198,7 +1189,7 @@ struct bus_body_part *message_append_part(sd_bus_message *m) {
 
         part->memfd = -1;
         m->body_end = part;
-        m->n_body_parts ++;
+        m->n_body_parts++;
 
         return part;
 }
@@ -1643,7 +1634,7 @@ int message_append_basic(sd_bus_message *m, char type, const void *p, const void
         }
 
         if (type == SD_BUS_TYPE_UNIX_FD)
-                m->n_fds ++;
+                m->n_fds++;
 
         if (c->enclosing != SD_BUS_TYPE_ARRAY)
                 c->index++;
@@ -2387,9 +2378,9 @@ int bus_message_append_ap(
 
                 t = types;
                 if (n_array != (unsigned) -1)
-                        n_array --;
+                        n_array--;
                 else {
-                        types ++;
+                        types++;
                         n_struct--;
                 }
 
@@ -2631,8 +2622,7 @@ _public_ int sd_bus_message_append_array(
         if (r < 0)
                 return r;
 
-        if (size > 0)
-                memcpy(p, ptr, size);
+        memcpy_safe(p, ptr, size);
 
         return 0;
 }
@@ -2875,7 +2865,7 @@ static int bus_message_close_header(sd_bus_message *m) {
 
         /* The actual user data is finished now, we just complete the
            variant and struct now (at least on gvariant). Remember
-           this position, so that during parsing we know where to to
+           this position, so that during parsing we know where to
            put the outer container end. */
         m->user_body_size = m->body_size;
 
@@ -3867,7 +3857,7 @@ static int build_struct_offsets(
                 if (r < 0)
                         return r;
                 if (r == 0 && p[n] != 0) /* except the last item */
-                        n_variable ++;
+                        n_variable++;
                 n_total++;
 
                 p += n;
@@ -4467,9 +4457,9 @@ static int message_read_ap(
 
                 t = types;
                 if (n_array != (unsigned) -1)
-                        n_array --;
+                        n_array--;
                 else {
-                        types ++;
+                        types++;
                         n_struct--;
                 }
 
@@ -5838,7 +5828,7 @@ _public_ sd_bus *sd_bus_message_get_bus(sd_bus_message *m) {
 }
 
 int bus_message_remarshal(sd_bus *bus, sd_bus_message **m) {
-        _cleanup_bus_message_unref_ sd_bus_message *n = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *n = NULL;
         usec_t timeout;
         int r;
 

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -42,12 +40,11 @@ typedef enum ProtectSystem {
 } ProtectSystem;
 
 int setup_namespace(const char *chroot,
-                    char **read_write_dirs,
-                    char **read_only_dirs,
-                    char **inaccessible_dirs,
+                    char **read_write_paths,
+                    char **read_only_paths,
+                    char **inaccessible_paths,
                     const char *tmp_dir,
                     const char *var_tmp_dir,
-                    const char *endpoint_path,
                     bool private_dev,
                     ProtectHome protect_home,
                     ProtectSystem protect_system,

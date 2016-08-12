@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,10 +17,10 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include "virt.h"
 #include "architecture.h"
-#include "util.h"
 #include "log.h"
+#include "util.h"
+#include "virt.h"
 
 int main(int argc, char *argv[]) {
         int a, v;

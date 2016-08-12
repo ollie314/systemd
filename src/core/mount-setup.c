@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,17 +17,18 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <sys/mount.h>
 #include <errno.h>
-#include <stdlib.h>
-#include <unistd.h>
 #include <ftw.h>
+#include <stdlib.h>
+#include <sys/mount.h>
+#include <unistd.h>
 
 #include "alloc-util.h"
 #include "bus-util.h"
 #include "cgroup-util.h"
 #include "dev-setup.h"
 #include "efivars.h"
+#include "fs-util.h"
 #include "label.h"
 #include "log.h"
 #include "macro.h"
@@ -96,7 +95,7 @@ static const MountPoint mount_table[] = {
 #endif
         { "tmpfs",       "/run",                      "tmpfs",      "mode=755",                MS_NOSUID|MS_NODEV|MS_STRICTATIME,
           NULL,          MNT_FATAL|MNT_IN_CONTAINER },
-        { "cgroup",      "/sys/fs/cgroup",            "cgroup",     "__DEVEL__sane_behavior",  MS_NOSUID|MS_NOEXEC|MS_NODEV,
+        { "cgroup",      "/sys/fs/cgroup",            "cgroup2",    NULL,                      MS_NOSUID|MS_NOEXEC|MS_NODEV,
           cg_is_unified_wanted, MNT_FATAL|MNT_IN_CONTAINER },
         { "tmpfs",       "/sys/fs/cgroup",            "tmpfs",      "mode=755",                MS_NOSUID|MS_NOEXEC|MS_NODEV|MS_STRICTATIME,
           cg_is_legacy_wanted, MNT_FATAL|MNT_IN_CONTAINER },
@@ -110,8 +109,6 @@ static const MountPoint mount_table[] = {
         { "efivarfs",    "/sys/firmware/efi/efivars", "efivarfs",   NULL,                      MS_NOSUID|MS_NOEXEC|MS_NODEV,
           is_efi_boot,   MNT_NONE                   },
 #endif
-        { "kdbusfs",    "/sys/fs/kdbus",             "kdbusfs",    NULL, MS_NOSUID|MS_NOEXEC|MS_NODEV,
-          is_kdbus_wanted,       MNT_IN_CONTAINER },
 };
 
 /* These are API file systems that might be mounted by other software,
@@ -158,11 +155,13 @@ static int mount_one(const MountPoint *p, bool relabel) {
 
         /* Relabel first, just in case */
         if (relabel)
-                label_fix(p->where, true, true);
+                (void) label_fix(p->where, true, true);
 
         r = path_is_mount_point(p->where, AT_SYMLINK_FOLLOW);
-        if (r < 0 && r != -ENOENT)
-                return r;
+        if (r < 0 && r != -ENOENT) {
+                log_full_errno((p->mode & MNT_FATAL) ? LOG_ERR : LOG_DEBUG, r, "Failed to determine whether %s is a mount point: %m", p->where);
+                return (p->mode & MNT_FATAL) ? r : 0;
+        }
         if (r > 0)
                 return 0;
 
@@ -173,9 +172,9 @@ static int mount_one(const MountPoint *p, bool relabel) {
         /* The access mode here doesn't really matter too much, since
          * the mounted file system will take precedence anyway. */
         if (relabel)
-                mkdir_p_label(p->where, 0755);
+                (void) mkdir_p_label(p->where, 0755);
         else
-                mkdir_p(p->where, 0755);
+                (void) mkdir_p(p->where, 0755);
 
         log_debug("Mounting %s to %s of type %s with options %s.",
                   p->what,
@@ -188,34 +187,38 @@ static int mount_one(const MountPoint *p, bool relabel) {
                   p->type,
                   p->flags,
                   p->options) < 0) {
-                log_full((p->mode & MNT_FATAL) ? LOG_ERR : LOG_DEBUG, "Failed to mount %s at %s: %m", p->type, p->where);
+                log_full_errno((p->mode & MNT_FATAL) ? LOG_ERR : LOG_DEBUG, errno, "Failed to mount %s at %s: %m", p->type, p->where);
                 return (p->mode & MNT_FATAL) ? -errno : 0;
         }
 
         /* Relabel again, since we now mounted something fresh here */
         if (relabel)
-                label_fix(p->where, false, false);
+                (void) label_fix(p->where, false, false);
 
         return 1;
 }
 
-int mount_setup_early(void) {
+static int mount_points_setup(unsigned n, bool loaded_policy) {
         unsigned i;
         int r = 0;
 
-        assert_cc(N_EARLY_MOUNT <= ELEMENTSOF(mount_table));
-
-        /* Do a minimal mount of /proc and friends to enable the most
-         * basic stuff, such as SELinux */
-        for (i = 0; i < N_EARLY_MOUNT; i ++)  {
+        for (i = 0; i < n; i ++) {
                 int j;
 
-                j = mount_one(mount_table + i, false);
+                j = mount_one(mount_table + i, loaded_policy);
                 if (j != 0 && r >= 0)
                         r = j;
         }
 
         return r;
+}
+
+int mount_setup_early(void) {
+        assert_cc(N_EARLY_MOUNT <= ELEMENTSOF(mount_table));
+
+        /* Do a minimal mount of /proc and friends to enable the most
+         * basic stuff, such as SELinux */
+        return mount_points_setup(N_EARLY_MOUNT, false);
 }
 
 int mount_cgroup_controllers(char ***join_controllers) {
@@ -304,13 +307,18 @@ int mount_cgroup_controllers(char ***join_controllers) {
                                         return log_oom();
 
                                 r = symlink(options, t);
-                                if (r < 0 && errno != EEXIST)
-                                        return log_error_errno(errno, "Failed to create symlink %s: %m", t);
+                                if (r >= 0) {
 #ifdef SMACK_RUN_LABEL
-                                r = mac_smack_copy(t, options);
-                                if (r < 0 && r != -EOPNOTSUPP)
-                                        return log_error_errno(r, "Failed to copy smack label from %s to %s: %m", options, t);
+                                        _cleanup_free_ char *src;
+                                        src = strappend("/sys/fs/cgroup/", options);
+                                        if (!src)
+                                                return log_oom();
+                                        r = mac_smack_copy(t, src);
+                                        if (r < 0 && r != -EOPNOTSUPP)
+                                                return log_error_errno(r, "Failed to copy smack label from %s to %s: %m", src, t);
 #endif
+                                } else if (errno != EEXIST)
+                                        return log_error_errno(errno, "Failed to create symlink %s: %m", t);
                         }
                 }
         }
@@ -347,16 +355,9 @@ static int nftw_cb(
 #endif
 
 int mount_setup(bool loaded_policy) {
-        unsigned i;
         int r = 0;
 
-        for (i = 0; i < ELEMENTSOF(mount_table); i ++) {
-                int j;
-
-                j = mount_one(mount_table + i, loaded_policy);
-                if (j != 0 && r >= 0)
-                        r = j;
-        }
+        r = mount_points_setup(ELEMENTSOF(mount_table), loaded_policy);
 
         if (r < 0)
                 return r;
@@ -373,6 +374,7 @@ int mount_setup(bool loaded_policy) {
                 before_relabel = now(CLOCK_MONOTONIC);
 
                 nftw("/dev", nftw_cb, 64, FTW_MOUNT|FTW_PHYS|FTW_ACTIONRETVAL);
+                nftw("/dev/shm", nftw_cb, 64, FTW_MOUNT|FTW_PHYS|FTW_ACTIONRETVAL);
                 nftw("/run", nftw_cb, 64, FTW_MOUNT|FTW_PHYS|FTW_ACTIONRETVAL);
 
                 after_relabel = now(CLOCK_MONOTONIC);
@@ -402,9 +404,16 @@ int mount_setup(bool loaded_policy) {
          * really needs to stay for good, otherwise software that
          * copied sd-daemon.c into their sources will misdetect
          * systemd. */
-        mkdir_label("/run/systemd", 0755);
-        mkdir_label("/run/systemd/system", 0755);
-        mkdir_label("/run/systemd/inaccessible", 0000);
+        (void) mkdir_label("/run/systemd", 0755);
+        (void) mkdir_label("/run/systemd/system", 0755);
+        (void) mkdir_label("/run/systemd/inaccessible", 0000);
+        /* Set up inaccessible items */
+        (void) mknod("/run/systemd/inaccessible/reg", S_IFREG | 0000, 0);
+        (void) mkdir_label("/run/systemd/inaccessible/dir", 0000);
+        (void) mknod("/run/systemd/inaccessible/chr", S_IFCHR | 0000, makedev(0, 0));
+        (void) mknod("/run/systemd/inaccessible/blk", S_IFBLK | 0000, makedev(0, 0));
+        (void) mkfifo("/run/systemd/inaccessible/fifo", 0000);
+        (void) mknod("/run/systemd/inaccessible/sock", S_IFSOCK | 0000, 0);
 
         return 0;
 }

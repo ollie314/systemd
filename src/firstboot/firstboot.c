@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -162,7 +160,7 @@ static int prompt_loop(const char *text, char **l, bool (*is_valid)(const char *
                 _cleanup_free_ char *p = NULL;
                 unsigned u;
 
-                r = ask_string(&p, "%s %s (empty to skip): ", draw_special_char(DRAW_TRIANGULAR_BULLET), text);
+                r = ask_string(&p, "%s %s (empty to skip): ", special_glyph(TRIANGULAR_BULLET), text);
                 if (r < 0)
                         return log_error_errno(r, "Failed to query user: %m");
 
@@ -247,7 +245,7 @@ static int process_locale(void) {
         int r;
 
         etc_localeconf = prefix_roota(arg_root, "/etc/locale.conf");
-        if (faccessat(AT_FDCWD, etc_localeconf, F_OK, AT_SYMLINK_NOFOLLOW) >= 0)
+        if (laccess(etc_localeconf, F_OK) >= 0)
                 return 0;
 
         if (arg_copy_locale && arg_root) {
@@ -321,7 +319,7 @@ static int process_timezone(void) {
         int r;
 
         etc_localtime = prefix_roota(arg_root, "/etc/localtime");
-        if (faccessat(AT_FDCWD, etc_localtime, F_OK, AT_SYMLINK_NOFOLLOW) >= 0)
+        if (laccess(etc_localtime, F_OK) >= 0)
                 return 0;
 
         if (arg_copy_timezone && arg_root) {
@@ -373,7 +371,7 @@ static int prompt_hostname(void) {
         for (;;) {
                 _cleanup_free_ char *h = NULL;
 
-                r = ask_string(&h, "%s Please enter hostname for new system (empty to skip): ", draw_special_char(DRAW_TRIANGULAR_BULLET));
+                r = ask_string(&h, "%s Please enter hostname for new system (empty to skip): ", special_glyph(TRIANGULAR_BULLET));
                 if (r < 0)
                         return log_error_errno(r, "Failed to query hostname: %m");
 
@@ -401,7 +399,7 @@ static int process_hostname(void) {
         int r;
 
         etc_hostname = prefix_roota(arg_root, "/etc/hostname");
-        if (faccessat(AT_FDCWD, etc_hostname, F_OK, AT_SYMLINK_NOFOLLOW) >= 0)
+        if (laccess(etc_hostname, F_OK) >= 0)
                 return 0;
 
         r = prompt_hostname();
@@ -426,10 +424,10 @@ static int process_machine_id(void) {
         int r;
 
         etc_machine_id = prefix_roota(arg_root, "/etc/machine-id");
-        if (faccessat(AT_FDCWD, etc_machine_id, F_OK, AT_SYMLINK_NOFOLLOW) >= 0)
+        if (laccess(etc_machine_id, F_OK) >= 0)
                 return 0;
 
-        if (sd_id128_equal(arg_machine_id, SD_ID128_NULL))
+        if (sd_id128_is_null(arg_machine_id))
                 return 0;
 
         mkdir_parents(etc_machine_id, 0755);
@@ -452,14 +450,14 @@ static int prompt_root_password(void) {
                 return 0;
 
         etc_shadow = prefix_roota(arg_root, "/etc/shadow");
-        if (faccessat(AT_FDCWD, etc_shadow, F_OK, AT_SYMLINK_NOFOLLOW) >= 0)
+        if (laccess(etc_shadow, F_OK) >= 0)
                 return 0;
 
         print_welcome();
         putchar('\n');
 
-        msg1 = strjoina(draw_special_char(DRAW_TRIANGULAR_BULLET), " Please enter a new root password (empty to skip): ");
-        msg2 = strjoina(draw_special_char(DRAW_TRIANGULAR_BULLET), " Please enter new root password again: ");
+        msg1 = strjoina(special_glyph(TRIANGULAR_BULLET), " Please enter a new root password (empty to skip): ");
+        msg2 = strjoina(special_glyph(TRIANGULAR_BULLET), " Please enter new root password again: ");
 
         for (;;) {
                 _cleanup_string_free_erase_ char *a = NULL, *b = NULL;
@@ -502,7 +500,7 @@ static int write_root_shadow(const char *path, const struct spwd *p) {
 
         errno = 0;
         if (putspent(p, f) != 0)
-                return errno ? -errno : -EIO;
+                return errno > 0 ? -errno : -EIO;
 
         return fflush_and_check(f);
 }
@@ -535,14 +533,14 @@ static int process_root_password(void) {
         int r;
 
         etc_shadow = prefix_roota(arg_root, "/etc/shadow");
-        if (faccessat(AT_FDCWD, etc_shadow, F_OK, AT_SYMLINK_NOFOLLOW) >= 0)
+        if (laccess(etc_shadow, F_OK) >= 0)
                 return 0;
 
         mkdir_parents(etc_shadow, 0755);
 
         lock = take_etc_passwd_lock(arg_root);
         if (lock < 0)
-                return lock;
+                return log_error_errno(lock, "Failed to take a lock: %m");
 
         if (arg_copy_root_password && arg_root) {
                 struct spwd *p;
@@ -554,8 +552,7 @@ static int process_root_password(void) {
                                 if (!errno)
                                         errno = EIO;
 
-                                log_error_errno(errno, "Failed to find shadow entry for root: %m");
-                                return -errno;
+                                return log_error_errno(errno, "Failed to find shadow entry for root: %m");
                         }
 
                         r = write_root_shadow(etc_shadow, p);
@@ -590,10 +587,9 @@ static int process_root_password(void) {
         item.sp_pwdp = crypt(arg_root_password, salt);
         if (!item.sp_pwdp) {
                 if (!errno)
-                        errno = -EINVAL;
+                        errno = EINVAL;
 
-                log_error_errno(errno, "Failed to encrypt password: %m");
-                return -errno;
+                return log_error_errno(errno, "Failed to encrypt password: %m");
         }
 
         item.sp_lstchg = (long) (now(CLOCK_REALTIME) / USEC_PER_DAY);

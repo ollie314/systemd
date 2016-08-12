@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -73,27 +71,41 @@ int bus_send_queued_message(Manager *m) {
         return 0;
 }
 
+int bus_forward_agent_released(Manager *m, const char *path) {
+        int r;
+
+        assert(m);
+        assert(path);
+
+        if (!MANAGER_IS_SYSTEM(m))
+                return 0;
+
+        if (!m->system_bus)
+                return 0;
+
+        /* If we are running a system instance we forward the agent message on the system bus, so that the user
+         * instances get notified about this, too */
+
+        r = sd_bus_emit_signal(m->system_bus,
+                               "/org/freedesktop/systemd1/agent",
+                               "org.freedesktop.systemd1.Agent",
+                               "Released",
+                               "s", path);
+        if (r < 0)
+                return log_warning_errno(r, "Failed to propagate agent release message: %m");
+
+        return 1;
+}
+
 static int signal_agent_released(sd_bus_message *message, void *userdata, sd_bus_error *error) {
-        _cleanup_bus_creds_unref_ sd_bus_creds *creds = NULL;
-        const char *cgroup, *me;
+        _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
         Manager *m = userdata;
+        const char *cgroup;
         uid_t sender_uid;
-        sd_bus *bus;
         int r;
 
         assert(message);
         assert(m);
-
-        /* ignore recursive events sent by us on the system/user bus */
-        bus = sd_bus_message_get_bus(message);
-        if (!sd_bus_is_server(bus)) {
-                r = sd_bus_get_unique_name(bus, &me);
-                if (r < 0)
-                        return r;
-
-                if (streq_ptr(sd_bus_message_get_sender(message), me))
-                        return 0;
-        }
 
         /* only accept org.freedesktop.systemd1.Agent from UID=0 */
         r = sd_bus_query_sender_creds(message, SD_BUS_CREDS_EUID, &creds);
@@ -112,16 +124,6 @@ static int signal_agent_released(sd_bus_message *message, void *userdata, sd_bus
         }
 
         manager_notify_cgroup_empty(m, cgroup);
-
-        /* if running as system-instance, forward under our name */
-        if (m->running_as == MANAGER_SYSTEM && m->system_bus) {
-                r = sd_bus_message_rewind(message, 1);
-                if (r >= 0)
-                        r = sd_bus_send(m->system_bus, message, NULL);
-                if (r < 0)
-                        log_warning_errno(r, "Failed to forward Released message: %m");
-        }
-
         return 0;
 }
 
@@ -146,8 +148,8 @@ static int signal_disconnected(sd_bus_message *message, void *userdata, sd_bus_e
 }
 
 static int signal_activation_request(sd_bus_message *message, void *userdata, sd_bus_error *ret_error) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         Manager *m = userdata;
         const char *name;
         Unit *u;
@@ -177,7 +179,7 @@ static int signal_activation_request(sd_bus_message *message, void *userdata, sd
                 goto failed;
         }
 
-        r = manager_add_job(m, JOB_START, u, JOB_REPLACE, true, &error, NULL);
+        r = manager_add_job(m, JOB_START, u, JOB_REPLACE, &error, NULL);
         if (r < 0)
                 goto failed;
 
@@ -245,7 +247,7 @@ static int mac_selinux_filter(sd_bus_message *message, void *userdata, sd_bus_er
         }
 
         if (streq_ptr(path, "/org/freedesktop/systemd1/unit/self")) {
-                _cleanup_bus_creds_unref_ sd_bus_creds *creds = NULL;
+                _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
                 pid_t pid;
 
                 r = sd_bus_query_sender_creds(message, SD_BUS_CREDS_PID, &creds);
@@ -304,7 +306,7 @@ static int find_unit(Manager *m, sd_bus *bus, const char *path, Unit **unit, sd_
         assert(path);
 
         if (streq_ptr(path, "/org/freedesktop/systemd1/unit/self")) {
-                _cleanup_bus_creds_unref_ sd_bus_creds *creds = NULL;
+                _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
                 sd_bus_message *message;
                 pid_t pid;
 
@@ -617,7 +619,7 @@ static int bus_setup_disconnected_match(Manager *m, sd_bus *bus) {
 }
 
 static int bus_on_connection(sd_event_source *s, int fd, uint32_t revents, void *userdata) {
-        _cleanup_bus_unref_ sd_bus *bus = NULL;
+        _cleanup_(sd_bus_unrefp) sd_bus *bus = NULL;
         _cleanup_close_ int nfd = -1;
         Manager *m = userdata;
         sd_id128_t id;
@@ -692,25 +694,6 @@ static int bus_on_connection(sd_event_source *s, int fd, uint32_t revents, void 
                 return 0;
         }
 
-        if (m->running_as == MANAGER_SYSTEM) {
-                /* When we run as system instance we get the Released
-                 * signal via a direct connection */
-
-                r = sd_bus_add_match(
-                                bus,
-                                NULL,
-                                "type='signal',"
-                                "interface='org.freedesktop.systemd1.Agent',"
-                                "member='Released',"
-                                "path='/org/freedesktop/systemd1/agent'",
-                                signal_agent_released, m);
-
-                if (r < 0) {
-                        log_warning_errno(r, "Failed to register Released match on new connection bus: %m");
-                        return 0;
-                }
-        }
-
         r = bus_setup_disconnected_match(m, bus);
         if (r < 0)
                 return 0;
@@ -734,9 +717,11 @@ static int bus_on_connection(sd_event_source *s, int fd, uint32_t revents, void 
         return 0;
 }
 
-static int bus_list_names(Manager *m, sd_bus *bus) {
+int manager_sync_bus_names(Manager *m, sd_bus *bus) {
         _cleanup_strv_free_ char **names = NULL;
-        char **i;
+        const char *name;
+        Iterator i;
+        Unit *u;
         int r;
 
         assert(m);
@@ -746,15 +731,55 @@ static int bus_list_names(Manager *m, sd_bus *bus) {
         if (r < 0)
                 return log_error_errno(r, "Failed to get initial list of names: %m");
 
-        /* This is a bit hacky, we say the owner of the name is the
-         * name itself, because we don't want the extra traffic to
-         * figure out the real owner. */
-        STRV_FOREACH(i, names) {
-                Unit *u;
+        /* We have to synchronize the current bus names with the
+         * list of active services. To do this, walk the list of
+         * all units with bus names. */
+        HASHMAP_FOREACH_KEY(u, name, m->watch_bus, i) {
+                Service *s = SERVICE(u);
 
-                u = hashmap_get(m->watch_bus, *i);
-                if (u)
-                        UNIT_VTABLE(u)->bus_name_owner_change(u, *i, NULL, *i);
+                assert(s);
+
+                if (!streq_ptr(s->bus_name, name)) {
+                        log_unit_warning(u, "Bus name has changed from %s → %s, ignoring.", s->bus_name, name);
+                        continue;
+                }
+
+                /* Check if a service's bus name is in the list of currently
+                 * active names */
+                if (strv_contains(names, name)) {
+                        _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
+                        const char *unique;
+
+                        /* If it is, determine its current owner */
+                        r = sd_bus_get_name_creds(bus, name, SD_BUS_CREDS_UNIQUE_NAME, &creds);
+                        if (r < 0) {
+                                log_error_errno(r, "Failed to get bus name owner %s: %m", name);
+                                continue;
+                        }
+
+                        r = sd_bus_creds_get_unique_name(creds, &unique);
+                        if (r < 0) {
+                                log_error_errno(r, "Failed to get unique name for %s: %m", name);
+                                continue;
+                        }
+
+                        /* Now, let's compare that to the previous bus owner, and
+                         * if it's still the same, all is fine, so just don't
+                         * bother the service. Otherwise, the name has apparently
+                         * changed, so synthesize a name owner changed signal. */
+
+                        if (!streq_ptr(unique, s->bus_name_owner))
+                                UNIT_VTABLE(u)->bus_name_owner_change(u, name, s->bus_name_owner, unique);
+                } else {
+                        /* So, the name we're watching is not on the bus.
+                         * This either means it simply hasn't appeared yet,
+                         * or it was lost during the daemon reload.
+                         * Check if the service has a stored name owner,
+                         * and synthesize a name loss signal in this case. */
+
+                        if (s->bus_name_owner)
+                                UNIT_VTABLE(u)->bus_name_owner_change(u, name, s->bus_name_owner, NULL);
+                }
         }
 
         return 0;
@@ -784,7 +809,7 @@ static int bus_setup_api(Manager *m, sd_bus *bus) {
         HASHMAP_FOREACH_KEY(u, name, m->watch_bus, i) {
                 r = unit_install_bus_match(u, bus, name);
                 if (r < 0)
-                        log_error_errno(r, "Failed to subscribe to NameOwnerChanged signal: %m");
+                        log_error_errno(r, "Failed to subscribe to NameOwnerChanged signal for '%s': %m", name);
         }
 
         r = sd_bus_add_match(
@@ -808,24 +833,26 @@ static int bus_setup_api(Manager *m, sd_bus *bus) {
         if (r < 0)
                 return log_error_errno(r, "Failed to register name: %m");
 
-        bus_list_names(m, bus);
+        r = manager_sync_bus_names(m, bus);
+        if (r < 0)
+                return r;
 
         log_debug("Successfully connected to API bus.");
         return 0;
 }
 
 static int bus_init_api(Manager *m) {
-        _cleanup_bus_unref_ sd_bus *bus = NULL;
+        _cleanup_(sd_bus_unrefp) sd_bus *bus = NULL;
         int r;
 
         if (m->api_bus)
                 return 0;
 
         /* The API and system bus is the same if we are running in system mode */
-        if (m->running_as == MANAGER_SYSTEM && m->system_bus)
+        if (MANAGER_IS_SYSTEM(m) && m->system_bus)
                 bus = sd_bus_ref(m->system_bus);
         else {
-                if (m->running_as == MANAGER_SYSTEM)
+                if (MANAGER_IS_SYSTEM(m))
                         r = sd_bus_open_system(&bus);
                 else
                         r = sd_bus_open_user(&bus);
@@ -864,8 +891,8 @@ static int bus_setup_system(Manager *m, sd_bus *bus) {
         assert(m);
         assert(bus);
 
-        /* On kdbus or if we are a user instance we get the Released message via the system bus */
-        if (m->running_as == MANAGER_USER || m->kdbus_fd >= 0) {
+        /* if we are a user instance we get the Released message via the system bus */
+        if (MANAGER_IS_USER(m)) {
                 r = sd_bus_add_match(
                                 bus,
                                 NULL,
@@ -883,14 +910,14 @@ static int bus_setup_system(Manager *m, sd_bus *bus) {
 }
 
 static int bus_init_system(Manager *m) {
-        _cleanup_bus_unref_ sd_bus *bus = NULL;
+        _cleanup_(sd_bus_unrefp) sd_bus *bus = NULL;
         int r;
 
         if (m->system_bus)
                 return 0;
 
         /* The API and system bus is the same if we are running in system mode */
-        if (m->running_as == MANAGER_SYSTEM && m->api_bus) {
+        if (MANAGER_IS_SYSTEM(m) && m->api_bus) {
                 m->system_bus = sd_bus_ref(m->api_bus);
                 return 0;
         }
@@ -941,14 +968,14 @@ static int bus_init_private(Manager *m) {
         if (m->kdbus_fd >= 0)
                 return 0;
 
-        if (m->running_as == MANAGER_SYSTEM) {
+        if (MANAGER_IS_SYSTEM(m)) {
 
                 /* We want the private bus only when running as init */
                 if (getpid() != 1)
                         return 0;
 
                 strcpy(sa.un.sun_path, "/run/systemd/private");
-                salen = offsetof(union sockaddr_union, un.sun_path) + strlen("/run/systemd/private");
+                salen = SOCKADDR_UN_LEN(sa.un);
         } else {
                 size_t left = sizeof(sa.un.sun_path);
                 char *p = sa.un.sun_path;
@@ -1040,7 +1067,7 @@ static void destroy_bus(Manager *m, sd_bus **bus) {
 
         /* Possibly flush unwritten data, but only if we are
          * unprivileged, since we don't want to sync here */
-        if (m->running_as != MANAGER_SYSTEM)
+        if (!MANAGER_IS_SYSTEM(m))
                 sd_bus_flush(*bus);
 
         /* And destroy the object */

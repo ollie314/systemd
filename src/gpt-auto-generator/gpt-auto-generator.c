@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,10 +17,10 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <unistd.h>
+#include <blkid/blkid.h>
 #include <stdlib.h>
 #include <sys/statfs.h>
-#include <blkid/blkid.h>
+#include <unistd.h>
 
 #include "libudev.h"
 #include "sd-id128.h"
@@ -302,8 +300,7 @@ static int probe_and_add_mount(
         if (!b) {
                 if (errno == 0)
                         return log_oom();
-                log_error_errno(errno, "Failed to allocate prober: %m");
-                return -errno;
+                return log_error_errno(errno, "Failed to allocate prober: %m");
         }
 
         blkid_probe_enable_superblocks(b, 1);
@@ -453,101 +450,101 @@ static int add_automount(
 }
 
 static int add_boot(const char *what) {
-        _cleanup_blkid_free_probe_ blkid_probe b = NULL;
-        const char *fstype = NULL, *uuid = NULL;
-        sd_id128_t id, type_id;
+        const char *esp;
         int r;
 
         assert(what);
 
-        if (!is_efi_boot()) {
-                log_debug("Not an EFI boot, ignoring /boot.");
-                return 0;
-        }
-
         if (in_initrd()) {
-                log_debug("In initrd, ignoring /boot.");
+                log_debug("In initrd, ignoring the ESP.");
                 return 0;
         }
 
         if (detect_container() > 0) {
-                log_debug("In a container, ignoring /boot.");
+                log_debug("In a container, ignoring the ESP.");
                 return 0;
         }
+
+        /* If /efi exists we'll use that. Otherwise we'll use /boot, as that's usually the better choice */
+        esp = access("/efi/", F_OK) >= 0 ? "/efi" : "/boot";
 
         /* We create an .automount which is not overridden by the .mount from the fstab generator. */
-        if (fstab_is_mount_point("/boot")) {
-                log_debug("/boot specified in fstab, ignoring.");
+        if (fstab_is_mount_point(esp)) {
+                log_debug("%s specified in fstab, ignoring.", esp);
                 return 0;
         }
 
-        if (path_is_busy("/boot")) {
-                log_debug("/boot already populated, ignoring.");
+        if (path_is_busy(esp)) {
+                log_debug("%s already populated, ignoring.", esp);
                 return 0;
         }
 
-        r = efi_loader_get_device_part_uuid(&id);
-        if (r == -ENOENT) {
-                log_debug("EFI loader partition unknown.");
-                return 0;
-        }
+        if (is_efi_boot()) {
+                _cleanup_blkid_free_probe_ blkid_probe b = NULL;
+                const char *fstype = NULL, *uuid_string = NULL;
+                sd_id128_t loader_uuid, part_uuid;
 
-        if (r < 0) {
-                log_error_errno(r, "Failed to read ESP partition UUID: %m");
-                return r;
-        }
+                /* If this is an EFI boot, be extra careful, and only mount the ESP if it was the ESP used for booting. */
 
-        errno = 0;
-        b = blkid_new_probe_from_filename(what);
-        if (!b) {
-                if (errno == 0)
-                        return log_oom();
-                log_error_errno(errno, "Failed to allocate prober: %m");
-                return -errno;
-        }
+                r = efi_loader_get_device_part_uuid(&loader_uuid);
+                if (r == -ENOENT) {
+                        log_debug("EFI loader partition unknown.");
+                        return 0;
+                }
+                if (r < 0)
+                        return log_error_errno(r, "Failed to read ESP partition UUID: %m");
 
-        blkid_probe_enable_partitions(b, 1);
-        blkid_probe_set_partitions_flags(b, BLKID_PARTS_ENTRY_DETAILS);
+                errno = 0;
+                b = blkid_new_probe_from_filename(what);
+                if (!b) {
+                        if (errno == 0)
+                                return log_oom();
+                        return log_error_errno(errno, "Failed to allocate prober: %m");
+                }
 
-        errno = 0;
-        r = blkid_do_safeprobe(b);
-        if (r == -2 || r == 1) /* no result or uncertain */
-                return 0;
-        else if (r != 0)
-                return log_error_errno(errno ?: EIO, "Failed to probe %s: %m", what);
+                blkid_probe_enable_partitions(b, 1);
+                blkid_probe_set_partitions_flags(b, BLKID_PARTS_ENTRY_DETAILS);
 
-        (void) blkid_probe_lookup_value(b, "TYPE", &fstype, NULL);
-        if (!streq(fstype, "vfat")) {
-                log_debug("Partition for /boot is not a FAT filesystem, ignoring.");
-                return 0;
-        }
+                errno = 0;
+                r = blkid_do_safeprobe(b);
+                if (r == -2 || r == 1) /* no result or uncertain */
+                        return 0;
+                else if (r != 0)
+                        return log_error_errno(errno ?: EIO, "Failed to probe %s: %m", what);
 
-        r = blkid_probe_lookup_value(b, "PART_ENTRY_UUID", &uuid, NULL);
-        if (r != 0) {
-                log_debug_errno(r, "Partition for /boot does not have a UUID, ignoring. %m");
-                return 0;
-        }
+                (void) blkid_probe_lookup_value(b, "TYPE", &fstype, NULL);
+                if (!streq_ptr(fstype, "vfat")) {
+                        log_debug("Partition for %s is not a FAT filesystem, ignoring.", esp);
+                        return 0;
+                }
 
-        if (sd_id128_from_string(uuid, &type_id) < 0) {
-                log_debug("Partition for /boot does not have a valid UUID, ignoring.");
-                return 0;
-        }
+                errno = 0;
+                r = blkid_probe_lookup_value(b, "PART_ENTRY_UUID", &uuid_string, NULL);
+                if (r != 0) {
+                        log_debug_errno(errno, "Partition for %s does not have a UUID, ignoring.", esp);
+                        return 0;
+                }
 
-        if (!sd_id128_equal(type_id, id)) {
-                log_debug("Partition for /boot does not appear to be the partition we are booted from.");
-                return 0;
-        }
+                if (sd_id128_from_string(uuid_string, &part_uuid) < 0) {
+                        log_debug("Partition for %s does not have a valid UUID, ignoring.", esp);
+                        return 0;
+                }
 
-        r = add_automount("boot",
-                       what,
-                       "/boot",
-                       "vfat",
-                       true,
-                       "umask=0077",
-                       "EFI System Partition Automount",
-                       120 * USEC_PER_SEC);
+                if (!sd_id128_equal(part_uuid, loader_uuid)) {
+                        log_debug("Partition for %s does not appear to be the partition we are booted from.", esp);
+                        return 0;
+                }
+        } else
+                log_debug("Not an EFI boot, skipping ESP check.");
 
-        return r;
+        return add_automount("boot",
+                          what,
+                          esp,
+                          "vfat",
+                          true,
+                          "umask=0077",
+                          "EFI System Partition Automount",
+                          120 * USEC_PER_SEC);
 }
 #else
 static int add_boot(const char *what) {
@@ -637,16 +634,19 @@ static int enumerate_partitions(dev_t devnum) {
         if (r == 1)
                 return 0; /* no results */
         else if (r == -2) {
-                log_warning("%s: probe gave ambiguous results, ignoring", node);
+                log_warning("%s: probe gave ambiguous results, ignoring.", node);
                 return 0;
         } else if (r != 0)
                 return log_error_errno(errno ?: EIO, "%s: failed to probe: %m", node);
 
         errno = 0;
         r = blkid_probe_lookup_value(b, "PTTYPE", &pttype, NULL);
-        if (r != 0)
-                return log_error_errno(errno ?: EIO,
-                                       "%s: failed to determine partition table type: %m", node);
+        if (r != 0) {
+                if (errno == 0)
+                        return 0; /* No partition table found. */
+
+                return log_error_errno(errno, "%s: failed to determine partition table type: %m", node);
+        }
 
         /* We only do this all for GPT... */
         if (!streq_ptr(pttype, "gpt")) {
@@ -955,6 +955,12 @@ static int add_root_mount(void) {
         /* OK, we have an ESP partition, this is fantastic, so let's
          * wait for a root device to show up. A udev rule will create
          * the link for us under the right name. */
+
+        if (in_initrd()) {
+                r = generator_write_initrd_root_device_deps(arg_dest, "/dev/gpt-auto-root");
+                if (r < 0)
+                        return 0;
+        }
 
         return add_mount(
                         "root",

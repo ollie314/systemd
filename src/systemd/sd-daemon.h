@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #ifndef foosddaemonhfoo
 #define foosddaemonhfoo
 
@@ -22,8 +20,8 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <sys/types.h>
 #include <inttypes.h>
+#include <sys/types.h>
 
 #include "_sd-common.h"
 
@@ -197,6 +195,11 @@ int sd_is_mq(int fd, const char *path);
                   and pass them to the main process again on next
                   invocation. This variable is only supported with
                   sd_pid_notify_with_fds().
+
+     WATCHDOG_USEC=...
+                  Reset watchdog_usec value during runtime.
+                  To reset watchdog_usec value, start the service again.
+                  Example: "WATCHDOG_USEC=20000000"
 
   Daemons can choose to send additional variables. However, it is
   recommended to prefix variable names not listed above with X_.

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -20,11 +18,12 @@
 ***/
 
 #include "alloc-util.h"
+#include "def.h"
+#include "extract-word.h"
 #include "string-util.h"
+#include "timesyncd-conf.h"
 #include "timesyncd-manager.h"
 #include "timesyncd-server.h"
-#include "timesyncd-conf.h"
-#include "extract-word.h"
 
 int manager_parse_server_string(Manager *m, ServerType type, const char *string) {
         ServerName *first;
@@ -99,8 +98,8 @@ int config_parse_servers(
 int manager_parse_config_file(Manager *m) {
         assert(m);
 
-        return config_parse_many("/etc/systemd/timesyncd.conf",
-                                 CONF_DIRS_NULSTR("systemd/timesyncd.conf"),
+        return config_parse_many(PKGSYSCONFDIR "/timesyncd.conf",
+                                 CONF_PATHS_NULSTR("systemd/timesyncd.conf.d"),
                                  "Time\0",
                                  config_item_perf_lookup, timesyncd_gperf_lookup,
                                  false, m);

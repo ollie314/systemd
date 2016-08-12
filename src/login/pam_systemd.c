@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -152,7 +150,7 @@ static int get_seat_from_display(const char *display, const char **seat, uint32_
         if (fd < 0)
                 return -errno;
 
-        if (connect(fd, &sa.sa, offsetof(struct sockaddr_un, sun_path) + strlen(sa.un.sun_path)) < 0)
+        if (connect(fd, &sa.sa, SOCKADDR_UN_LEN(sa.un)) < 0)
                 return -errno;
 
         r = getpeercred(fd, &ucred);
@@ -184,25 +182,20 @@ static int export_legacy_dbus_address(
         _cleanup_free_ char *s = NULL;
         int r = PAM_BUF_ERR;
 
-        if (is_kdbus_available()) {
-                if (asprintf(&s, KERNEL_USER_BUS_ADDRESS_FMT ";" UNIX_USER_BUS_ADDRESS_FMT, uid, runtime) < 0)
-                        goto error;
-        } else {
-                /* FIXME: We *really* should move the access() check into the
-                 * daemons that spawn dbus-daemon, instead of forcing
-                 * DBUS_SESSION_BUS_ADDRESS= here. */
+        /* FIXME: We *really* should move the access() check into the
+         * daemons that spawn dbus-daemon, instead of forcing
+         * DBUS_SESSION_BUS_ADDRESS= here. */
 
-                s = strjoin(runtime, "/bus", NULL);
-                if (!s)
-                        goto error;
+        s = strjoin(runtime, "/bus", NULL);
+        if (!s)
+                goto error;
 
-                if (access(s, F_OK) < 0)
-                        return PAM_SUCCESS;
+        if (access(s, F_OK) < 0)
+                return PAM_SUCCESS;
 
-                s = mfree(s);
-                if (asprintf(&s, UNIX_USER_BUS_ADDRESS_FMT, runtime) < 0)
-                        goto error;
-        }
+        s = mfree(s);
+        if (asprintf(&s, UNIX_USER_BUS_ADDRESS_FMT, runtime) < 0)
+                goto error;
 
         r = pam_misc_setenv(handle, "DBUS_SESSION_BUS_ADDRESS", s, 0);
         if (r != PAM_SUCCESS)
@@ -220,8 +213,8 @@ _public_ PAM_EXTERN int pam_sm_open_session(
                 int flags,
                 int argc, const char **argv) {
 
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         const char
                 *username, *id, *object_path, *runtime_path,
                 *service = NULL,
@@ -230,7 +223,7 @@ _public_ PAM_EXTERN int pam_sm_open_session(
                 *seat = NULL,
                 *type = NULL, *class = NULL,
                 *class_pam = NULL, *type_pam = NULL, *cvtnr = NULL, *desktop = NULL;
-        _cleanup_bus_flush_close_unref_ sd_bus *bus = NULL;
+        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         int session_fd = -1, existing, r;
         bool debug = false, remote;
         struct passwd *pw;
@@ -267,28 +260,20 @@ _public_ PAM_EXTERN int pam_sm_open_session(
 
         pam_get_item(handle, PAM_SERVICE, (const void**) &service);
         if (streq_ptr(service, "systemd-user")) {
-                _cleanup_free_ char *p = NULL, *rt = NULL;
+                _cleanup_free_ char *rt = NULL;
 
-                if (asprintf(&p, "/run/systemd/users/"UID_FMT, pw->pw_uid) < 0)
+                if (asprintf(&rt, "/run/user/"UID_FMT, pw->pw_uid) < 0)
                         return PAM_BUF_ERR;
 
-                r = parse_env_file(p, NEWLINE,
-                                   "RUNTIME", &rt,
-                                   NULL);
-                if (r < 0 && r != -ENOENT)
-                        return PAM_SESSION_ERR;
-
-                if (rt)  {
-                        r = pam_misc_setenv(handle, "XDG_RUNTIME_DIR", rt, 0);
-                        if (r != PAM_SUCCESS) {
-                                pam_syslog(handle, LOG_ERR, "Failed to set runtime dir.");
-                                return r;
-                        }
-
-                        r = export_legacy_dbus_address(handle, pw->pw_uid, rt);
-                        if (r != PAM_SUCCESS)
-                                return r;
+                r = pam_misc_setenv(handle, "XDG_RUNTIME_DIR", rt, 0);
+                if (r != PAM_SUCCESS) {
+                        pam_syslog(handle, LOG_ERR, "Failed to set runtime dir.");
+                        return r;
                 }
+
+                r = export_legacy_dbus_address(handle, pw->pw_uid, rt);
+                if (r != PAM_SUCCESS)
+                        return r;
 
                 return PAM_SUCCESS;
         }
@@ -501,7 +486,7 @@ _public_ PAM_EXTERN int pam_sm_open_session(
                         return PAM_SESSION_ERR;
                 }
 
-                r = pam_set_data(handle, "systemd.session-fd", INT_TO_PTR(session_fd+1), NULL);
+                r = pam_set_data(handle, "systemd.session-fd", FD_TO_PTR(session_fd), NULL);
                 if (r != PAM_SUCCESS) {
                         pam_syslog(handle, LOG_ERR, "Failed to install session fd.");
                         safe_close(session_fd);
@@ -517,8 +502,8 @@ _public_ PAM_EXTERN int pam_sm_close_session(
                 int flags,
                 int argc, const char **argv) {
 
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_bus_flush_close_unref_ sd_bus *bus = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         const void *existing = NULL;
         const char *id;
         int r;

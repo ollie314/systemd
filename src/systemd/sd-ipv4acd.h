@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #ifndef foosdipv4acdfoo
 #define foosdipv4acdfoo
 
@@ -23,10 +21,11 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <netinet/in.h>
 #include <net/ethernet.h>
+#include <netinet/in.h>
 
 #include "sd-event.h"
+
 #include "_sd-common.h"
 
 _SD_BEGIN_DECLARATIONS;
@@ -38,21 +37,23 @@ enum {
 };
 
 typedef struct sd_ipv4acd sd_ipv4acd;
-typedef void (*sd_ipv4acd_cb_t)(sd_ipv4acd *ll, int event, void *userdata);
+typedef void (*sd_ipv4acd_callback_t)(sd_ipv4acd *acd, int event, void *userdata);
 
-int sd_ipv4acd_detach_event(sd_ipv4acd *ll);
-int sd_ipv4acd_attach_event(sd_ipv4acd *ll, sd_event *event, int priority);
-int sd_ipv4acd_get_address(sd_ipv4acd *ll, struct in_addr *address);
-int sd_ipv4acd_set_callback(sd_ipv4acd *ll, sd_ipv4acd_cb_t cb, void *userdata);
-int sd_ipv4acd_set_mac(sd_ipv4acd *ll, const struct ether_addr *addr);
-int sd_ipv4acd_set_index(sd_ipv4acd *ll, int interface_index);
-int sd_ipv4acd_set_address(sd_ipv4acd *ll, const struct in_addr *address);
-int sd_ipv4acd_is_running(sd_ipv4acd *ll);
-int sd_ipv4acd_start(sd_ipv4acd *ll);
-int sd_ipv4acd_stop(sd_ipv4acd *ll);
-sd_ipv4acd *sd_ipv4acd_ref(sd_ipv4acd *ll);
-sd_ipv4acd *sd_ipv4acd_unref(sd_ipv4acd *ll);
-int sd_ipv4acd_new (sd_ipv4acd **ret);
+int sd_ipv4acd_detach_event(sd_ipv4acd *acd);
+int sd_ipv4acd_attach_event(sd_ipv4acd *acd, sd_event *event, int64_t priority);
+int sd_ipv4acd_get_address(sd_ipv4acd *acd, struct in_addr *address);
+int sd_ipv4acd_set_callback(sd_ipv4acd *acd, sd_ipv4acd_callback_t cb, void *userdata);
+int sd_ipv4acd_set_mac(sd_ipv4acd *acd, const struct ether_addr *addr);
+int sd_ipv4acd_set_ifindex(sd_ipv4acd *acd, int interface_index);
+int sd_ipv4acd_set_address(sd_ipv4acd *acd, const struct in_addr *address);
+int sd_ipv4acd_is_running(sd_ipv4acd *acd);
+int sd_ipv4acd_start(sd_ipv4acd *acd);
+int sd_ipv4acd_stop(sd_ipv4acd *acd);
+sd_ipv4acd *sd_ipv4acd_ref(sd_ipv4acd *acd);
+sd_ipv4acd *sd_ipv4acd_unref(sd_ipv4acd *acd);
+int sd_ipv4acd_new(sd_ipv4acd **ret);
+
+_SD_DEFINE_POINTER_CLEANUP_FUNC(sd_ipv4acd, sd_ipv4acd_unref);
 
 _SD_END_DECLARATIONS;
 

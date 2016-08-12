@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,40 +17,38 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include <errno.h>
+#include <fcntl.h>
+#include <inttypes.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
+#include <unistd.h>
 
+#include "sd-bus-protocol.h"
 #include "sd-bus.h"
 #include "sd-daemon.h"
 #include "sd-event.h"
+#include "sd-id128.h"
 
 #include "alloc-util.h"
-#include "bus-error.h"
 #include "bus-internal.h"
 #include "bus-label.h"
 #include "bus-message.h"
 #include "bus-util.h"
-#include "cgroup-util.h"
 #include "def.h"
-#include "env-util.h"
 #include "escape.h"
 #include "fd-util.h"
-#include "macro.h"
 #include "missing.h"
 #include "parse-util.h"
-#include "path-util.h"
 #include "proc-cmdline.h"
-#include "process-util.h"
 #include "rlimit-util.h"
-#include "set.h"
-#include "signal-util.h"
 #include "stdio-util.h"
-#include "string-util.h"
 #include "strv.h"
-#include "syslog-util.h"
-#include "unit-name.h"
 #include "user-util.h"
-#include "utf8.h"
-#include "util.h"
 
 static int name_owner_change_callback(sd_bus_message *m, void *userdata, sd_bus_error *ret_error) {
         sd_event *e = userdata;
@@ -181,7 +177,7 @@ int bus_event_loop_with_idle(
 }
 
 int bus_name_has_owner(sd_bus *c, const char *name, sd_bus_error *error) {
-        _cleanup_bus_message_unref_ sd_bus_message *rep = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *rep = NULL;
         int r, has_owner = 0;
 
         assert(c);
@@ -207,7 +203,7 @@ int bus_name_has_owner(sd_bus *c, const char *name, sd_bus_error *error) {
 }
 
 static int check_good_user(sd_bus_message *m, uid_t good_user) {
-        _cleanup_bus_creds_unref_ sd_bus_creds *creds = NULL;
+        _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
         uid_t sender_uid;
         int r;
 
@@ -257,8 +253,8 @@ int bus_test_polkit(
                 return 1;
 #ifdef ENABLE_POLKIT
         else {
-                _cleanup_bus_message_unref_ sd_bus_message *request = NULL;
-                _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
+                _cleanup_(sd_bus_message_unrefp) sd_bus_message *request = NULL;
+                _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
                 int authorized = false, challenge = false;
                 const char *sender, **k, **v;
 
@@ -361,7 +357,7 @@ static void async_polkit_query_free(AsyncPolkitQuery *q) {
 }
 
 static int async_polkit_callback(sd_bus_message *reply, void *userdata, sd_bus_error *error) {
-        _cleanup_bus_error_free_ sd_bus_error error_buffer = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error_buffer = SD_BUS_ERROR_NULL;
         AsyncPolkitQuery *q = userdata;
         int r;
 
@@ -399,7 +395,7 @@ int bus_verify_polkit_async(
                 sd_bus_error *error) {
 
 #ifdef ENABLE_POLKIT
-        _cleanup_bus_message_unref_ sd_bus_message *pk = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *pk = NULL;
         AsyncPolkitQuery *q;
         const char *sender, **k, **v;
         sd_bus_message_handler_t callback;
@@ -587,7 +583,7 @@ int bus_check_peercred(sd_bus *c) {
 }
 
 int bus_connect_system_systemd(sd_bus **_bus) {
-        _cleanup_bus_unref_ sd_bus *bus = NULL;
+        _cleanup_(sd_bus_unrefp) sd_bus *bus = NULL;
         int r;
 
         assert(_bus);
@@ -641,7 +637,7 @@ int bus_connect_system_systemd(sd_bus **_bus) {
 }
 
 int bus_connect_user_systemd(sd_bus **_bus) {
-        _cleanup_bus_unref_ sd_bus *bus = NULL;
+        _cleanup_(sd_bus_unrefp) sd_bus *bus = NULL;
         _cleanup_free_ char *ee = NULL;
         const char *e;
         int r;
@@ -698,7 +694,15 @@ int bus_connect_user_systemd(sd_bus **_bus) {
         return 0;
 }
 
-int bus_print_property(const char *name, sd_bus_message *property, bool all) {
+#define print_property(name, fmt, ...)                                  \
+        do {                                                            \
+                if (value)                                              \
+                        printf(fmt "\n", __VA_ARGS__);                  \
+                else                                                    \
+                        printf("%s=" fmt "\n", name, __VA_ARGS__);      \
+        } while(0)
+
+int bus_print_property(const char *name, sd_bus_message *property, bool value, bool all) {
         char type;
         const char *contents;
         int r;
@@ -726,7 +730,7 @@ int bus_print_property(const char *name, sd_bus_message *property, bool all) {
                         if (!escaped)
                                 return -ENOMEM;
 
-                        printf("%s=%s\n", name, escaped);
+                        print_property(name, "%s", escaped);
                 }
 
                 return 1;
@@ -739,7 +743,7 @@ int bus_print_property(const char *name, sd_bus_message *property, bool all) {
                 if (r < 0)
                         return r;
 
-                printf("%s=%s\n", name, yes_no(b));
+                print_property(name, "%s", yes_no(b));
 
                 return 1;
         }
@@ -759,14 +763,14 @@ int bus_print_property(const char *name, sd_bus_message *property, bool all) {
 
                         t = format_timestamp(timestamp, sizeof(timestamp), u);
                         if (t || all)
-                                printf("%s=%s\n", name, strempty(t));
+                                print_property(name, "%s", strempty(t));
 
                 } else if (strstr(name, "USec")) {
                         char timespan[FORMAT_TIMESPAN_MAX];
 
-                        printf("%s=%s\n", name, format_timespan(timespan, sizeof(timespan), u, 0));
+                        print_property(name, "%s", format_timespan(timespan, sizeof(timespan), u, 0));
                 } else
-                        printf("%s=%llu\n", name, (unsigned long long) u);
+                        print_property(name, "%"PRIu64, u);
 
                 return 1;
         }
@@ -778,7 +782,7 @@ int bus_print_property(const char *name, sd_bus_message *property, bool all) {
                 if (r < 0)
                         return r;
 
-                printf("%s=%lld\n", name, (long long) i);
+                print_property(name, "%"PRIi64, i);
 
                 return 1;
         }
@@ -791,9 +795,9 @@ int bus_print_property(const char *name, sd_bus_message *property, bool all) {
                         return r;
 
                 if (strstr(name, "UMask") || strstr(name, "Mode"))
-                        printf("%s=%04o\n", name, u);
+                        print_property(name, "%04o", u);
                 else
-                        printf("%s=%u\n", name, (unsigned) u);
+                        print_property(name, "%"PRIu32, u);
 
                 return 1;
         }
@@ -805,7 +809,7 @@ int bus_print_property(const char *name, sd_bus_message *property, bool all) {
                 if (r < 0)
                         return r;
 
-                printf("%s=%i\n", name, (int) i);
+                print_property(name, "%"PRIi32, i);
                 return 1;
         }
 
@@ -816,7 +820,7 @@ int bus_print_property(const char *name, sd_bus_message *property, bool all) {
                 if (r < 0)
                         return r;
 
-                printf("%s=%g\n", name, d);
+                print_property(name, "%g", d);
                 return 1;
         }
 
@@ -829,10 +833,10 @@ int bus_print_property(const char *name, sd_bus_message *property, bool all) {
                         if (r < 0)
                                 return r;
 
-                        while((r = sd_bus_message_read_basic(property, SD_BUS_TYPE_STRING, &str)) > 0) {
+                        while ((r = sd_bus_message_read_basic(property, SD_BUS_TYPE_STRING, &str)) > 0) {
                                 _cleanup_free_ char *escaped = NULL;
 
-                                if (first)
+                                if (first && !value)
                                         printf("%s=", name);
 
                                 escaped = xescape(str, "\n ");
@@ -846,7 +850,7 @@ int bus_print_property(const char *name, sd_bus_message *property, bool all) {
                         if (r < 0)
                                 return r;
 
-                        if (first && all)
+                        if (first && all && !value)
                                 printf("%s=", name);
                         if (!first || all)
                                 puts("");
@@ -868,7 +872,8 @@ int bus_print_property(const char *name, sd_bus_message *property, bool all) {
                         if (all || n > 0) {
                                 unsigned int i;
 
-                                printf("%s=", name);
+                                if (!value)
+                                        printf("%s=", name);
 
                                 for (i = 0; i < n; i++)
                                         printf("%02x", u[i]);
@@ -889,7 +894,8 @@ int bus_print_property(const char *name, sd_bus_message *property, bool all) {
                         if (all || n > 0) {
                                 unsigned int i;
 
-                                printf("%s=", name);
+                                if (!value)
+                                        printf("%s=", name);
 
                                 for (i = 0; i < n; i++)
                                         printf("%08x", u[i]);
@@ -906,9 +912,9 @@ int bus_print_property(const char *name, sd_bus_message *property, bool all) {
         return 0;
 }
 
-int bus_print_all_properties(sd_bus *bus, const char *dest, const char *path, char **filter, bool all) {
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+int bus_print_all_properties(sd_bus *bus, const char *dest, const char *path, char **filter, bool value, bool all) {
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
         assert(bus);
@@ -946,7 +952,7 @@ int bus_print_all_properties(sd_bus *bus, const char *dest, const char *path, ch
                         if (r < 0)
                                 return r;
 
-                        r = bus_print_property(name, reply, all);
+                        r = bus_print_property(name, reply, value, all);
                         if (r < 0)
                                 return r;
                         if (r == 0) {
@@ -1042,7 +1048,7 @@ static int map_basic(sd_bus *bus, const char *member, sd_bus_message *m, sd_bus_
 
         case SD_BUS_TYPE_BOOLEAN: {
                 unsigned b;
-                bool *p = userdata;
+                int *p = userdata;
 
                 r = sd_bus_message_read_basic(m, type, &b);
                 if (r < 0)
@@ -1054,7 +1060,7 @@ static int map_basic(sd_bus *bus, const char *member, sd_bus_message *m, sd_bus_
         }
 
         case SD_BUS_TYPE_UINT32: {
-                uint64_t u;
+                uint32_t u;
                 uint32_t *p = userdata;
 
                 r = sd_bus_message_read_basic(m, type, &u);
@@ -1079,6 +1085,19 @@ static int map_basic(sd_bus *bus, const char *member, sd_bus_message *m, sd_bus_
                 break;
         }
 
+        case SD_BUS_TYPE_DOUBLE: {
+                double d;
+                double *p = userdata;
+
+                r = sd_bus_message_read_basic(m, type, &d);
+                if (r < 0)
+                        break;
+
+                *p = d;
+
+                break;
+        }
+
         default:
                 break;
         }
@@ -1091,7 +1110,7 @@ int bus_message_map_all_properties(
                 const struct bus_properties_map *map,
                 void *userdata) {
 
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
         assert(m);
@@ -1197,8 +1216,8 @@ int bus_map_all_properties(
                 const struct bus_properties_map *map,
                 void *userdata) {
 
-        _cleanup_bus_message_unref_ sd_bus_message *m = NULL;
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
         assert(bus);
@@ -1359,780 +1378,6 @@ int bus_log_create_error(int r) {
         return log_error_errno(r, "Failed to create bus message: %m");
 }
 
-int bus_parse_unit_info(sd_bus_message *message, UnitInfo *u) {
-        assert(message);
-        assert(u);
-
-        u->machine = NULL;
-
-        return sd_bus_message_read(
-                        message,
-                        "(ssssssouso)",
-                        &u->id,
-                        &u->description,
-                        &u->load_state,
-                        &u->active_state,
-                        &u->sub_state,
-                        &u->following,
-                        &u->unit_path,
-                        &u->job_id,
-                        &u->job_type,
-                        &u->job_path);
-}
-
-int bus_append_unit_property_assignment(sd_bus_message *m, const char *assignment) {
-        const char *eq, *field;
-        int r;
-
-        assert(m);
-        assert(assignment);
-
-        eq = strchr(assignment, '=');
-        if (!eq) {
-                log_error("Not an assignment: %s", assignment);
-                return -EINVAL;
-        }
-
-        field = strndupa(assignment, eq - assignment);
-        eq ++;
-
-        if (streq(field, "CPUQuota")) {
-
-                if (isempty(eq)) {
-
-                        r = sd_bus_message_append_basic(m, SD_BUS_TYPE_STRING, "CPUQuotaPerSecUSec");
-                        if (r < 0)
-                                return bus_log_create_error(r);
-
-                        r = sd_bus_message_append(m, "v", "t", USEC_INFINITY);
-
-                } else if (endswith(eq, "%")) {
-                        double percent;
-
-                        if (sscanf(eq, "%lf%%", &percent) != 1 || percent <= 0) {
-                                log_error("CPU quota '%s' invalid.", eq);
-                                return -EINVAL;
-                        }
-
-                        r = sd_bus_message_append_basic(m, SD_BUS_TYPE_STRING, "CPUQuotaPerSecUSec");
-                        if (r < 0)
-                                return bus_log_create_error(r);
-
-                        r = sd_bus_message_append(m, "v", "t", (usec_t) percent * USEC_PER_SEC / 100);
-                } else {
-                        log_error("CPU quota needs to be in percent.");
-                        return -EINVAL;
-                }
-
-                if (r < 0)
-                        return bus_log_create_error(r);
-
-                return 0;
-        } else if (streq(field, "EnvironmentFile")) {
-                r = sd_bus_message_append_basic(m, SD_BUS_TYPE_STRING, "EnvironmentFiles");
-                if (r < 0)
-                        return r;
-
-                r = sd_bus_message_append(m, "v", "a(sb)", 1,
-                                          eq[0] == '-' ? eq + 1 : eq,
-                                          eq[0] == '-');
-                if (r < 0)
-                        return r;
-                return 0;
-        }
-
-        r = sd_bus_message_append_basic(m, SD_BUS_TYPE_STRING, field);
-        if (r < 0)
-                return bus_log_create_error(r);
-
-        if (STR_IN_SET(field,
-                       "CPUAccounting", "MemoryAccounting", "BlockIOAccounting", "TasksAccounting",
-                       "SendSIGHUP", "SendSIGKILL", "WakeSystem", "DefaultDependencies",
-                       "IgnoreSIGPIPE", "TTYVHangup", "TTYReset", "RemainAfterExit",
-                       "PrivateTmp", "PrivateDevices", "PrivateNetwork", "NoNewPrivileges",
-                       "SyslogLevelPrefix")) {
-
-                r = parse_boolean(eq);
-                if (r < 0) {
-                        log_error("Failed to parse boolean assignment %s.", assignment);
-                        return -EINVAL;
-                }
-
-                r = sd_bus_message_append(m, "v", "b", r);
-
-        } else if (streq(field, "MemoryLimit")) {
-                uint64_t bytes;
-
-                if (isempty(eq) || streq(eq, "infinity"))
-                        bytes = (uint64_t) -1;
-                else {
-                        r = parse_size(eq, 1024, &bytes);
-                        if (r < 0) {
-                                log_error("Failed to parse bytes specification %s", assignment);
-                                return -EINVAL;
-                        }
-                }
-
-                r = sd_bus_message_append(m, "v", "t", bytes);
-
-        } else if (streq(field, "TasksMax")) {
-                uint64_t n;
-
-                if (isempty(eq) || streq(eq, "infinity"))
-                        n = (uint64_t) -1;
-                else {
-                        r = safe_atou64(eq, &n);
-                        if (r < 0) {
-                                log_error("Failed to parse maximum tasks specification %s", assignment);
-                                return -EINVAL;
-                        }
-                }
-
-                r = sd_bus_message_append(m, "v", "t", n);
-
-        } else if (STR_IN_SET(field, "CPUShares", "StartupCPUShares")) {
-                uint64_t u;
-
-                r = cg_cpu_shares_parse(eq, &u);
-                if (r < 0) {
-                        log_error("Failed to parse %s value %s.", field, eq);
-                        return -EINVAL;
-                }
-
-                r = sd_bus_message_append(m, "v", "t", u);
-
-        } else if (STR_IN_SET(field, "BlockIOWeight", "StartupBlockIOWeight")) {
-                uint64_t u;
-
-                r = cg_cpu_shares_parse(eq, &u);
-                if (r < 0) {
-                        log_error("Failed to parse %s value %s.", field, eq);
-                        return -EINVAL;
-                }
-
-                r = sd_bus_message_append(m, "v", "t", u);
-
-        } else if (STR_IN_SET(field,
-                              "User", "Group", "DevicePolicy", "KillMode",
-                              "UtmpIdentifier", "UtmpMode", "PAMName", "TTYPath",
-                              "StandardInput", "StandardOutput", "StandardError",
-                              "Description", "Slice", "Type", "WorkingDirectory",
-                              "RootDirectory", "SyslogIdentifier", "ProtectSystem",
-                              "ProtectHome"))
-                r = sd_bus_message_append(m, "v", "s", eq);
-
-        else if (streq(field, "SyslogLevel")) {
-                int level;
-
-                level = log_level_from_string(eq);
-                if (level < 0) {
-                        log_error("Failed to parse %s value %s.", field, eq);
-                        return -EINVAL;
-                }
-
-                r = sd_bus_message_append(m, "v", "i", level);
-
-        } else if (streq(field, "SyslogFacility")) {
-                int facility;
-
-                facility = log_facility_unshifted_from_string(eq);
-                if (facility < 0) {
-                        log_error("Failed to parse %s value %s.", field, eq);
-                        return -EINVAL;
-                }
-
-                r = sd_bus_message_append(m, "v", "i", facility);
-
-        } else if (streq(field, "DeviceAllow")) {
-
-                if (isempty(eq))
-                        r = sd_bus_message_append(m, "v", "a(ss)", 0);
-                else {
-                        const char *path, *rwm, *e;
-
-                        e = strchr(eq, ' ');
-                        if (e) {
-                                path = strndupa(eq, e - eq);
-                                rwm = e+1;
-                        } else {
-                                path = eq;
-                                rwm = "";
-                        }
-
-                        if (!path_startswith(path, "/dev")) {
-                                log_error("%s is not a device file in /dev.", path);
-                                return -EINVAL;
-                        }
-
-                        r = sd_bus_message_append(m, "v", "a(ss)", 1, path, rwm);
-                }
-
-        } else if (STR_IN_SET(field, "BlockIOReadBandwidth", "BlockIOWriteBandwidth")) {
-
-                if (isempty(eq))
-                        r = sd_bus_message_append(m, "v", "a(st)", 0);
-                else {
-                        const char *path, *bandwidth, *e;
-                        uint64_t bytes;
-
-                        e = strchr(eq, ' ');
-                        if (e) {
-                                path = strndupa(eq, e - eq);
-                                bandwidth = e+1;
-                        } else {
-                                log_error("Failed to parse %s value %s.", field, eq);
-                                return -EINVAL;
-                        }
-
-                        if (!path_startswith(path, "/dev")) {
-                                log_error("%s is not a device file in /dev.", path);
-                                return -EINVAL;
-                        }
-
-                        r = parse_size(bandwidth, 1000, &bytes);
-                        if (r < 0) {
-                                log_error("Failed to parse byte value %s.", bandwidth);
-                                return -EINVAL;
-                        }
-
-                        r = sd_bus_message_append(m, "v", "a(st)", 1, path, bytes);
-                }
-
-        } else if (streq(field, "BlockIODeviceWeight")) {
-
-                if (isempty(eq))
-                        r = sd_bus_message_append(m, "v", "a(st)", 0);
-                else {
-                        const char *path, *weight, *e;
-                        uint64_t u;
-
-                        e = strchr(eq, ' ');
-                        if (e) {
-                                path = strndupa(eq, e - eq);
-                                weight = e+1;
-                        } else {
-                                log_error("Failed to parse %s value %s.", field, eq);
-                                return -EINVAL;
-                        }
-
-                        if (!path_startswith(path, "/dev")) {
-                                log_error("%s is not a device file in /dev.", path);
-                                return -EINVAL;
-                        }
-
-                        r = safe_atou64(weight, &u);
-                        if (r < 0) {
-                                log_error("Failed to parse %s value %s.", field, weight);
-                                return -EINVAL;
-                        }
-                        r = sd_bus_message_append(m, "v", "a(st)", path, u);
-                }
-
-        } else if (rlimit_from_string(field) >= 0) {
-                uint64_t rl;
-
-                if (streq(eq, "infinity"))
-                        rl = (uint64_t) -1;
-                else {
-                        r = safe_atou64(eq, &rl);
-                        if (r < 0) {
-                                log_error("Invalid resource limit: %s", eq);
-                                return -EINVAL;
-                        }
-                }
-
-                r = sd_bus_message_append(m, "v", "t", rl);
-
-        } else if (streq(field, "Nice")) {
-                int32_t i;
-
-                r = safe_atoi32(eq, &i);
-                if (r < 0) {
-                        log_error("Failed to parse %s value %s.", field, eq);
-                        return -EINVAL;
-                }
-
-                r = sd_bus_message_append(m, "v", "i", i);
-
-        } else if (streq(field, "Environment")) {
-                const char *p;
-
-                r = sd_bus_message_open_container(m, 'v', "as");
-                if (r < 0)
-                        return bus_log_create_error(r);
-
-                r = sd_bus_message_open_container(m, 'a', "s");
-                if (r < 0)
-                        return bus_log_create_error(r);
-
-                p = eq;
-
-                for (;;) {
-                        _cleanup_free_ char *word = NULL;
-
-                        r = extract_first_word(&p, &word, NULL, EXTRACT_QUOTES|EXTRACT_CUNESCAPE);
-                        if (r < 0) {
-                                log_error("Failed to parse Environment value %s", eq);
-                                return -EINVAL;
-                        }
-                        if (r == 0)
-                                break;
-
-                        if (!env_assignment_is_valid(word)) {
-                                log_error("Invalid environment assignment: %s", eq);
-                                return -EINVAL;
-                        }
-
-                        r = sd_bus_message_append_basic(m, 's', word);
-                        if (r < 0)
-                                return bus_log_create_error(r);
-                }
-
-                r = sd_bus_message_close_container(m);
-                if (r < 0)
-                        return bus_log_create_error(r);
-
-                r = sd_bus_message_close_container(m);
-
-        } else if (streq(field, "KillSignal")) {
-                int sig;
-
-                sig = signal_from_string_try_harder(eq);
-                if (sig < 0) {
-                        log_error("Failed to parse %s value %s.", field, eq);
-                        return -EINVAL;
-                }
-
-                r = sd_bus_message_append(m, "v", "i", sig);
-
-        } else if (streq(field, "AccuracySec")) {
-                usec_t u;
-
-                r = parse_sec(eq, &u);
-                if (r < 0) {
-                        log_error("Failed to parse %s value %s", field, eq);
-                        return -EINVAL;
-                }
-
-                r = sd_bus_message_append(m, "v", "t", u);
-        } else if (streq(field, "TimerSlackNSec")) {
-                nsec_t n;
-
-                r = parse_nsec(eq, &n);
-                if (r < 0) {
-                        log_error("Failed to parse %s value %s", field, eq);
-                        return -EINVAL;
-                }
-
-                r = sd_bus_message_append(m, "v", "t", n);
-        } else if (streq(field, "OOMScoreAdjust")) {
-                int oa;
-
-                r = safe_atoi(eq, &oa);
-                if (r < 0) {
-                        log_error("Failed to parse %s value %s", field, eq);
-                        return -EINVAL;
-                }
-
-                if (!oom_score_adjust_is_valid(oa)) {
-                        log_error("OOM score adjust value out of range");
-                        return -EINVAL;
-                }
-
-                r = sd_bus_message_append(m, "v", "i", oa);
-        } else if (STR_IN_SET(field, "ReadWriteDirectories", "ReadOnlyDirectories", "InaccessibleDirectories")) {
-                const char *p;
-
-                r = sd_bus_message_open_container(m, 'v', "as");
-                if (r < 0)
-                        return bus_log_create_error(r);
-
-                r = sd_bus_message_open_container(m, 'a', "s");
-                if (r < 0)
-                        return bus_log_create_error(r);
-
-                p = eq;
-
-                for (;;) {
-                        _cleanup_free_ char *word = NULL;
-                        int offset;
-
-                        r = extract_first_word(&p, &word, NULL, EXTRACT_QUOTES);
-                        if (r < 0) {
-                                log_error("Failed to parse %s value %s", field, eq);
-                                return -EINVAL;
-                        }
-                        if (r == 0)
-                                break;
-
-                        if (!utf8_is_valid(word)) {
-                                log_error("Failed to parse %s value %s", field, eq);
-                                return -EINVAL;
-                        }
-
-                        offset = word[0] == '-';
-                        if (!path_is_absolute(word + offset)) {
-                                log_error("Failed to parse %s value %s", field, eq);
-                                return -EINVAL;
-                        }
-
-                        path_kill_slashes(word + offset);
-
-                        r = sd_bus_message_append_basic(m, 's', word);
-                        if (r < 0)
-                                return bus_log_create_error(r);
-                }
-
-                r = sd_bus_message_close_container(m);
-                if (r < 0)
-                        return bus_log_create_error(r);
-
-                r = sd_bus_message_close_container(m);
-
-        } else {
-                log_error("Unknown assignment %s.", assignment);
-                return -EINVAL;
-        }
-
-        if (r < 0)
-                return bus_log_create_error(r);
-
-        return 0;
-}
-
-typedef struct BusWaitForJobs {
-        sd_bus *bus;
-        Set *jobs;
-
-        char *name;
-        char *result;
-
-        sd_bus_slot *slot_job_removed;
-        sd_bus_slot *slot_disconnected;
-} BusWaitForJobs;
-
-static int match_disconnected(sd_bus_message *m, void *userdata, sd_bus_error *error) {
-        assert(m);
-
-        log_error("Warning! D-Bus connection terminated.");
-        sd_bus_close(sd_bus_message_get_bus(m));
-
-        return 0;
-}
-
-static int match_job_removed(sd_bus_message *m, void *userdata, sd_bus_error *error) {
-        const char *path, *unit, *result;
-        BusWaitForJobs *d = userdata;
-        uint32_t id;
-        char *found;
-        int r;
-
-        assert(m);
-        assert(d);
-
-        r = sd_bus_message_read(m, "uoss", &id, &path, &unit, &result);
-        if (r < 0) {
-                bus_log_parse_error(r);
-                return 0;
-        }
-
-        found = set_remove(d->jobs, (char*) path);
-        if (!found)
-                return 0;
-
-        free(found);
-
-        if (!isempty(result))
-                d->result = strdup(result);
-
-        if (!isempty(unit))
-                d->name = strdup(unit);
-
-        return 0;
-}
-
-void bus_wait_for_jobs_free(BusWaitForJobs *d) {
-        if (!d)
-                return;
-
-        set_free_free(d->jobs);
-
-        sd_bus_slot_unref(d->slot_disconnected);
-        sd_bus_slot_unref(d->slot_job_removed);
-
-        sd_bus_unref(d->bus);
-
-        free(d->name);
-        free(d->result);
-
-        free(d);
-}
-
-int bus_wait_for_jobs_new(sd_bus *bus, BusWaitForJobs **ret) {
-        _cleanup_(bus_wait_for_jobs_freep) BusWaitForJobs *d = NULL;
-        int r;
-
-        assert(bus);
-        assert(ret);
-
-        d = new0(BusWaitForJobs, 1);
-        if (!d)
-                return -ENOMEM;
-
-        d->bus = sd_bus_ref(bus);
-
-        /* When we are a bus client we match by sender. Direct
-         * connections OTOH have no initialized sender field, and
-         * hence we ignore the sender then */
-        r = sd_bus_add_match(
-                        bus,
-                        &d->slot_job_removed,
-                        bus->bus_client ?
-                        "type='signal',"
-                        "sender='org.freedesktop.systemd1',"
-                        "interface='org.freedesktop.systemd1.Manager',"
-                        "member='JobRemoved',"
-                        "path='/org/freedesktop/systemd1'" :
-                        "type='signal',"
-                        "interface='org.freedesktop.systemd1.Manager',"
-                        "member='JobRemoved',"
-                        "path='/org/freedesktop/systemd1'",
-                        match_job_removed, d);
-        if (r < 0)
-                return r;
-
-        r = sd_bus_add_match(
-                        bus,
-                        &d->slot_disconnected,
-                        "type='signal',"
-                        "sender='org.freedesktop.DBus.Local',"
-                        "interface='org.freedesktop.DBus.Local',"
-                        "member='Disconnected'",
-                        match_disconnected, d);
-        if (r < 0)
-                return r;
-
-        *ret = d;
-        d = NULL;
-
-        return 0;
-}
-
-static int bus_process_wait(sd_bus *bus) {
-        int r;
-
-        for (;;) {
-                r = sd_bus_process(bus, NULL);
-                if (r < 0)
-                        return r;
-                if (r > 0)
-                        return 0;
-
-                r = sd_bus_wait(bus, (uint64_t) -1);
-                if (r < 0)
-                        return r;
-        }
-}
-
-static int bus_job_get_service_result(BusWaitForJobs *d, char **result) {
-        _cleanup_free_ char *dbus_path = NULL;
-
-        assert(d);
-        assert(d->name);
-        assert(result);
-
-        dbus_path = unit_dbus_path_from_name(d->name);
-        if (!dbus_path)
-                return -ENOMEM;
-
-        return sd_bus_get_property_string(d->bus,
-                                          "org.freedesktop.systemd1",
-                                          dbus_path,
-                                          "org.freedesktop.systemd1.Service",
-                                          "Result",
-                                          NULL,
-                                          result);
-}
-
-static const struct {
-        const char *result, *explanation;
-} explanations [] = {
-        { "resources",   "a configured resource limit was exceeded" },
-        { "timeout",     "a timeout was exceeded" },
-        { "exit-code",   "the control process exited with error code" },
-        { "signal",      "a fatal signal was delivered to the control process" },
-        { "core-dump",   "a fatal signal was delivered causing the control process to dump core" },
-        { "watchdog",    "the service failed to send watchdog ping" },
-        { "start-limit", "start of the service was attempted too often" }
-};
-
-static void log_job_error_with_service_result(const char* service, const char *result) {
-        _cleanup_free_ char *service_shell_quoted = NULL;
-
-        assert(service);
-
-        service_shell_quoted = shell_maybe_quote(service);
-
-        if (!isempty(result)) {
-                unsigned i;
-
-                for (i = 0; i < ELEMENTSOF(explanations); ++i)
-                        if (streq(result, explanations[i].result))
-                                break;
-
-                if (i < ELEMENTSOF(explanations)) {
-                        log_error("Job for %s failed because %s. See \"systemctl status %s\" and \"journalctl -xe\" for details.\n",
-                                  service,
-                                  explanations[i].explanation,
-                                  strna(service_shell_quoted));
-
-                        goto finish;
-                }
-        }
-
-        log_error("Job for %s failed. See \"systemctl status %s\" and \"journalctl -xe\" for details.\n",
-                  service,
-                  strna(service_shell_quoted));
-
-finish:
-        /* For some results maybe additional explanation is required */
-        if (streq_ptr(result, "start-limit"))
-                log_info("To force a start use \"systemctl reset-failed %1$s\" followed by \"systemctl start %1$s\" again.",
-                         strna(service_shell_quoted));
-}
-
-static int check_wait_response(BusWaitForJobs *d, bool quiet) {
-        int r = 0;
-
-        assert(d->result);
-
-        if (!quiet) {
-                if (streq(d->result, "canceled"))
-                        log_error("Job for %s canceled.", strna(d->name));
-                else if (streq(d->result, "timeout"))
-                        log_error("Job for %s timed out.", strna(d->name));
-                else if (streq(d->result, "dependency"))
-                        log_error("A dependency job for %s failed. See 'journalctl -xe' for details.", strna(d->name));
-                else if (streq(d->result, "invalid"))
-                        log_error("Job for %s invalid.", strna(d->name));
-                else if (streq(d->result, "assert"))
-                        log_error("Assertion failed on job for %s.", strna(d->name));
-                else if (streq(d->result, "unsupported"))
-                        log_error("Operation on or unit type of %s not supported on this system.", strna(d->name));
-                else if (!streq(d->result, "done") && !streq(d->result, "skipped")) {
-                        if (d->name) {
-                                int q;
-                                _cleanup_free_ char *result = NULL;
-
-                                q = bus_job_get_service_result(d, &result);
-                                if (q < 0)
-                                        log_debug_errno(q, "Failed to get Result property of service %s: %m", d->name);
-
-                                log_job_error_with_service_result(d->name, result);
-                        } else
-                                log_error("Job failed. See \"journalctl -xe\" for details.");
-                }
-        }
-
-        if (streq(d->result, "canceled"))
-                r = -ECANCELED;
-        else if (streq(d->result, "timeout"))
-                r = -ETIME;
-        else if (streq(d->result, "dependency"))
-                r = -EIO;
-        else if (streq(d->result, "invalid"))
-                r = -ENOEXEC;
-        else if (streq(d->result, "assert"))
-                r = -EPROTO;
-        else if (streq(d->result, "unsupported"))
-                r = -EOPNOTSUPP;
-        else if (!streq(d->result, "done") && !streq(d->result, "skipped"))
-                r = -EIO;
-
-        return r;
-}
-
-int bus_wait_for_jobs(BusWaitForJobs *d, bool quiet) {
-        int r = 0;
-
-        assert(d);
-
-        while (!set_isempty(d->jobs)) {
-                int q;
-
-                q = bus_process_wait(d->bus);
-                if (q < 0)
-                        return log_error_errno(q, "Failed to wait for response: %m");
-
-                if (d->result) {
-                        q = check_wait_response(d, quiet);
-                        /* Return the first error as it is most likely to be
-                         * meaningful. */
-                        if (q < 0 && r == 0)
-                                r = q;
-
-                        log_debug_errno(q, "Got result %s/%m for job %s", strna(d->result), strna(d->name));
-                }
-
-                d->name = mfree(d->name);
-                d->result = mfree(d->result);
-        }
-
-        return r;
-}
-
-int bus_wait_for_jobs_add(BusWaitForJobs *d, const char *path) {
-        int r;
-
-        assert(d);
-
-        r = set_ensure_allocated(&d->jobs, &string_hash_ops);
-        if (r < 0)
-                return r;
-
-        return set_put_strdup(d->jobs, path);
-}
-
-int bus_wait_for_jobs_one(BusWaitForJobs *d, const char *path, bool quiet) {
-        int r;
-
-        r = bus_wait_for_jobs_add(d, path);
-        if (r < 0)
-                return log_oom();
-
-        return bus_wait_for_jobs(d, quiet);
-}
-
-int bus_deserialize_and_dump_unit_file_changes(sd_bus_message *m, bool quiet, UnitFileChange **changes, unsigned *n_changes) {
-        const char *type, *path, *source;
-        int r;
-
-        r = sd_bus_message_enter_container(m, SD_BUS_TYPE_ARRAY, "(sss)");
-        if (r < 0)
-                return bus_log_parse_error(r);
-
-        while ((r = sd_bus_message_read(m, "(sss)", &type, &path, &source)) > 0) {
-                if (!quiet) {
-                        if (streq(type, "symlink"))
-                                log_info("Created symlink from %s to %s.", path, source);
-                        else
-                                log_info("Removed symlink %s.", path);
-                }
-
-                r = unit_file_changes_add(changes, n_changes, streq(type, "symlink") ? UNIT_FILE_SYMLINK : UNIT_FILE_UNLINK, path, source);
-                if (r < 0)
-                        return r;
-        }
-        if (r < 0)
-                return bus_log_parse_error(r);
-
-        r = sd_bus_message_exit_container(m);
-        if (r < 0)
-                return bus_log_parse_error(r);
-
-        return 0;
-}
-
 /**
  * bus_path_encode_unique() - encode unique object path
  * @b: bus connection or NULL
@@ -2260,40 +1505,6 @@ int bus_path_decode_unique(const char *path, const char *prefix, char **ret_send
         return 1;
 }
 
-bool is_kdbus_wanted(void) {
-        _cleanup_free_ char *value = NULL;
-#ifdef ENABLE_KDBUS
-        const bool configured = true;
-#else
-        const bool configured = false;
-#endif
-
-        int r;
-
-        if (get_proc_cmdline_key("kdbus", NULL) > 0)
-                return true;
-
-        r = get_proc_cmdline_key("kdbus=", &value);
-        if (r <= 0)
-                return configured;
-
-        return parse_boolean(value) == 1;
-}
-
-bool is_kdbus_available(void) {
-        _cleanup_close_ int fd = -1;
-        struct kdbus_cmd cmd = { .size = sizeof(cmd), .flags = KDBUS_FLAG_NEGOTIATE };
-
-        if (!is_kdbus_wanted())
-                return false;
-
-        fd = open("/sys/fs/kdbus/control", O_RDWR | O_CLOEXEC | O_NONBLOCK | O_NOCTTY);
-        if (fd < 0)
-                return false;
-
-        return ioctl(fd, KDBUS_CMD_BUS_MAKE, &cmd) >= 0;
-}
-
 int bus_property_get_rlimit(
                 sd_bus *bus,
                 const char *path,
@@ -2306,23 +1517,28 @@ int bus_property_get_rlimit(
         struct rlimit *rl;
         uint64_t u;
         rlim_t x;
+        const char *is_soft;
 
         assert(bus);
         assert(reply);
         assert(userdata);
 
+        is_soft = endswith(property, "Soft");
         rl = *(struct rlimit**) userdata;
         if (rl)
-                x = rl->rlim_max;
+                x = is_soft ? rl->rlim_cur : rl->rlim_max;
         else {
                 struct rlimit buf = {};
                 int z;
+                const char *s;
 
-                z = rlimit_from_string(strstr(property, "Limit"));
+                s = is_soft ? strndupa(property, is_soft - property) : property;
+
+                z = rlimit_from_string(strstr(s, "Limit"));
                 assert(z >= 0);
 
                 getrlimit(z, &buf);
-                x = buf.rlim_max;
+                x = is_soft ? buf.rlim_cur : buf.rlim_max;
         }
 
         /* rlim_t might have different sizes, let's map

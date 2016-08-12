@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -22,8 +20,8 @@
 #include <stdio.h>
 
 #include "job.h"
-#include "unit.h"
 #include "service.h"
+#include "unit.h"
 
 int main(int argc, char*argv[]) {
         JobType a, b, c, ab, bc, ab_c, bc_a, a_bc;

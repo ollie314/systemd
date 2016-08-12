@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -21,10 +19,25 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include <alloca.h>
 #include <stdbool.h>
+#include <stddef.h>
 #include <string.h>
 
 #include "macro.h"
+
+/* What is interpreted as whitespace? */
+#define WHITESPACE        " \t\n\r"
+#define NEWLINE           "\n\r"
+#define QUOTES            "\"\'"
+#define COMMENTS          "#;"
+#define GLOB_CHARS        "*?["
+#define DIGITS            "0123456789"
+#define LOWERCASE_LETTERS "abcdefghijklmnopqrstuvwxyz"
+#define UPPERCASE_LETTERS "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+#define LETTERS           LOWERCASE_LETTERS UPPERCASE_LETTERS
+#define ALPHANUMERICAL    LETTERS DIGITS
+#define HEXDIGITS         DIGITS "abcdefABCDEF"
 
 #define streq(a,b) (strcmp((a),(b)) == 0)
 #define strneq(a, b, n) (strncmp((a), (b), (n)) == 0)
@@ -51,6 +64,10 @@ static inline const char *strna(const char *s) {
 
 static inline bool isempty(const char *p) {
         return !p || !p[0];
+}
+
+static inline const char *empty_to_null(const char *p) {
+        return isempty(p) ? NULL : p;
 }
 
 static inline char *startswith(const char *s, const char *prefix) {
@@ -116,7 +133,15 @@ char *strstrip(char *s);
 char *delete_chars(char *s, const char *bad);
 char *truncate_nl(char *s);
 
-char *ascii_strlower(char *path);
+char ascii_tolower(char x);
+char *ascii_strlower(char *s);
+char *ascii_strlower_n(char *s, size_t n);
+
+char ascii_toupper(char x);
+char *ascii_strupper(char *s);
+
+int ascii_strcasecmp_n(const char *a, const char *b, size_t n);
+int ascii_strcasecmp_nn(const char *a, size_t n, const char *b, size_t m);
 
 bool chars_intersect(const char *a, const char *b) _pure_;
 
@@ -162,8 +187,8 @@ static inline void *memmem_safe(const void *haystack, size_t haystacklen, const 
         return memmem(haystack, haystacklen, needle, needlelen);
 }
 
-#define memory_erase(p, l) memset((p), 'x', (l))
-void string_erase(char *x);
+void* memory_erase(void *p, size_t l);
+char *string_erase(char *x);
 
 char *string_free_erase(char *s);
 DEFINE_TRIVIAL_CLEANUP_FUNC(char *, string_free_erase);

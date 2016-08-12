@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -22,8 +20,7 @@
 ***/
 
 #include "in-addr-util.h"
-
-typedef struct Bond Bond;
+#include "list.h"
 
 #include "networkd-netdev.h"
 
@@ -108,7 +105,7 @@ typedef struct ArpIpTarget {
         LIST_FIELDS(struct ArpIpTarget, arp_ip_target);
 } ArpIpTarget;
 
-struct Bond {
+typedef struct Bond {
         NetDev meta;
 
         BondMode mode;
@@ -135,8 +132,9 @@ struct Bond {
 
         int n_arp_ip_targets;
         ArpIpTarget *arp_ip_targets;
-};
+} Bond;
 
+DEFINE_NETDEV_CAST(BOND, Bond);
 extern const NetDevVTable bond_vtable;
 
 const char *bond_mode_to_string(BondMode d) _const_;

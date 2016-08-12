@@ -15,7 +15,6 @@ GITWEB:
 
 MAILING LIST:
         http://lists.freedesktop.org/mailman/listinfo/systemd-devel
-        http://lists.freedesktop.org/mailman/listinfo/systemd-commits
 
 IRC:
         #systemd on irc.freenode.org
@@ -36,7 +35,7 @@ LICENSE:
         - except src/udev/* which is (currently still) GPLv2, GPLv2+
 
 REQUIREMENTS:
-        Linux kernel >= 3.11
+        Linux kernel >= 3.12
         Linux kernel >= 4.2 for unified cgroup hierarchy support
 
         Kernel Config Options:
@@ -89,10 +88,6 @@ REQUIREMENTS:
         Required for CPUQuota= in resource control unit settings
           CONFIG_CFS_BANDWIDTH
 
-        For systemd-bootchart, several proc debug interfaces are required:
-          CONFIG_SCHEDSTATS
-          CONFIG_SCHED_DEBUG
-
         For UEFI systems:
           CONFIG_EFIVAR_FS
           CONFIG_EFI_PARTITION
@@ -122,7 +117,8 @@ REQUIREMENTS:
 
         glibc >= 2.16
         libcap
-        libmount >= 2.27 (from util-linux)
+        libmount >= 2.27.1 (from util-linux)
+                (util-linux *must* be built with --enable-libmount-force-mountinfo)
         libseccomp >= 1.0.0 (optional)
         libblkid >= 2.24 (from util-linux) (optional)
         libkmod >= 15 (optional)
@@ -144,7 +140,7 @@ REQUIREMENTS:
         During runtime, you need the following additional
         dependencies:
 
-        util-linux >= v2.27 required
+        util-linux >= v2.27.1 required
         dbus >= 1.4.0 (strictly speaking optional, but recommended)
         dracut (optional)
         PolicyKit (optional)
@@ -201,11 +197,11 @@ USERS AND GROUPS:
         Similarly, the name resolution daemon requires the
         "systemd-resolve" system user and group to exist.
 
-        Similarly, the kdbus dbus1 proxy daemon requires the
-        "systemd-bus-proxy" system user and group to exist.
+        Similarly, the coredump support requires the
+        "systemd-coredump" system user and group to exist.
 
 NSS:
-        systemd ships with three NSS modules:
+        systemd ships with four glibc NSS modules:
 
         nss-myhostname resolves the local hostname to locally
         configured IP addresses, as well as "localhost" to
@@ -214,15 +210,22 @@ NSS:
         nss-resolve enables DNS resolution via the systemd-resolved
         DNS/LLMNR caching stub resolver "systemd-resolved".
 
-        nss-mymachines enables resolution of all local containers
-        registered with machined to their respective IP addresses.
+        nss-mymachines enables resolution of all local containers registered
+        with machined to their respective IP addresses. It also maps UID/GIDs
+        ranges used by containers to useful names.
 
-        To make use of these NSS modules, please add them to the
-        "hosts: " line in /etc/nsswitch.conf. The "resolve" module
-        should replace the glibc "dns" module in this file.
+        nss-systemd enables resolution of all dynamically allocated service
+        users. (See the DynamicUser= setting in unit files.)
 
-        The three modules should be used in the following order:
+        To make use of these NSS modules, please add them to the "hosts:",
+        "passwd:" and "group:" lines in /etc/nsswitch.conf. The "resolve"
+        module should replace the glibc "dns" module in this file (and don't
+        worry, it chain-loads the "dns" module if it can't talk to resolved).
 
+        The four modules should be used in the following order:
+
+                passwd: compat mymachines systemd
+                group: compat mymachines systemd
                 hosts: files mymachines resolve myhostname
 
 SYSV INIT.D SCRIPTS:
@@ -237,10 +240,6 @@ SYSV INIT.D SCRIPTS:
         needs to look like, and provide an implementation at the marked places.
 
 WARNINGS:
-        systemd will freeze execution during boot if /etc/mtab exists
-        but is not a symlink to /proc/mounts. Please ensure that
-        /etc/mtab is a proper symlink.
-
         systemd will warn you during boot if /usr is on a different
         file system than /. While in systemd itself very little will
         break if /usr is on a separate partition, many of its
@@ -267,3 +266,8 @@ WARNINGS:
         servers if not specified otherwise at configure time. You
         really should not ship an OS or device with this default
         setting. See DISTRO_PORTING for details.
+
+ENGINEERING AND CONSULTING SERVICES:
+        Kinvolk (https://kinvolk.io) offers professional engineering
+        and consulting services for systemd. Please contact Chris Kühl
+        <chris@kinvolk.io> for more information.

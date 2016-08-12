@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -20,22 +18,38 @@
 ***/
 
 #include <arpa/inet.h>
+#include <endian.h>
+#include <errno.h>
+#include <net/if.h>
+#include <stdint.h>
+#include <stdlib.h>
 
 #include "alloc-util.h"
 #include "in-addr-util.h"
+#include "macro.h"
+#include "parse-util.h"
+#include "util.h"
+
+bool in4_addr_is_null(const struct in_addr *a) {
+        return a->s_addr == 0;
+}
+
+bool in6_addr_is_null(const struct in6_addr *a) {
+        return
+                a->s6_addr32[0] == 0 &&
+                a->s6_addr32[1] == 0 &&
+                a->s6_addr32[2] == 0 &&
+                a->s6_addr32[3] == 0;
+}
 
 int in_addr_is_null(int family, const union in_addr_union *u) {
         assert(u);
 
         if (family == AF_INET)
-                return u->in.s_addr == 0;
+                return in4_addr_is_null(&u->in);
 
         if (family == AF_INET6)
-                return
-                        u->in6.s6_addr32[0] == 0 &&
-                        u->in6.s6_addr32[1] == 0 &&
-                        u->in6.s6_addr32[2] == 0 &&
-                        u->in6.s6_addr32[3] == 0;
+                return in6_addr_is_null(&u->in6);
 
         return -EAFNOSUPPORT;
 }
@@ -44,10 +58,23 @@ int in_addr_is_link_local(int family, const union in_addr_union *u) {
         assert(u);
 
         if (family == AF_INET)
-                return (be32toh(u->in.s_addr) & 0xFFFF0000) == (169U << 24 | 254U << 16);
+                return (be32toh(u->in.s_addr) & UINT32_C(0xFFFF0000)) == (UINT32_C(169) << 24 | UINT32_C(254) << 16);
 
         if (family == AF_INET6)
                 return IN6_IS_ADDR_LINKLOCAL(&u->in6);
+
+        return -EAFNOSUPPORT;
+}
+
+int in_addr_is_localhost(int family, const union in_addr_union *u) {
+        assert(u);
+
+        if (family == AF_INET)
+                /* All of 127.x.x.x is localhost. */
+                return (be32toh(u->in.s_addr) & UINT32_C(0xFF000000)) == UINT32_C(127) << 24;
+
+        if (family == AF_INET6)
+                return IN6_IS_ADDR_LOOPBACK(&u->in6);
 
         return -EAFNOSUPPORT;
 }
@@ -200,11 +227,53 @@ int in_addr_to_string(int family, const union in_addr_union *u, char **ret) {
         errno = 0;
         if (!inet_ntop(family, u, x, l)) {
                 free(x);
-                return errno ? -errno : -EINVAL;
+                return errno > 0 ? -errno : -EINVAL;
         }
 
         *ret = x;
         return 0;
+}
+
+int in_addr_ifindex_to_string(int family, const union in_addr_union *u, int ifindex, char **ret) {
+        size_t l;
+        char *x;
+        int r;
+
+        assert(u);
+        assert(ret);
+
+        /* Much like in_addr_to_string(), but optionally appends the zone interface index to the address, to properly
+         * handle IPv6 link-local addresses. */
+
+        if (family != AF_INET6)
+                goto fallback;
+        if (ifindex <= 0)
+                goto fallback;
+
+        r = in_addr_is_link_local(family, u);
+        if (r < 0)
+                return r;
+        if (r == 0)
+                goto fallback;
+
+        l = INET6_ADDRSTRLEN + 1 + DECIMAL_STR_MAX(ifindex) + 1;
+        x = new(char, l);
+        if (!x)
+                return -ENOMEM;
+
+        errno = 0;
+        if (!inet_ntop(family, u, x, l)) {
+                free(x);
+                return errno > 0 ? -errno : -EINVAL;
+        }
+
+        sprintf(strchr(x, 0), "%%%i", ifindex);
+        *ret = x;
+
+        return 0;
+
+fallback:
+        return in_addr_to_string(family, u, ret);
 }
 
 int in_addr_from_string(int family, const char *s, union in_addr_union *ret) {
@@ -217,7 +286,7 @@ int in_addr_from_string(int family, const char *s, union in_addr_union *ret) {
 
         errno = 0;
         if (inet_pton(family, s, ret) <= 0)
-                return errno ? -errno : -EINVAL;
+                return errno > 0 ? -errno : -EINVAL;
 
         return 0;
 }
@@ -242,6 +311,47 @@ int in_addr_from_string_auto(const char *s, int *family, union in_addr_union *re
         }
 
         return -EINVAL;
+}
+
+int in_addr_ifindex_from_string_auto(const char *s, int *family, union in_addr_union *ret, int *ifindex) {
+        const char *suffix;
+        int r, ifi = 0;
+
+        assert(s);
+        assert(family);
+        assert(ret);
+
+        /* Similar to in_addr_from_string_auto() but also parses an optionally appended IPv6 zone suffix ("scope id")
+         * if one is found. */
+
+        suffix = strchr(s, '%');
+        if (suffix) {
+
+                if (ifindex) {
+                        /* If we shall return the interface index, try to parse it */
+                        r = parse_ifindex(suffix + 1, &ifi);
+                        if (r < 0) {
+                                unsigned u;
+
+                                u = if_nametoindex(suffix + 1);
+                                if (u <= 0)
+                                        return -errno;
+
+                                ifi = (int) u;
+                        }
+                }
+
+                s = strndupa(s, suffix - s);
+        }
+
+        r = in_addr_from_string_auto(s, family, ret);
+        if (r < 0)
+                return r;
+
+        if (ifindex)
+                *ifindex = ifi;
+
+        return r;
 }
 
 unsigned char in_addr_netmask_to_prefixlen(const struct in_addr *addr) {

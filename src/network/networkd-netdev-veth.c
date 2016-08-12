@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
     This file is part of systemd.
 
@@ -23,6 +21,7 @@
 #include <linux/veth.h>
 
 #include "sd-netlink.h"
+
 #include "networkd-netdev-veth.h"
 
 static int netdev_veth_fill_message_create(NetDev *netdev, Link *link, sd_netlink_message *m) {

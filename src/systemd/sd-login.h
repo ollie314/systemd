@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #ifndef foosdloginhfoo
 #define foosdloginhfoo
 
@@ -22,8 +20,8 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <sys/types.h>
 #include <inttypes.h>
+#include <sys/types.h>
 
 #include "_sd-common.h"
 
@@ -110,7 +108,7 @@ int sd_peer_get_slice(int fd, char **slice);
 int sd_peer_get_user_slice(int fd, char **slice);
 
 /* Similar to sd_pid_get_machine_name(), but retrieves data about the
- * peer of a a connected AF_UNIX socket */
+ * peer of a connected AF_UNIX socket */
 int sd_peer_get_machine_name(int fd, char **machine);
 
 /* Similar to sd_pid_get_cgroup(), but retrieves data about the peer
@@ -239,6 +237,8 @@ int sd_login_monitor_get_events(sd_login_monitor *m);
 
 /* Get timeout for poll(), as usec value relative to CLOCK_MONOTONIC's epoch */
 int sd_login_monitor_get_timeout(sd_login_monitor *m, uint64_t *timeout_usec);
+
+_SD_DEFINE_POINTER_CLEANUP_FUNC(sd_login_monitor, sd_login_monitor_unref);
 
 _SD_END_DECLARATIONS;
 

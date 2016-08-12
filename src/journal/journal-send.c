@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -52,7 +50,7 @@
                 *_f = alloca(_fl + 10);           \
                 memcpy(*_f, "CODE_FUNC=", 10);    \
                 memcpy(*_f + 10, _func, _fl);     \
-        } while(false)
+        } while (false)
 
 /* We open a single fd, and we'll share it with the current process,
  * all its threads, and all its subprocesses. This means we need to
@@ -109,6 +107,13 @@ _public_ int sd_journal_printv(int priority, const char *format, va_list ap) {
         memcpy(buffer, "MESSAGE=", 8);
         vsnprintf(buffer+8, sizeof(buffer) - 8, format, ap);
 
+        /* Strip trailing whitespace, keep prefix whitespace. */
+        (void) strstrip(buffer);
+
+        /* Suppress empty lines */
+        if (isempty(buffer+8))
+                return 0;
+
         zero(iov);
         IOVEC_SET_STRING(iov[0], buffer);
         IOVEC_SET_STRING(iov[1], p);
@@ -160,6 +165,8 @@ _printf_(1, 0) static int fill_iovec_sprintf(const char *format, va_list ap, int
 
                 VA_FORMAT_ADVANCE(format, ap);
 
+                (void) strstrip(buffer); /* strip trailing whitespace, keep prefixing whitespace */
+
                 IOVEC_SET_STRING(iov[i++], buffer);
 
                 format = va_arg(ap, char *);
@@ -210,13 +217,13 @@ _public_ int sd_journal_sendv(const struct iovec *iov, int n) {
         struct iovec *w;
         uint64_t *l;
         int i, j = 0;
-        struct sockaddr_un sa = {
-                .sun_family = AF_UNIX,
-                .sun_path = "/run/systemd/journal/socket",
+        static const union sockaddr_union sa = {
+                .un.sun_family = AF_UNIX,
+                .un.sun_path = "/run/systemd/journal/socket",
         };
         struct msghdr mh = {
-                .msg_name = &sa,
-                .msg_namelen = offsetof(struct sockaddr_un, sun_path) + strlen(sa.sun_path),
+                .msg_name = (struct sockaddr*) &sa.sa,
+                .msg_namelen = SOCKADDR_UN_LEN(sa.un),
         };
         ssize_t k;
         bool have_syslog_identifier = false;
@@ -225,8 +232,8 @@ _public_ int sd_journal_sendv(const struct iovec *iov, int n) {
         assert_return(iov, -EINVAL);
         assert_return(n > 0, -EINVAL);
 
-        w = alloca(sizeof(struct iovec) * n * 5 + 3);
-        l = alloca(sizeof(uint64_t) * n);
+        w = newa(struct iovec, n * 5 + 3);
+        l = newa(uint64_t, n);
 
         for (i = 0; i < n; i++) {
                 char *c, *nl;
@@ -318,7 +325,7 @@ _public_ int sd_journal_sendv(const struct iovec *iov, int n) {
         buffer_fd = memfd_new(NULL);
         if (buffer_fd < 0) {
                 if (buffer_fd == -ENOSYS) {
-                        buffer_fd = open_tmpfile("/dev/shm", O_RDWR | O_CLOEXEC);
+                        buffer_fd = open_tmpfile_unlinkable("/dev/shm", O_RDWR | O_CLOEXEC);
                         if (buffer_fd < 0)
                                 return buffer_fd;
 
@@ -337,7 +344,11 @@ _public_ int sd_journal_sendv(const struct iovec *iov, int n) {
                         return r;
         }
 
-        return send_one_fd(fd, buffer_fd, 0);
+        r = send_one_fd_sa(fd, buffer_fd, mh.msg_name, mh.msg_namelen, 0);
+        if (r == -ENOENT)
+                /* Fail silently if the journal is not available */
+                return 0;
+        return r;
 }
 
 static int fill_iovec_perror_and_send(const char *message, int skip, struct iovec iov[]) {
@@ -368,6 +379,7 @@ static int fill_iovec_perror_and_send(const char *message, int skip, struct iove
 
                         xsprintf(error, "ERRNO=%i", _saved_errno_);
 
+                        assert_cc(3 == LOG_ERR);
                         IOVEC_SET_STRING(iov[skip+0], "PRIORITY=3");
                         IOVEC_SET_STRING(iov[skip+1], buffer);
                         IOVEC_SET_STRING(iov[skip+2], error);
@@ -389,7 +401,7 @@ _public_ int sd_journal_perror(const char *message) {
 }
 
 _public_ int sd_journal_stream_fd(const char *identifier, int priority, int level_prefix) {
-        union sockaddr_union sa = {
+        static const union sockaddr_union sa = {
                 .un.sun_family = AF_UNIX,
                 .un.sun_path = "/run/systemd/journal/stdout",
         };
@@ -405,7 +417,7 @@ _public_ int sd_journal_stream_fd(const char *identifier, int priority, int leve
         if (fd < 0)
                 return -errno;
 
-        r = connect(fd, &sa.sa, offsetof(union sockaddr_union, un.sun_path) + strlen(sa.un.sun_path));
+        r = connect(fd, &sa.sa, SOCKADDR_UN_LEN(sa.un));
         if (r < 0)
                 return -errno;
 
@@ -467,6 +479,13 @@ _public_ int sd_journal_printv_with_location(int priority, const char *file, con
 
         memcpy(buffer, "MESSAGE=", 8);
         vsnprintf(buffer+8, sizeof(buffer) - 8, format, ap);
+
+        /* Strip trailing whitespace, keep prefixing whitespace */
+        (void) strstrip(buffer);
+
+        /* Suppress empty lines */
+        if (isempty(buffer+8))
+                return 0;
 
         /* func is initialized from __func__ which is not a macro, but
          * a static const char[], hence cannot easily be prefixed with

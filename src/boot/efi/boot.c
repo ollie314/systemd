@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /*
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
@@ -18,12 +16,13 @@
 #include <efi.h>
 #include <efilib.h>
 
-#include "util.h"
 #include "console.h"
-#include "graphics.h"
-#include "pefile.h"
 #include "disk.h"
+#include "graphics.h"
 #include "linux.h"
+#include "pefile.h"
+#include "util.h"
+#include "measure.h"
 
 #ifndef EFI_OS_INDICATIONS_BOOT_TO_FW_UI
 #define EFI_OS_INDICATIONS_BOOT_TO_FW_UI 0x0000000000000001ULL
@@ -1646,6 +1645,18 @@ static EFI_STATUS image_start(EFI_HANDLE parent_image, const Config *config, con
                 }
                 loaded_image->LoadOptions = options;
                 loaded_image->LoadOptionsSize = (StrLen(loaded_image->LoadOptions)+1) * sizeof(CHAR16);
+
+#ifdef SD_BOOT_LOG_TPM
+                /* Try to log any options to the TPM, escpecially to catch manually edited options */
+                err = tpm_log_event(SD_TPM_PCR,
+                                    (EFI_PHYSICAL_ADDRESS) loaded_image->LoadOptions,
+                                    loaded_image->LoadOptionsSize, loaded_image->LoadOptions);
+                if (EFI_ERROR(err)) {
+                        Print(L"Unable to add image options measurement: %r", err);
+                        uefi_call_wrapper(BS->Stall, 1, 3 * 1000 * 1000);
+                        return err;
+                }
+#endif
         }
 
         efivar_set_time_usec(L"LoaderTimeExecUSec", 0);

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -20,9 +18,9 @@
 ***/
 
 #include <errno.h>
+#include <pwd.h>
 #include <string.h>
 #include <unistd.h>
-#include <pwd.h>
 
 #include "sd-messages.h"
 
@@ -67,7 +65,7 @@ bool logind_wall_tty_filter(const char *tty, void *userdata) {
 
         assert(m);
 
-        if (!startswith(tty, "/dev/"))
+        if (!startswith(tty, "/dev/") || !m->scheduled_shutdown_tty)
                 return true;
 
         return !streq(tty + 5, m->scheduled_shutdown_tty);

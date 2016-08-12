@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -64,6 +62,7 @@ static inline bool path_spec_owns_inotify_fd(PathSpec *s, int fd) {
 typedef enum PathResult {
         PATH_SUCCESS,
         PATH_FAILURE_RESOURCES,
+        PATH_FAILURE_START_LIMIT_HIT,
         _PATH_RESULT_MAX,
         _PATH_RESULT_INVALID = -1
 } PathResult;

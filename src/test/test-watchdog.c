@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -21,8 +19,8 @@
 
 #include <unistd.h>
 
-#include "watchdog.h"
 #include "log.h"
+#include "watchdog.h"
 
 int main(int argc, char *argv[]) {
         usec_t t = 10 * USEC_PER_SEC;

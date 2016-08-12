@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -30,6 +28,7 @@
 #include "alloc-util.h"
 #include "analyze-verify.h"
 #include "bus-error.h"
+#include "bus-unit-util.h"
 #include "bus-util.h"
 #include "glob-util.h"
 #include "hashmap.h"
@@ -62,7 +61,7 @@
                 svg("  <text class=\"%s\" x=\"%.03f\" y=\"%.03f\">", (b) ? "left" : "right", SCALE_X * (x) + (b ? 5.0 : -5.0), SCALE_Y * (y) + 14.0); \
                 svg(format, ## __VA_ARGS__);                            \
                 svg("</text>\n");                                       \
-        } while(false)
+        } while (false)
 
 static enum dot {
         DEP_ALL,
@@ -125,16 +124,8 @@ struct host_info {
         char *architecture;
 };
 
-static void pager_open_if_enabled(void) {
-
-        if (arg_no_pager)
-                return;
-
-        pager_open(false);
-}
-
 static int bus_get_uint64_property(sd_bus *bus, const char *path, const char *interface, const char *property, uint64_t *val) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
         assert(bus);
@@ -161,7 +152,7 @@ static int bus_get_uint64_property(sd_bus *bus, const char *path, const char *in
 }
 
 static int bus_get_unit_property_strv(sd_bus *bus, const char *path, const char *property, char ***strv) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
         assert(bus);
@@ -339,8 +330,8 @@ static void free_host_info(struct host_info *hi) {
 DEFINE_TRIVIAL_CLEANUP_FUNC(struct host_info*, free_host_info);
 
 static int acquire_time_data(sd_bus *bus, struct unit_times **out) {
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r, c = 0;
         struct boot_times *boot_times = NULL;
         struct unit_times *unit_times = NULL;
@@ -455,7 +446,7 @@ static int acquire_host_info(sd_bus *bus, struct host_info **hi) {
                 {}
         };
 
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(free_host_infop) struct host_info *host;
         int r;
 
@@ -761,15 +752,15 @@ static int list_dependencies_print(const char *name, unsigned int level, unsigne
         char ts[FORMAT_TIMESPAN_MAX], ts2[FORMAT_TIMESPAN_MAX];
 
         for (i = level; i != 0; i--)
-                printf("%s", draw_special_char(branches & (1 << (i-1)) ? DRAW_TREE_VERTICAL : DRAW_TREE_SPACE));
+                printf("%s", special_glyph(branches & (1 << (i-1)) ? TREE_VERTICAL : TREE_SPACE));
 
-        printf("%s", draw_special_char(last ? DRAW_TREE_RIGHT : DRAW_TREE_BRANCH));
+        printf("%s", special_glyph(last ? TREE_RIGHT : TREE_BRANCH));
 
         if (times) {
                 if (times->time)
-                        printf("%s%s @%s +%s%s", ANSI_HIGHLIGHT_RED, name,
+                        printf("%s%s @%s +%s%s", ansi_highlight_red(), name,
                                format_timespan(ts, sizeof(ts), times->activating - boot->userspace_time, USEC_PER_MSEC),
-                               format_timespan(ts2, sizeof(ts2), times->time, USEC_PER_MSEC), ANSI_NORMAL);
+                               format_timespan(ts2, sizeof(ts2), times->time, USEC_PER_MSEC), ansi_normal());
                 else if (times->activated > boot->userspace_time)
                         printf("%s @%s", name, format_timespan(ts, sizeof(ts), times->activated - boot->userspace_time, USEC_PER_MSEC));
                 else
@@ -899,8 +890,8 @@ static int list_dependencies(sd_bus *bus, const char *name) {
         int r;
         const char *id;
         _cleanup_free_ char *path = NULL;
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         struct boot_times *boot;
 
         assert(bus);
@@ -935,8 +926,8 @@ static int list_dependencies(sd_bus *bus, const char *name) {
 
         if (times) {
                 if (times->time)
-                        printf("%s%s +%s%s\n", ANSI_HIGHLIGHT_RED, id,
-                               format_timespan(ts, sizeof(ts), times->time, USEC_PER_MSEC), ANSI_NORMAL);
+                        printf("%s%s +%s%s\n", ansi_highlight_red(), id,
+                               format_timespan(ts, sizeof(ts), times->time, USEC_PER_MSEC), ansi_normal());
                 else if (times->activated > boot->userspace_time)
                         printf("%s @%s\n", id, format_timespan(ts, sizeof(ts), times->activated - boot->userspace_time, USEC_PER_MSEC));
                 else
@@ -967,7 +958,7 @@ static int analyze_critical_chain(sd_bus *bus, char *names[]) {
         }
         unit_times_hashmap = h;
 
-        pager_open_if_enabled();
+        pager_open(arg_no_pager, false);
 
         puts("The time after the unit is active or started is printed after the \"@\" character.\n"
              "The time the unit takes to start is printed after the \"+\" character.\n");
@@ -995,7 +986,7 @@ static int analyze_blame(sd_bus *bus) {
 
         qsort(times, n, sizeof(struct unit_times), compare_unit_time);
 
-        pager_open_if_enabled();
+        pager_open(arg_no_pager, false);
 
         for (i = 0; i < (unsigned) n; i++) {
                 char ts[FORMAT_TIMESPAN_MAX];
@@ -1066,29 +1057,23 @@ static int graph_one(sd_bus *bus, const UnitInfo *u, char *patterns[], char *fro
         assert(bus);
         assert(u);
 
-        if (arg_dot == DEP_ORDER ||arg_dot == DEP_ALL) {
+        if (IN_SET(arg_dot, DEP_ORDER, DEP_ALL)) {
                 r = graph_one_property(bus, u, "After", "green", patterns, from_patterns, to_patterns);
                 if (r < 0)
                         return r;
         }
 
-        if (arg_dot == DEP_REQUIRE ||arg_dot == DEP_ALL) {
+        if (IN_SET(arg_dot, DEP_REQUIRE, DEP_ALL)) {
                 r = graph_one_property(bus, u, "Requires", "black", patterns, from_patterns, to_patterns);
                 if (r < 0)
                         return r;
-                r = graph_one_property(bus, u, "RequiresOverridable", "black", patterns, from_patterns, to_patterns);
-                if (r < 0)
-                        return r;
-                r = graph_one_property(bus, u, "RequisiteOverridable", "darkblue", patterns, from_patterns, to_patterns);
+                r = graph_one_property(bus, u, "Requisite", "darkblue", patterns, from_patterns, to_patterns);
                 if (r < 0)
                         return r;
                 r = graph_one_property(bus, u, "Wants", "grey66", patterns, from_patterns, to_patterns);
                 if (r < 0)
                         return r;
                 r = graph_one_property(bus, u, "Conflicts", "red", patterns, from_patterns, to_patterns);
-                if (r < 0)
-                        return r;
-                r = graph_one_property(bus, u, "ConflictedBy", "red", patterns, from_patterns, to_patterns);
                 if (r < 0)
                         return r;
         }
@@ -1102,7 +1087,7 @@ static int expand_patterns(sd_bus *bus, char **patterns, char ***ret) {
         int r;
 
         STRV_FOREACH(pattern, patterns) {
-                _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+                _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
                 _cleanup_free_ char *unit = NULL, *unit_id = NULL;
 
                 if (strv_extend(&expanded_patterns, *pattern) < 0)
@@ -1139,8 +1124,8 @@ static int expand_patterns(sd_bus *bus, char **patterns, char ***ret) {
 }
 
 static int dot(sd_bus *bus, char* patterns[]) {
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_strv_free_ char **expanded_patterns = NULL;
         _cleanup_strv_free_ char **expanded_from_patterns = NULL;
         _cleanup_strv_free_ char **expanded_to_patterns = NULL;
@@ -1204,8 +1189,8 @@ static int dot(sd_bus *bus, char* patterns[]) {
 }
 
 static int dump(sd_bus *bus, char **args) {
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         const char *text = NULL;
         int r;
 
@@ -1214,7 +1199,7 @@ static int dump(sd_bus *bus, char **args) {
                 return -E2BIG;
         }
 
-        pager_open_if_enabled();
+        pager_open(arg_no_pager, false);
 
         r = sd_bus_call_method(
                         bus,
@@ -1237,7 +1222,7 @@ static int dump(sd_bus *bus, char **args) {
 }
 
 static int set_log_level(sd_bus *bus, char **args) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
         assert(bus);
@@ -1264,7 +1249,7 @@ static int set_log_level(sd_bus *bus, char **args) {
 }
 
 static int set_log_target(sd_bus *bus, char **args) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
         assert(bus);
@@ -1292,7 +1277,7 @@ static int set_log_target(sd_bus *bus, char **args) {
 
 static void help(void) {
 
-        pager_open_if_enabled();
+        pager_open(arg_no_pager, false);
 
         printf("%s [OPTIONS...] {COMMAND} ...\n\n"
                "Profile systemd, show unit dependencies, check unit files.\n\n"
@@ -1459,10 +1444,10 @@ int main(int argc, char *argv[]) {
 
         if (streq_ptr(argv[optind], "verify"))
                 r = verify_units(argv+optind+1,
-                                 arg_user ? MANAGER_USER : MANAGER_SYSTEM,
+                                 arg_user ? UNIT_FILE_USER : UNIT_FILE_SYSTEM,
                                  arg_man);
         else {
-                _cleanup_bus_flush_close_unref_ sd_bus *bus = NULL;
+                _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
 
                 r = bus_connect_transport_systemd(arg_transport, arg_host, arg_user, &bus);
                 if (r < 0) {

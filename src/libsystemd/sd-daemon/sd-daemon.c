@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -44,6 +42,8 @@
 #include "strv.h"
 #include "util.h"
 
+#define SNDBUF_SIZE (8*1024*1024)
+
 static void unsetenv_all(bool unset_environment) {
 
         if (!unset_environment)
@@ -56,8 +56,7 @@ static void unsetenv_all(bool unset_environment) {
 
 _public_ int sd_listen_fds(int unset_environment) {
         const char *e;
-        unsigned n;
-        int r, fd;
+        int n, r, fd;
         pid_t pid;
 
         e = getenv("LISTEN_PID");
@@ -82,17 +81,23 @@ _public_ int sd_listen_fds(int unset_environment) {
                 goto finish;
         }
 
-        r = safe_atou(e, &n);
+        r = safe_atoi(e, &n);
         if (r < 0)
                 goto finish;
 
-        for (fd = SD_LISTEN_FDS_START; fd < SD_LISTEN_FDS_START + (int) n; fd ++) {
+        assert_cc(SD_LISTEN_FDS_START < INT_MAX);
+        if (n <= 0 || n > INT_MAX - SD_LISTEN_FDS_START) {
+                r = -EINVAL;
+                goto finish;
+        }
+
+        for (fd = SD_LISTEN_FDS_START; fd < SD_LISTEN_FDS_START + n; fd ++) {
                 r = fd_cloexec(fd, true);
                 if (r < 0)
                         goto finish;
         }
 
-        r = (int) n;
+        r = n;
 
 finish:
         unsetenv_all(unset_environment);
@@ -305,12 +310,12 @@ _public_ int sd_is_socket_inet(int fd, int family, int type, int listening, uint
                         if (l < sizeof(struct sockaddr_in))
                                 return -EINVAL;
 
-                        return htons(port) == sockaddr.in.sin_port;
+                        return htobe16(port) == sockaddr.in.sin_port;
                 } else {
                         if (l < sizeof(struct sockaddr_in6))
                                 return -EINVAL;
 
-                        return htons(port) == sockaddr.in6.sin6_port;
+                        return htobe16(port) == sockaddr.in6.sin6_port;
                 }
         }
 
@@ -434,11 +439,18 @@ _public_ int sd_pid_notify_with_fds(pid_t pid, int unset_environment, const char
                 goto finish;
         }
 
+        if (strlen(e) > sizeof(sockaddr.un.sun_path)) {
+                r = -EINVAL;
+                goto finish;
+        }
+
         fd = socket(AF_UNIX, SOCK_DGRAM|SOCK_CLOEXEC, 0);
         if (fd < 0) {
                 r = -errno;
                 goto finish;
         }
+
+        fd_inc_sndbuf(fd, SNDBUF_SIZE);
 
         iovec.iov_len = strlen(state);
 
@@ -446,14 +458,12 @@ _public_ int sd_pid_notify_with_fds(pid_t pid, int unset_environment, const char
         if (sockaddr.un.sun_path[0] == '@')
                 sockaddr.un.sun_path[0] = 0;
 
-        msghdr.msg_namelen = offsetof(struct sockaddr_un, sun_path) + strlen(e);
-        if (msghdr.msg_namelen > sizeof(struct sockaddr_un))
-                msghdr.msg_namelen = sizeof(struct sockaddr_un);
+        msghdr.msg_namelen = SOCKADDR_UN_LEN(sockaddr.un);
 
         have_pid = pid != 0 && pid != getpid();
 
         if (n_fds > 0 || have_pid) {
-                /* CMSG_SPACE(0) may return value different then zero, which results in miscalculated controllen. */
+                /* CMSG_SPACE(0) may return value different than zero, which results in miscalculated controllen. */
                 msghdr.msg_controllen =
                         (n_fds > 0 ? CMSG_SPACE(sizeof(int) * n_fds) : 0) +
                         (have_pid ? CMSG_SPACE(sizeof(struct ucred)) : 0);
@@ -577,7 +587,7 @@ _public_ int sd_watchdog_enabled(int unset_environment, uint64_t *usec) {
         r = safe_atou64(s, &u);
         if (r < 0)
                 goto finish;
-        if (u <= 0) {
+        if (u <= 0 || u >= USEC_INFINITY) {
                 r = -EINVAL;
                 goto finish;
         }

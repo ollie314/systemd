@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -40,6 +38,7 @@ typedef enum SwapResult {
         SWAP_FAILURE_EXIT_CODE,
         SWAP_FAILURE_SIGNAL,
         SWAP_FAILURE_CORE_DUMP,
+        SWAP_FAILURE_START_LIMIT_HIT,
         _SWAP_RESULT_MAX,
         _SWAP_RESULT_INVALID = -1
 } SwapResult;
@@ -83,6 +82,7 @@ struct Swap {
         CGroupContext cgroup_context;
 
         ExecRuntime *exec_runtime;
+        DynamicCreds dynamic_creds;
 
         SwapState state, deserialized_state;
 

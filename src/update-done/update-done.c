@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -103,7 +101,7 @@ int main(int argc, char *argv[]) {
                 return EXIT_FAILURE;
         }
 
-        r = mac_selinux_init(NULL);
+        r = mac_selinux_init();
         if (r < 0) {
                 log_error_errno(r, "SELinux setup failed: %m");
                 goto finish;

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -30,7 +28,6 @@
 #include "sd-netlink.h"
 
 #include "alloc-util.h"
-#include "event-util.h"
 #include "in-addr-util.h"
 #include "netlink-util.h"
 #include "parse-util.h"
@@ -67,7 +64,7 @@ static int client_run(int ifindex, const char *seed_str, const struct ether_addr
         assert_se(sd_ipv4ll_new(&ll) >= 0);
         assert_se(sd_ipv4ll_attach_event(ll, e, 0) >= 0);
 
-        assert_se(sd_ipv4ll_set_index(ll, ifindex) >= 0);
+        assert_se(sd_ipv4ll_set_ifindex(ll, ifindex) >= 0);
         assert_se(sd_ipv4ll_set_mac(ll, ha) >= 0);
         assert_se(sd_ipv4ll_set_callback(ll, ll_handler, NULL) >= 0);
 
@@ -91,9 +88,9 @@ static int client_run(int ifindex, const char *seed_str, const struct ether_addr
 }
 
 static int test_ll(const char *ifname, const char *seed) {
-        _cleanup_event_unref_ sd_event *e = NULL;
-        _cleanup_netlink_unref_ sd_netlink *rtnl = NULL;
-        _cleanup_netlink_message_unref_ sd_netlink_message *m = NULL, *reply = NULL;
+        _cleanup_(sd_event_unrefp) sd_event *e = NULL;
+        _cleanup_(sd_netlink_unrefp) sd_netlink *rtnl = NULL;
+        _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *m = NULL, *reply = NULL;
         struct ether_addr ha;
         int ifindex;
 

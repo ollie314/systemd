@@ -1,9 +1,8 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
   Copyright 2010 Lennart Poettering
+  Copyright 2015 Werner Fink
 
   systemd is free software; you can redistribute it and/or modify it
   under the terms of the GNU Lesser General Public License as published by
@@ -23,12 +22,15 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <string.h>
 #include <sys/inotify.h>
+#include <sys/prctl.h>
 #include <sys/signalfd.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <sys/un.h>
 #include <unistd.h>
 
@@ -37,8 +39,12 @@
 #include "conf-parser.h"
 #include "def.h"
 #include "dirent-util.h"
+#include "exit-status.h"
 #include "fd-util.h"
+#include "fileio.h"
+#include "hashmap.h"
 #include "io-util.h"
+#include "macro.h"
 #include "mkdir.h"
 #include "path-util.h"
 #include "process-util.h"
@@ -59,6 +65,7 @@ static enum {
 
 static bool arg_plymouth = false;
 static bool arg_console = false;
+static const char *arg_device = NULL;
 
 static int ask_password_plymouth(
                 const char *message,
@@ -67,8 +74,8 @@ static int ask_password_plymouth(
                 const char *flag_file,
                 char ***ret) {
 
+        static const union sockaddr_union sa = PLYMOUTH_SOCKET;
         _cleanup_close_ int fd = -1, notify = -1;
-        union sockaddr_union sa = PLYMOUTH_SOCKET;
         _cleanup_free_ char *packet = NULL;
         ssize_t k;
         int r, n;
@@ -96,7 +103,7 @@ static int ask_password_plymouth(
         if (fd < 0)
                 return -errno;
 
-        r = connect(fd, &sa.sa, offsetof(struct sockaddr_un, sun_path) + 1 + strlen(sa.un.sun_path+1));
+        r = connect(fd, &sa.sa, SOCKADDR_UN_LEN(sa.un));
         if (r < 0)
                 return -errno;
 
@@ -240,10 +247,49 @@ finish:
         return r;
 }
 
+static int send_passwords(const char *socket_name, char **passwords) {
+        _cleanup_free_ char *packet = NULL;
+        _cleanup_close_ int socket_fd = -1;
+        union sockaddr_union sa = { .un.sun_family = AF_UNIX };
+        size_t packet_length = 1;
+        char **p, *d;
+        int r;
+
+        assert(socket_name);
+
+        STRV_FOREACH(p, passwords)
+                packet_length += strlen(*p) + 1;
+
+        packet = new(char, packet_length);
+        if (!packet)
+                return -ENOMEM;
+
+        packet[0] = '+';
+
+        d = packet + 1;
+        STRV_FOREACH(p, passwords)
+                d = stpcpy(d, *p) + 1;
+
+        socket_fd = socket(AF_UNIX, SOCK_DGRAM|SOCK_CLOEXEC, 0);
+        if (socket_fd < 0) {
+                r = log_debug_errno(errno, "socket(): %m");
+                goto finish;
+        }
+
+        strncpy(sa.un.sun_path, socket_name, sizeof(sa.un.sun_path));
+
+        r = sendto(socket_fd, packet, packet_length, MSG_NOSIGNAL, &sa.sa, SOCKADDR_UN_LEN(sa.un));
+        if (r < 0)
+                r = log_debug_errno(errno, "sendto(): %m");
+
+finish:
+        memory_erase(packet, packet_length);
+        return r;
+}
+
 static int parse_password(const char *filename, char **wall) {
-        _cleanup_free_ char *socket_name = NULL, *message = NULL, *packet = NULL;
+        _cleanup_free_ char *socket_name = NULL, *message = NULL;
         bool accept_cached = false, echo = false;
-        size_t packet_length = 0;
         uint64_t not_after = 0;
         unsigned pid = 0;
 
@@ -298,8 +344,7 @@ static int parse_password(const char *filename, char **wall) {
                 *wall = _wall;
 
         } else {
-                union sockaddr_union sa = {};
-                _cleanup_close_ int socket_fd = -1;
+                _cleanup_strv_free_erase_ char **passwords = NULL;
 
                 assert(arg_action == ACTION_QUERY ||
                        arg_action == ACTION_WATCH);
@@ -311,36 +356,16 @@ static int parse_password(const char *filename, char **wall) {
                         return 0;
                 }
 
-                if (arg_plymouth) {
-                        _cleanup_strv_free_erase_ char **passwords = NULL;
-
+                if (arg_plymouth)
                         r = ask_password_plymouth(message, not_after, accept_cached ? ASK_PASSWORD_ACCEPT_CACHED : 0, filename, &passwords);
-                        if (r >= 0) {
-                                char **p;
-
-                                packet_length = 1;
-                                STRV_FOREACH(p, passwords)
-                                        packet_length += strlen(*p) + 1;
-
-                                packet = new(char, packet_length);
-                                if (!packet)
-                                        r = -ENOMEM;
-                                else {
-                                        char *d = packet + 1;
-
-                                        STRV_FOREACH(p, passwords)
-                                                d = stpcpy(d, *p) + 1;
-
-                                        packet[0] = '+';
-                                }
-                        }
-
-                } else {
-                        _cleanup_string_free_erase_ char *password = NULL;
+                else {
+                        char *password = NULL;
                         int tty_fd = -1;
 
                         if (arg_console) {
-                                tty_fd = acquire_terminal("/dev/console", false, false, false, USEC_INFINITY);
+                                const char *con = arg_device ? arg_device : "/dev/console";
+
+                                tty_fd = acquire_terminal(con, false, false, false, USEC_INFINITY);
                                 if (tty_fd < 0)
                                         return log_error_errno(tty_fd, "Failed to acquire /dev/console: %m");
 
@@ -356,48 +381,26 @@ static int parse_password(const char *filename, char **wall) {
                                 release_terminal();
                         }
 
-                        if (r >= 0) {
-                                packet_length = 1 + strlen(password) + 1;
-                                packet = new(char, packet_length);
-                                if (!packet)
-                                        r = -ENOMEM;
-                                else {
-                                        packet[0] = '+';
-                                        strcpy(packet + 1, password);
-                                }
-                        }
+                        if (r >= 0)
+                                r = strv_push(&passwords, password);
+
+                        if (r < 0)
+                                string_free_erase(password);
                 }
 
-                if (IN_SET(r, -ETIME, -ENOENT)) {
-                        /* If the query went away, that's OK */
-                        r = 0;
-                        goto finish;
-                }
-                if (r < 0) {
-                        log_error_errno(r, "Failed to query password: %m");
-                        goto finish;
-                }
+                /* If the query went away, that's OK */
+                if (IN_SET(r, -ETIME, -ENOENT))
+                        return 0;
 
-                socket_fd = socket(AF_UNIX, SOCK_DGRAM|SOCK_CLOEXEC, 0);
-                if (socket_fd < 0) {
-                        r = log_error_errno(errno, "socket(): %m");
-                        goto finish;
-                }
-
-                sa.un.sun_family = AF_UNIX;
-                strncpy(sa.un.sun_path, socket_name, sizeof(sa.un.sun_path));
-
-                r = sendto(socket_fd, packet, packet_length, MSG_NOSIGNAL, &sa.sa, offsetof(struct sockaddr_un, sun_path) + strlen(socket_name));
-                memory_erase(packet, packet_length);
                 if (r < 0)
-                        return log_error_errno(errno, "Failed to send: %m");
+                        return log_error_errno(r, "Failed to query password: %m");
+
+                r = send_passwords(socket_name, passwords);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to send: %m");
         }
 
         return 0;
-
-finish:
-        memory_erase(packet, packet_length);
-        return r;
 }
 
 static int wall_tty_block(void) {
@@ -475,7 +478,7 @@ static int show_passwords(void) {
                 if (errno == ENOENT)
                         return 0;
 
-                return log_error_errno(errno, "Failed top open /run/systemd/ask-password: %m");
+                return log_error_errno(errno, "Failed to open /run/systemd/ask-password: %m");
         }
 
         FOREACH_DIRENT_ALL(de, d, return log_error_errno(errno, "Failed to read directory: %m")) {
@@ -488,7 +491,7 @@ static int show_passwords(void) {
                 if (de->d_type != DT_REG)
                         continue;
 
-                if (hidden_file(de->d_name))
+                if (hidden_or_backup_file(de->d_name))
                         continue;
 
                 if (!startswith(de->d_name, "ask."))
@@ -594,14 +597,14 @@ static int parse_argv(int argc, char *argv[]) {
         };
 
         static const struct option options[] = {
-                { "help",     no_argument, NULL, 'h'          },
-                { "version",  no_argument, NULL, ARG_VERSION  },
-                { "list",     no_argument, NULL, ARG_LIST     },
-                { "query",    no_argument, NULL, ARG_QUERY    },
-                { "watch",    no_argument, NULL, ARG_WATCH    },
-                { "wall",     no_argument, NULL, ARG_WALL     },
-                { "plymouth", no_argument, NULL, ARG_PLYMOUTH },
-                { "console",  no_argument, NULL, ARG_CONSOLE  },
+                { "help",     no_argument,       NULL, 'h'          },
+                { "version",  no_argument,       NULL, ARG_VERSION  },
+                { "list",     no_argument,       NULL, ARG_LIST     },
+                { "query",    no_argument,       NULL, ARG_QUERY    },
+                { "watch",    no_argument,       NULL, ARG_WATCH    },
+                { "wall",     no_argument,       NULL, ARG_WALL     },
+                { "plymouth", no_argument,       NULL, ARG_PLYMOUTH },
+                { "console",  optional_argument, NULL, ARG_CONSOLE  },
                 {}
         };
 
@@ -643,6 +646,15 @@ static int parse_argv(int argc, char *argv[]) {
 
                 case ARG_CONSOLE:
                         arg_console = true;
+                        if (optarg) {
+
+                                if (isempty(optarg)) {
+                                        log_error("Empty console device path is not allowed.");
+                                        return -EINVAL;
+                                }
+
+                                arg_device = optarg;
+                        }
                         break;
 
                 case '?':
@@ -657,7 +669,169 @@ static int parse_argv(int argc, char *argv[]) {
                 return -EINVAL;
         }
 
+        if (arg_plymouth || arg_console) {
+
+                if (!IN_SET(arg_action, ACTION_QUERY, ACTION_WATCH)) {
+                        log_error("Options --query and --watch conflict.");
+                        return -EINVAL;
+                }
+
+                if (arg_plymouth && arg_console) {
+                        log_error("Options --plymouth and --console conflict.");
+                        return -EINVAL;
+                }
+        }
+
         return 1;
+}
+
+/*
+ * To be able to ask on all terminal devices of /dev/console
+ * the devices are collected. If more than one device is found,
+ * then on each of the terminals a inquiring task is forked.
+ * Every task has its own session and its own controlling terminal.
+ * If one of the tasks does handle a password, the remaining tasks
+ * will be terminated.
+ */
+static int ask_on_this_console(const char *tty, pid_t *pid, int argc, char *argv[]) {
+        struct sigaction sig = {
+                .sa_handler = nop_signal_handler,
+                .sa_flags = SA_NOCLDSTOP | SA_RESTART,
+        };
+
+        assert_se(sigprocmask_many(SIG_UNBLOCK, NULL, SIGHUP, SIGCHLD, -1) >= 0);
+
+        assert_se(sigemptyset(&sig.sa_mask) >= 0);
+        assert_se(sigaction(SIGCHLD, &sig, NULL) >= 0);
+
+        sig.sa_handler = SIG_DFL;
+        assert_se(sigaction(SIGHUP, &sig, NULL) >= 0);
+
+        *pid = fork();
+        if (*pid < 0)
+                return log_error_errno(errno, "Failed to fork process: %m");
+
+        if (*pid == 0) {
+                int ac;
+
+                assert_se(prctl(PR_SET_PDEATHSIG, SIGHUP) >= 0);
+
+                reset_signal_mask();
+                reset_all_signal_handlers();
+
+                for (ac = 0; ac < argc; ac++) {
+                        if (streq(argv[ac], "--console")) {
+                                argv[ac] = strjoina("--console=", tty, NULL);
+                                break;
+                        }
+                }
+
+                assert(ac < argc);
+
+                execv(SYSTEMD_TTY_ASK_PASSWORD_AGENT_BINARY_PATH, argv);
+                _exit(EXIT_FAILURE);
+        }
+        return 0;
+}
+
+static void terminate_agents(Set *pids) {
+        struct timespec ts;
+        siginfo_t status = {};
+        sigset_t set;
+        Iterator i;
+        void *p;
+        int r, signum;
+
+        /*
+         * Request termination of the remaining processes as those
+         * are not required anymore.
+         */
+        SET_FOREACH(p, pids, i)
+                (void) kill(PTR_TO_PID(p), SIGTERM);
+
+        /*
+         * Collect the processes which have go away.
+         */
+        assert_se(sigemptyset(&set) >= 0);
+        assert_se(sigaddset(&set, SIGCHLD) >= 0);
+        timespec_store(&ts, 50 * USEC_PER_MSEC);
+
+        while (!set_isempty(pids)) {
+
+                zero(status);
+                r = waitid(P_ALL, 0, &status, WEXITED|WNOHANG);
+                if (r < 0 && errno == EINTR)
+                        continue;
+
+                if (r == 0 && status.si_pid > 0) {
+                        set_remove(pids, PID_TO_PTR(status.si_pid));
+                        continue;
+                }
+
+                signum = sigtimedwait(&set, NULL, &ts);
+                if (signum < 0) {
+                        if (errno != EAGAIN)
+                                log_error_errno(errno, "sigtimedwait() failed: %m");
+                        break;
+                }
+                assert(signum == SIGCHLD);
+        }
+
+        /*
+         * Kill hanging processes.
+         */
+        SET_FOREACH(p, pids, i) {
+                log_warning("Failed to terminate child %d, killing it", PTR_TO_PID(p));
+                (void) kill(PTR_TO_PID(p), SIGKILL);
+        }
+}
+
+static int ask_on_consoles(int argc, char *argv[]) {
+        _cleanup_set_free_ Set *pids = NULL;
+        _cleanup_strv_free_ char **consoles = NULL;
+        siginfo_t status = {};
+        char **tty;
+        pid_t pid;
+        int r;
+
+        r = get_kernel_consoles(&consoles);
+        if (r < 0)
+                return log_error_errno(r, "Failed to determine devices of /dev/console: %m");
+
+        pids = set_new(NULL);
+        if (!pids)
+                return log_oom();
+
+        /* Start an agent on each console. */
+        STRV_FOREACH(tty, consoles) {
+                r = ask_on_this_console(*tty, &pid, argc, argv);
+                if (r < 0)
+                        return r;
+
+                if (set_put(pids, PID_TO_PTR(pid)) < 0)
+                        return log_oom();
+        }
+
+        /* Wait for an agent to exit. */
+        for (;;) {
+                zero(status);
+
+                if (waitid(P_ALL, 0, &status, WEXITED) < 0) {
+                        if (errno == EINTR)
+                                continue;
+
+                        return log_error_errno(errno, "waitid() failed: %m");
+                }
+
+                set_remove(pids, PID_TO_PTR(status.si_pid));
+                break;
+        }
+
+        if (!is_clean_exit(status.si_code, status.si_status, NULL))
+                log_error("Password agent failed with: %d", status.si_status);
+
+        terminate_agents(pids);
+        return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -673,15 +847,28 @@ int main(int argc, char *argv[]) {
         if (r <= 0)
                 goto finish;
 
-        if (arg_console) {
-                (void) setsid();
-                (void) release_terminal();
-        }
+        if (arg_console && !arg_device)
+                /*
+                 * Spawn for each console device a separate process.
+                 */
+                r = ask_on_consoles(argc, argv);
+        else {
 
-        if (IN_SET(arg_action, ACTION_WATCH, ACTION_WALL))
-                r = watch_passwords();
-        else
-                r = show_passwords();
+                if (arg_device) {
+                        /*
+                         * Later on, a controlling terminal will be acquired,
+                         * therefore the current process has to become a session
+                         * leader and should not have a controlling terminal already.
+                         */
+                        (void) setsid();
+                        (void) release_terminal();
+                }
+
+                if (IN_SET(arg_action, ACTION_WATCH, ACTION_WALL))
+                        r = watch_passwords();
+                else
+                        r = show_passwords();
+        }
 
 finish:
         return r < 0 ? EXIT_FAILURE : EXIT_SUCCESS;

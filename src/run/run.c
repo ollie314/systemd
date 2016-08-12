@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -27,12 +25,13 @@
 
 #include "alloc-util.h"
 #include "bus-error.h"
+#include "bus-unit-util.h"
 #include "bus-util.h"
 #include "calendarspec.h"
 #include "env-util.h"
-#include "event-util.h"
 #include "fd-util.h"
 #include "formats-util.h"
+#include "parse-util.h"
 #include "path-util.h"
 #include "ptyfwd.h"
 #include "signal-util.h"
@@ -41,7 +40,6 @@
 #include "terminal-util.h"
 #include "unit-name.h"
 #include "user-util.h"
-#include "parse-util.h"
 
 static bool arg_ask_password = true;
 static bool arg_scope = false;
@@ -86,8 +84,8 @@ static void polkit_agent_open_if_enabled(void) {
 static void help(void) {
         printf("%s [OPTIONS...] {COMMAND} [ARGS...]\n\n"
                "Run the specified command in a transient scope or service or timer\n"
-               "unit. If timer option is specified and unit is exist which is\n"
-               "specified with --unit option then command can be omitted.\n\n"
+               "unit. If a timer option is specified and the unit specified with\n"
+               "the --unit option exists, the command can be omitted.\n\n"
                "  -h --help                       Show this help\n"
                "     --version                    Show package version\n"
                "     --no-ask-password            Do not prompt for password\n"
@@ -106,7 +104,7 @@ static void help(void) {
                "     --uid=USER                   Run as system user\n"
                "     --gid=GROUP                  Run as system group\n"
                "     --nice=NICE                  Nice level\n"
-               "     --setenv=NAME=VALUE          Set environment\n"
+               "  -E --setenv=NAME=VALUE          Set environment\n"
                "  -t --pty                        Run service on pseudo tty\n"
                "  -q --quiet                      Suppress information messages during runtime\n\n"
                "Timer options:\n\n"
@@ -128,7 +126,6 @@ static int parse_argv(int argc, char *argv[]) {
 
         enum {
                 ARG_VERSION = 0x100,
-                ARG_NO_ASK_PASSWORD,
                 ARG_USER,
                 ARG_SYSTEM,
                 ARG_SCOPE,
@@ -136,12 +133,10 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_DESCRIPTION,
                 ARG_SLICE,
                 ARG_SEND_SIGHUP,
+                ARG_SERVICE_TYPE,
                 ARG_EXEC_USER,
                 ARG_EXEC_GROUP,
-                ARG_SERVICE_TYPE,
                 ARG_NICE,
-                ARG_SETENV,
-                ARG_TTY,
                 ARG_ON_ACTIVE,
                 ARG_ON_BOOT,
                 ARG_ON_STARTUP,
@@ -150,6 +145,7 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_ON_CALENDAR,
                 ARG_TIMER_PROPERTY,
                 ARG_NO_BLOCK,
+                ARG_NO_ASK_PASSWORD,
         };
 
         static const struct option options[] = {
@@ -169,9 +165,10 @@ static int parse_argv(int argc, char *argv[]) {
                 { "uid",               required_argument, NULL, ARG_EXEC_USER        },
                 { "gid",               required_argument, NULL, ARG_EXEC_GROUP       },
                 { "nice",              required_argument, NULL, ARG_NICE             },
-                { "setenv",            required_argument, NULL, ARG_SETENV           },
+                { "setenv",            required_argument, NULL, 'E'                  },
                 { "property",          required_argument, NULL, 'p'                  },
-                { "tty",               no_argument,       NULL, 't'                  },
+                { "tty",               no_argument,       NULL, 't'                  }, /* deprecated */
+                { "pty",               no_argument,       NULL, 't'                  },
                 { "quiet",             no_argument,       NULL, 'q'                  },
                 { "on-active",         required_argument, NULL, ARG_ON_ACTIVE        },
                 { "on-boot",           required_argument, NULL, ARG_ON_BOOT          },
@@ -190,7 +187,7 @@ static int parse_argv(int argc, char *argv[]) {
         assert(argc >= 0);
         assert(argv);
 
-        while ((c = getopt_long(argc, argv, "+hrH:M:p:tq", options, NULL)) >= 0)
+        while ((c = getopt_long(argc, argv, "+hrH:M:E:p:tq", options, NULL)) >= 0)
 
                 switch (c) {
 
@@ -260,16 +257,14 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case ARG_NICE:
-                        r = safe_atoi(optarg, &arg_nice);
-                        if (r < 0 || arg_nice < PRIO_MIN || arg_nice >= PRIO_MAX) {
-                                log_error("Failed to parse nice value");
-                                return -EINVAL;
-                        }
+                        r = parse_nice(optarg, &arg_nice);
+                        if (r < 0)
+                                return log_error_errno(r, "Failed to parse nice value: %s", optarg);
 
                         arg_nice_set = true;
                         break;
 
-                case ARG_SETENV:
+                case 'E':
                         if (strv_extend(&arg_environment, optarg) < 0)
                                 return log_oom();
 
@@ -423,15 +418,7 @@ static int transient_unit_set_properties(sd_bus_message *m, char **properties) {
                 return r;
 
         STRV_FOREACH(i, properties) {
-                r = sd_bus_message_open_container(m, 'r', "sv");
-                if (r < 0)
-                        return r;
-
                 r = bus_append_unit_property_assignment(m, *i);
-                if (r < 0)
-                        return r;
-
-                r = sd_bus_message_close_container(m);
                 if (r < 0)
                         return r;
         }
@@ -632,6 +619,10 @@ static int transient_scope_set_properties(sd_bus_message *m) {
         if (r < 0)
                 return r;
 
+        r = transient_cgroup_set_properties(m);
+        if (r < 0)
+                return r;
+
         r = sd_bus_message_append(m, "(sv)", "PIDs", "au", 1, (uint32_t) getpid());
         if (r < 0)
                 return r;
@@ -645,6 +636,11 @@ static int transient_timer_set_properties(sd_bus_message *m) {
         assert(m);
 
         r = transient_unit_set_properties(m, arg_timer_property);
+        if (r < 0)
+                return r;
+
+        /* Automatically clean up our transient timers */
+        r = sd_bus_message_append(m, "(sv)", "RemainAfterElapse", "b", false);
         if (r < 0)
                 return r;
 
@@ -687,12 +683,57 @@ static int transient_timer_set_properties(sd_bus_message *m) {
         return 0;
 }
 
+static int make_unit_name(sd_bus *bus, UnitType t, char **ret) {
+        const char *unique, *id;
+        char *p;
+        int r;
+
+        assert(bus);
+        assert(t >= 0);
+        assert(t < _UNIT_TYPE_MAX);
+
+        r = sd_bus_get_unique_name(bus, &unique);
+        if (r < 0) {
+                sd_id128_t rnd;
+
+                /* We couldn't get the unique name, which is a pretty
+                 * common case if we are connected to systemd
+                 * directly. In that case, just pick a random uuid as
+                 * name */
+
+                r = sd_id128_randomize(&rnd);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to generate random run unit name: %m");
+
+                if (asprintf(ret, "run-r" SD_ID128_FORMAT_STR ".%s", SD_ID128_FORMAT_VAL(rnd), unit_type_to_string(t)) < 0)
+                        return log_oom();
+
+                return 0;
+        }
+
+        /* We managed to get the unique name, then let's use that to
+         * name our transient units. */
+
+        id = startswith(unique, ":1.");
+        if (!id) {
+                log_error("Unique name %s has unexpected format.", unique);
+                return -EINVAL;
+        }
+
+        p = strjoin("run-u", id, ".", unit_type_to_string(t), NULL);
+        if (!p)
+                return log_oom();
+
+        *ret = p;
+        return 0;
+}
+
 static int start_transient_service(
                 sd_bus *bus,
                 char **argv) {
 
-        _cleanup_bus_message_unref_ sd_bus_message *m = NULL, *reply = NULL;
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL, *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         _cleanup_(bus_wait_for_jobs_freep) BusWaitForJobs *w = NULL;
         _cleanup_free_ char *service = NULL, *pty_path = NULL;
         _cleanup_close_ int master = -1;
@@ -716,7 +757,8 @@ static int start_transient_service(
                                 return log_error_errno(errno, "Failed to unlock tty: %m");
 
                 } else if (arg_transport == BUS_TRANSPORT_MACHINE) {
-                        _cleanup_bus_unref_ sd_bus *system_bus = NULL;
+                        _cleanup_(sd_bus_unrefp) sd_bus *system_bus = NULL;
+                        _cleanup_(sd_bus_message_unrefp) sd_bus_message *pty_reply = NULL;
                         const char *s;
 
                         r = sd_bus_default_system(&system_bus);
@@ -729,18 +771,16 @@ static int start_transient_service(
                                                "org.freedesktop.machine1.Manager",
                                                "OpenMachinePTY",
                                                &error,
-                                               &reply,
+                                               &pty_reply,
                                                "s", arg_host);
                         if (r < 0) {
                                 log_error("Failed to get machine PTY: %s", bus_error_message(&error, -r));
                                 return r;
                         }
 
-                        r = sd_bus_message_read(reply, "hs", &master, &s);
+                        r = sd_bus_message_read(pty_reply, "hs", &master, &s);
                         if (r < 0)
                                 return bus_log_parse_error(r);
-
-                        reply = sd_bus_message_unref(reply);
 
                         master = fcntl(master, F_DUPFD_CLOEXEC, 3);
                         if (master < 0)
@@ -763,8 +803,11 @@ static int start_transient_service(
                 r = unit_name_mangle_with_suffix(arg_unit, UNIT_NAME_NOGLOB, ".service", &service);
                 if (r < 0)
                         return log_error_errno(r, "Failed to mangle unit name: %m");
-        } else if (asprintf(&service, "run-"PID_FMT".service", getpid()) < 0)
-                return log_oom();
+        } else {
+                r = make_unit_name(bus, UNIT_SERVICE, &service);
+                if (r < 0)
+                        return r;
+        }
 
         r = sd_bus_message_new_method_call(
                         bus,
@@ -823,7 +866,7 @@ static int start_transient_service(
 
         if (master >= 0) {
                 _cleanup_(pty_forward_freep) PTYForward *forward = NULL;
-                _cleanup_event_unref_ sd_event *event = NULL;
+                _cleanup_(sd_event_unrefp) sd_event *event = NULL;
                 char last_char = 0;
 
                 r = sd_event_default(&event);
@@ -836,7 +879,7 @@ static int start_transient_service(
                 (void) sd_event_add_signal(event, NULL, SIGTERM, NULL, NULL);
 
                 if (!arg_quiet)
-                        log_info("Running as unit %s.\nPress ^] three times within 1s to disconnect TTY.", service);
+                        log_info("Running as unit: %s\nPress ^] three times within 1s to disconnect TTY.", service);
 
                 r = pty_forward_new(event, master, PTY_FORWARD_IGNORE_INITIAL_VHANGUP, &forward);
                 if (r < 0)
@@ -854,7 +897,7 @@ static int start_transient_service(
                         fputc('\n', stdout);
 
         } else if (!arg_quiet)
-                log_info("Running as unit %s.", service);
+                log_info("Running as unit: %s", service);
 
         return 0;
 }
@@ -863,8 +906,8 @@ static int start_transient_scope(
                 sd_bus *bus,
                 char **argv) {
 
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_bus_message_unref_ sd_bus_message *m = NULL, *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL, *reply = NULL;
         _cleanup_(bus_wait_for_jobs_freep) BusWaitForJobs *w = NULL;
         _cleanup_strv_free_ char **env = NULL, **user_env = NULL;
         _cleanup_free_ char *scope = NULL;
@@ -882,8 +925,11 @@ static int start_transient_scope(
                 r = unit_name_mangle_with_suffix(arg_unit, UNIT_NAME_NOGLOB, ".scope", &scope);
                 if (r < 0)
                         return log_error_errno(r, "Failed to mangle scope name: %m");
-        } else if (asprintf(&scope, "run-"PID_FMT".scope", getpid()) < 0)
-                return log_oom();
+        } else {
+                r = make_unit_name(bus, UNIT_SCOPE, &scope);
+                if (r < 0)
+                        return r;
+        }
 
         r = sd_bus_message_new_method_call(
                         bus,
@@ -993,7 +1039,7 @@ static int start_transient_scope(
                 return r;
 
         if (!arg_quiet)
-                log_info("Running scope as unit %s.", scope);
+                log_info("Running scope as unit: %s", scope);
 
         execvpe(argv[0], argv, env);
 
@@ -1004,8 +1050,8 @@ static int start_transient_timer(
                 sd_bus *bus,
                 char **argv) {
 
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_bus_message_unref_ sd_bus_message *m = NULL, *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL, *reply = NULL;
         _cleanup_(bus_wait_for_jobs_freep) BusWaitForJobs *w = NULL;
         _cleanup_free_ char *timer = NULL, *service = NULL;
         const char *object = NULL;
@@ -1052,9 +1098,15 @@ static int start_transient_timer(
 
                         break;
                 }
-        } else if ((asprintf(&service, "run-"PID_FMT".service", getpid()) < 0) ||
-                   (asprintf(&timer, "run-"PID_FMT".timer", getpid()) < 0))
-                return log_oom();
+        } else {
+                r = make_unit_name(bus, UNIT_SERVICE, &service);
+                if (r < 0)
+                        return r;
+
+                r = unit_name_change_suffix(service, ".timer", &timer);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to change unit suffix: %m");
+        }
 
         r = sd_bus_message_new_method_call(
                         bus,
@@ -1138,15 +1190,15 @@ static int start_transient_timer(
         if (r < 0)
                 return r;
 
-        log_info("Running timer as unit %s.", timer);
+        log_info("Running timer as unit: %s", timer);
         if (argv[0])
-                log_info("Will run service as unit %s.", service);
+                log_info("Will run service as unit: %s", service);
 
         return 0;
 }
 
 int main(int argc, char* argv[]) {
-        _cleanup_bus_flush_close_unref_ sd_bus *bus = NULL;
+        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         _cleanup_free_ char *description = NULL, *command = NULL;
         int r;
 

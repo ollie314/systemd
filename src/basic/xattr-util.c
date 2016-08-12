@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,13 +17,20 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/time.h>
 #include <sys/xattr.h>
 
 #include "alloc-util.h"
 #include "fd-util.h"
+#include "macro.h"
 #include "sparse-endian.h"
 #include "stdio-util.h"
-#include "util.h"
+#include "time-util.h"
 #include "xattr-util.h"
 
 int getxattr_malloc(const char *path, const char *name, char **value, bool allow_symlink) {
@@ -105,7 +110,7 @@ ssize_t fgetxattrat_fake(int dirfd, const char *filename, const char *attribute,
 
         /* The kernel doesn't have a fgetxattrat() command, hence let's emulate one */
 
-        fd = openat(dirfd, filename, O_RDONLY|O_CLOEXEC|O_NOCTTY|O_PATH|(flags & AT_SYMLINK_NOFOLLOW ? O_NOFOLLOW : 0));
+        fd = openat(dirfd, filename, O_CLOEXEC|O_PATH|(flags & AT_SYMLINK_NOFOLLOW ? O_NOFOLLOW : 0));
         if (fd < 0)
                 return -errno;
 

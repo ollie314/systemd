@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -41,6 +39,7 @@
 #include "dirent-util.h"
 #include "extract-word.h"
 #include "fd-util.h"
+#include "fileio.h"
 #include "formats-util.h"
 #include "fs-util.h"
 #include "hashmap.h"
@@ -66,8 +65,11 @@
 #include "selinux-util.h"
 #include "signal-util.h"
 #include "socket-util.h"
+#include "stdio-util.h"
 #include "string-table.h"
 #include "string-util.h"
+#include "user-util.h"
+#include "log.h"
 
 #define USER_JOURNALS_MAX 1024
 
@@ -77,6 +79,11 @@
 #define DEFAULT_MAX_FILE_USEC USEC_PER_MONTH
 
 #define RECHECK_SPACE_USEC (30*USEC_PER_SEC)
+
+#define NOTIFY_SNDBUF_SIZE (8*1024*1024)
+
+/* The period to insert between posting changes for coalescing */
+#define POST_CHANGE_TIMER_INTERVAL_USEC (250*USEC_PER_MSEC)
 
 static int determine_space_for(
                 Server *s,
@@ -138,7 +145,7 @@ static int determine_space_for(
                 sum += (uint64_t) st.st_blocks * 512UL;
         }
 
-        /* If request, then let's bump the min_use limit to the
+        /* If requested, then let's bump the min_use limit to the
          * current usage on disk. We do this when starting up and
          * first opening the journal files. This way sudden spikes in
          * disk usage will not cause journald to vacuum files without
@@ -158,19 +165,31 @@ static int determine_space_for(
         if (verbose) {
                 char    fb1[FORMAT_BYTES_MAX], fb2[FORMAT_BYTES_MAX], fb3[FORMAT_BYTES_MAX],
                         fb4[FORMAT_BYTES_MAX], fb5[FORMAT_BYTES_MAX], fb6[FORMAT_BYTES_MAX];
+                format_bytes(fb1, sizeof(fb1), sum);
+                format_bytes(fb2, sizeof(fb2), metrics->max_use);
+                format_bytes(fb3, sizeof(fb3), metrics->keep_free);
+                format_bytes(fb4, sizeof(fb4), ss_avail);
+                format_bytes(fb5, sizeof(fb5), s->cached_space_limit);
+                format_bytes(fb6, sizeof(fb6), s->cached_space_available);
 
                 server_driver_message(s, SD_MESSAGE_JOURNAL_USAGE,
-                                      "%s (%s) is currently using %s.\n"
-                                      "Maximum allowed usage is set to %s.\n"
-                                      "Leaving at least %s free (of currently available %s of space).\n"
-                                      "Enforced usage limit is thus %s, of which %s are still available.",
-                                      name, path,
-                                      format_bytes(fb1, sizeof(fb1), sum),
-                                      format_bytes(fb2, sizeof(fb2), metrics->max_use),
-                                      format_bytes(fb3, sizeof(fb3), metrics->keep_free),
-                                      format_bytes(fb4, sizeof(fb4), ss_avail),
-                                      format_bytes(fb5, sizeof(fb5), s->cached_space_limit),
-                                      format_bytes(fb6, sizeof(fb6), s->cached_space_available));
+                                      LOG_MESSAGE("%s (%s) is %s, max %s, %s free.",
+                                                  name, path, fb1, fb5, fb6),
+                                      "JOURNAL_NAME=%s", name,
+                                      "JOURNAL_PATH=%s", path,
+                                      "CURRENT_USE=%"PRIu64, sum,
+                                      "CURRENT_USE_PRETTY=%s", fb1,
+                                      "MAX_USE=%"PRIu64, metrics->max_use,
+                                      "MAX_USE_PRETTY=%s", fb2,
+                                      "DISK_KEEP_FREE=%"PRIu64, metrics->keep_free,
+                                      "DISK_KEEP_FREE_PRETTY=%s", fb3,
+                                      "DISK_AVAILABLE=%"PRIu64, ss_avail,
+                                      "DISK_AVAILABLE_PRETTY=%s", fb4,
+                                      "LIMIT=%"PRIu64, s->cached_space_limit,
+                                      "LIMIT_PRETTY=%s", fb5,
+                                      "AVAILABLE=%"PRIu64, s->cached_space_available,
+                                      "AVAILABLE_PRETTY=%s", fb6,
+                                      NULL);
         }
 
         if (available)
@@ -200,54 +219,52 @@ static int determine_space(Server *s, bool verbose, bool patch_min_use, uint64_t
         return determine_space_for(s, metrics, path, name, verbose, patch_min_use, available, limit);
 }
 
-void server_fix_perms(Server *s, JournalFile *f, uid_t uid) {
-        int r;
+static void server_add_acls(JournalFile *f, uid_t uid) {
 #ifdef HAVE_ACL
-        _cleanup_(acl_freep) acl_t acl = NULL;
-        acl_entry_t entry;
-        acl_permset_t permset;
+        int r;
 #endif
-
         assert(f);
-
-        r = fchmod(f->fd, 0640);
-        if (r < 0)
-                log_warning_errno(errno, "Failed to fix access mode on %s, ignoring: %m", f->path);
 
 #ifdef HAVE_ACL
         if (uid <= SYSTEM_UID_MAX)
                 return;
 
-        acl = acl_get_fd(f->fd);
-        if (!acl) {
-                log_warning_errno(errno, "Failed to read ACL on %s, ignoring: %m", f->path);
-                return;
-        }
-
-        r = acl_find_uid(acl, uid, &entry);
-        if (r <= 0) {
-
-                if (acl_create_entry(&acl, &entry) < 0 ||
-                    acl_set_tag_type(entry, ACL_USER) < 0 ||
-                    acl_set_qualifier(entry, &uid) < 0) {
-                        log_warning_errno(errno, "Failed to patch ACL on %s, ignoring: %m", f->path);
-                        return;
-                }
-        }
-
-        /* We do not recalculate the mask unconditionally here,
-         * so that the fchmod() mask above stays intact. */
-        if (acl_get_permset(entry, &permset) < 0 ||
-            acl_add_perm(permset, ACL_READ) < 0 ||
-            calc_acl_mask_if_needed(&acl) < 0) {
-                log_warning_errno(errno, "Failed to patch ACL on %s, ignoring: %m", f->path);
-                return;
-        }
-
-        if (acl_set_fd(f->fd, acl) < 0)
-                log_warning_errno(errno, "Failed to set ACL on %s, ignoring: %m", f->path);
-
+        r = add_acls_for_user(f->fd, uid);
+        if (r < 0)
+                log_warning_errno(r, "Failed to set ACL on %s, ignoring: %m", f->path);
 #endif
+}
+
+static int open_journal(
+                Server *s,
+                bool reliably,
+                const char *fname,
+                int flags,
+                bool seal,
+                JournalMetrics *metrics,
+                JournalFile **ret) {
+        int r;
+        JournalFile *f;
+
+        assert(s);
+        assert(fname);
+        assert(ret);
+
+        if (reliably)
+                r = journal_file_open_reliably(fname, flags, 0640, s->compress, seal, metrics, s->mmap, s->deferred_closes, NULL, &f);
+        else
+                r = journal_file_open(-1, fname, flags, 0640, s->compress, seal, metrics, s->mmap, s->deferred_closes, NULL, &f);
+        if (r < 0)
+                return r;
+
+        r = journal_file_enable_post_change_timer(f, s->event, POST_CHANGE_TIMER_INTERVAL_USEC);
+        if (r < 0) {
+                (void) journal_file_close(f);
+                return r;
+        }
+
+        *ret = f;
+        return r;
 }
 
 static JournalFile* find_journal(Server *s, uid_t uid) {
@@ -273,7 +290,7 @@ static JournalFile* find_journal(Server *s, uid_t uid) {
         if (r < 0)
                 return s->system_journal;
 
-        f = ordered_hashmap_get(s->user_journals, UINT32_TO_PTR(uid));
+        f = ordered_hashmap_get(s->user_journals, UID_TO_PTR(uid));
         if (f)
                 return f;
 
@@ -285,18 +302,18 @@ static JournalFile* find_journal(Server *s, uid_t uid) {
                 /* Too many open? Then let's close one */
                 f = ordered_hashmap_steal_first(s->user_journals);
                 assert(f);
-                journal_file_close(f);
+                (void) journal_file_close(f);
         }
 
-        r = journal_file_open_reliably(p, O_RDWR|O_CREAT, 0640, s->compress, s->seal, &s->system_metrics, s->mmap, NULL, &f);
+        r = open_journal(s, true, p, O_RDWR|O_CREAT, s->seal, &s->system_metrics, &f);
         if (r < 0)
                 return s->system_journal;
 
-        server_fix_perms(s, f, uid);
+        server_add_acls(f, uid);
 
-        r = ordered_hashmap_put(s->user_journals, UINT32_TO_PTR(uid), f);
+        r = ordered_hashmap_put(s->user_journals, UID_TO_PTR(uid), f);
         if (r < 0) {
-                journal_file_close(f);
+                (void) journal_file_close(f);
                 return s->system_journal;
         }
 
@@ -316,14 +333,14 @@ static int do_rotate(
         if (!*f)
                 return -EINVAL;
 
-        r = journal_file_rotate(f, s->compress, seal);
+        r = journal_file_rotate(f, s->compress, seal, s->deferred_closes);
         if (r < 0)
                 if (*f)
                         log_error_errno(r, "Failed to rotate %s: %m", (*f)->path);
                 else
                         log_error_errno(r, "Failed to create new %s journal: %m", name);
         else
-                server_fix_perms(s, *f, uid);
+                server_add_acls(*f, uid);
 
         return r;
 }
@@ -340,29 +357,35 @@ void server_rotate(Server *s) {
         (void) do_rotate(s, &s->system_journal, "system", s->seal, 0);
 
         ORDERED_HASHMAP_FOREACH_KEY(f, k, s->user_journals, i) {
-                r = do_rotate(s, &f, "user", s->seal, PTR_TO_UINT32(k));
+                r = do_rotate(s, &f, "user", s->seal, PTR_TO_UID(k));
                 if (r >= 0)
                         ordered_hashmap_replace(s->user_journals, k, f);
                 else if (!f)
                         /* Old file has been closed and deallocated */
                         ordered_hashmap_remove(s->user_journals, k);
         }
+
+        /* Perform any deferred closes which aren't still offlining. */
+        SET_FOREACH(f, s->deferred_closes, i)
+                if (!journal_file_is_offlining(f)) {
+                        (void) set_remove(s->deferred_closes, f);
+                        (void) journal_file_close(f);
+                }
 }
 
 void server_sync(Server *s) {
         JournalFile *f;
-        void *k;
         Iterator i;
         int r;
 
         if (s->system_journal) {
-                r = journal_file_set_offline(s->system_journal);
+                r = journal_file_set_offline(s->system_journal, false);
                 if (r < 0)
                         log_warning_errno(r, "Failed to sync system journal, ignoring: %m");
         }
 
-        ORDERED_HASHMAP_FOREACH_KEY(f, k, s->user_journals, i) {
-                r = journal_file_set_offline(f);
+        ORDERED_HASHMAP_FOREACH(f, s->user_journals, i) {
+                r = journal_file_set_offline(f, false);
                 if (r < 0)
                         log_warning_errno(r, "Failed to sync user journal, ignoring: %m");
         }
@@ -469,38 +492,36 @@ static void server_cache_hostname(Server *s) {
 }
 
 static bool shall_try_append_again(JournalFile *f, int r) {
-
-        /* -E2BIG            Hit configured limit
-           -EFBIG            Hit fs limit
-           -EDQUOT           Quota limit hit
-           -ENOSPC           Disk full
-           -EIO              I/O error of some kind (mmap)
-           -EHOSTDOWN        Other machine
-           -EBUSY            Unclean shutdown
-           -EPROTONOSUPPORT  Unsupported feature
-           -EBADMSG          Corrupted
-           -ENODATA          Truncated
-           -ESHUTDOWN        Already archived
-           -EIDRM            Journal file has been deleted */
-
-        if (r == -E2BIG || r == -EFBIG || r == -EDQUOT || r == -ENOSPC)
+        switch(r) {
+        case -E2BIG:           /* Hit configured limit          */
+        case -EFBIG:           /* Hit fs limit                  */
+        case -EDQUOT:          /* Quota limit hit               */
+        case -ENOSPC:          /* Disk full                     */
                 log_debug("%s: Allocation limit reached, rotating.", f->path);
-        else if (r == -EHOSTDOWN)
-                log_info("%s: Journal file from other machine, rotating.", f->path);
-        else if (r == -EBUSY)
-                log_info("%s: Unclean shutdown, rotating.", f->path);
-        else if (r == -EPROTONOSUPPORT)
-                log_info("%s: Unsupported feature, rotating.", f->path);
-        else if (r == -EBADMSG || r == -ENODATA || r == ESHUTDOWN)
-                log_warning("%s: Journal file corrupted, rotating.", f->path);
-        else if (r == -EIO)
+                return true;
+        case -EIO:             /* I/O error of some kind (mmap) */
                 log_warning("%s: IO error, rotating.", f->path);
-        else if (r == -EIDRM)
+                return true;
+        case -EHOSTDOWN:       /* Other machine                 */
+                log_info("%s: Journal file from other machine, rotating.", f->path);
+                return true;
+        case -EBUSY:           /* Unclean shutdown              */
+                log_info("%s: Unclean shutdown, rotating.", f->path);
+                return true;
+        case -EPROTONOSUPPORT: /* Unsupported feature           */
+                log_info("%s: Unsupported feature, rotating.", f->path);
+                return true;
+        case -EBADMSG:         /* Corrupted                     */
+        case -ENODATA:         /* Truncated                     */
+        case -ESHUTDOWN:       /* Already archived              */
+                log_warning("%s: Journal file corrupted, rotating.", f->path);
+                return true;
+        case -EIDRM:           /* Journal file has been deleted */
                 log_warning("%s: Journal file has been deleted, rotating.", f->path);
-        else
+                return true;
+        default:
                 return false;
-
-        return true;
+        }
 }
 
 static void write_to_journal(Server *s, uid_t uid, struct iovec *iovec, unsigned n, int priority) {
@@ -699,14 +720,14 @@ static void dispatch_message_real(
                 }
 
 #ifdef HAVE_SELINUX
-                if (mac_selinux_use()) {
+                if (mac_selinux_have()) {
                         if (label) {
                                 x = alloca(strlen("_SELINUX_CONTEXT=") + label_len + 1);
 
                                 *((char*) mempcpy(stpcpy(x, "_SELINUX_CONTEXT="), label, label_len)) = 0;
                                 IOVEC_SET_STRING(iovec[n++], x);
                         } else {
-                                security_context_t con;
+                                char *con;
 
                                 if (getpidcon(ucred->pid, &con) >= 0) {
                                         x = strjoina("_SELINUX_CONTEXT=", con);
@@ -839,37 +860,56 @@ static void dispatch_message_real(
 
 void server_driver_message(Server *s, sd_id128_t message_id, const char *format, ...) {
         char mid[11 + 32 + 1];
-        char buffer[16 + LINE_MAX + 1];
-        struct iovec iovec[N_IOVEC_META_FIELDS + 6];
-        int n = 0;
+        struct iovec iovec[N_IOVEC_META_FIELDS + 5 + N_IOVEC_PAYLOAD_FIELDS];
+        unsigned n = 0, m;
+        int r;
         va_list ap;
         struct ucred ucred = {};
 
         assert(s);
         assert(format);
 
+        assert_cc(3 == LOG_FAC(LOG_DAEMON));
         IOVEC_SET_STRING(iovec[n++], "SYSLOG_FACILITY=3");
         IOVEC_SET_STRING(iovec[n++], "SYSLOG_IDENTIFIER=systemd-journald");
 
-        IOVEC_SET_STRING(iovec[n++], "PRIORITY=6");
         IOVEC_SET_STRING(iovec[n++], "_TRANSPORT=driver");
+        assert_cc(6 == LOG_INFO);
+        IOVEC_SET_STRING(iovec[n++], "PRIORITY=6");
 
-        memcpy(buffer, "MESSAGE=", 8);
-        va_start(ap, format);
-        vsnprintf(buffer + 8, sizeof(buffer) - 8, format, ap);
-        va_end(ap);
-        IOVEC_SET_STRING(iovec[n++], buffer);
-
-        if (!sd_id128_equal(message_id, SD_ID128_NULL)) {
+        if (!sd_id128_is_null(message_id)) {
                 snprintf(mid, sizeof(mid), LOG_MESSAGE_ID(message_id));
                 IOVEC_SET_STRING(iovec[n++], mid);
         }
+
+        m = n;
+
+        va_start(ap, format);
+        r = log_format_iovec(iovec, ELEMENTSOF(iovec), &n, false, 0, format, ap);
+        /* Error handling below */
+        va_end(ap);
 
         ucred.pid = getpid();
         ucred.uid = getuid();
         ucred.gid = getgid();
 
-        dispatch_message_real(s, iovec, n, ELEMENTSOF(iovec), &ucred, NULL, NULL, 0, NULL, LOG_INFO, 0);
+        if (r >= 0)
+                dispatch_message_real(s, iovec, n, ELEMENTSOF(iovec), &ucred, NULL, NULL, 0, NULL, LOG_INFO, 0);
+
+        while (m < n)
+                free(iovec[m++].iov_base);
+
+        if (r < 0) {
+                /* We failed to format the message. Emit a warning instead. */
+                char buf[LINE_MAX];
+
+                xsprintf(buf, "MESSAGE=Entry printing failed: %s", strerror(-r));
+
+                n = 3;
+                IOVEC_SET_STRING(iovec[n++], "PRIORITY=4");
+                IOVEC_SET_STRING(iovec[n++], buf);
+                dispatch_message_real(s, iovec, n, ELEMENTSOF(iovec), &ucred, NULL, NULL, 0, NULL, LOG_INFO, 0);
+        }
 }
 
 void server_dispatch_message(
@@ -932,7 +972,8 @@ void server_dispatch_message(
         /* Write a suppression message if we suppressed something */
         if (rl > 1)
                 server_driver_message(s, SD_MESSAGE_JOURNAL_DROPPED,
-                                      "Suppressed %u messages from %s", rl - 1, path);
+                                      LOG_MESSAGE("Suppressed %u messages from %s", rl - 1, path),
+                                      NULL);
 
 finish:
         dispatch_message_real(s, iovec, n, m, ucred, tv, label, label_len, unit_id, priority, object_pid);
@@ -961,9 +1002,9 @@ static int system_journal_open(Server *s, bool flush_requested) {
                 (void) mkdir(fn, 0755);
 
                 fn = strjoina(fn, "/system.journal");
-                r = journal_file_open_reliably(fn, O_RDWR|O_CREAT, 0640, s->compress, s->seal, &s->system_metrics, s->mmap, NULL, &s->system_journal);
+                r = open_journal(s, true, fn, O_RDWR|O_CREAT, s->seal, &s->system_metrics, &s->system_journal);
                 if (r >= 0) {
-                        server_fix_perms(s, s->system_journal, 0);
+                        server_add_acls(s->system_journal, 0);
                         (void) determine_space_for(s, &s->system_metrics, "/var/log/journal/", "System journal", true, true, NULL, NULL);
                 } else if (r < 0) {
                         if (r != -ENOENT && r != -EROFS)
@@ -984,7 +1025,7 @@ static int system_journal_open(Server *s, bool flush_requested) {
                          * if it already exists, so that we can flush
                          * it into the system journal */
 
-                        r = journal_file_open(fn, O_RDWR, 0640, s->compress, false, &s->runtime_metrics, s->mmap, NULL, &s->runtime_journal);
+                        r = open_journal(s, false, fn, O_RDWR, false, &s->runtime_metrics, &s->runtime_journal);
                         if (r < 0) {
                                 if (r != -ENOENT)
                                         log_warning_errno(r, "Failed to open runtime journal: %m");
@@ -1001,13 +1042,13 @@ static int system_journal_open(Server *s, bool flush_requested) {
                         (void) mkdir("/run/log/journal", 0755);
                         (void) mkdir_parents(fn, 0750);
 
-                        r = journal_file_open_reliably(fn, O_RDWR|O_CREAT, 0640, s->compress, false, &s->runtime_metrics, s->mmap, NULL, &s->runtime_journal);
+                        r = open_journal(s, true, fn, O_RDWR|O_CREAT, false, &s->runtime_metrics, &s->runtime_journal);
                         if (r < 0)
                                 return log_error_errno(r, "Failed to open runtime journal: %m");
                 }
 
                 if (s->runtime_journal) {
-                        server_fix_perms(s, s->runtime_journal, 0);
+                        server_add_acls(s->runtime_journal, 0);
                         (void) determine_space_for(s, &s->runtime_metrics, "/run/log/journal/", "Runtime journal", true, true, NULL, NULL);
                 }
         }
@@ -1104,7 +1145,11 @@ finish:
 
         sd_journal_close(j);
 
-        server_driver_message(s, SD_ID128_NULL, "Time spent on flushing to /var is %s for %u entries.", format_timespan(ts, sizeof(ts), now(CLOCK_MONOTONIC) - start, 0), n);
+        server_driver_message(s, SD_ID128_NULL,
+                              LOG_MESSAGE("Time spent on flushing to /var is %s for %u entries.",
+                                          format_timespan(ts, sizeof(ts), now(CLOCK_MONOTONIC) - start, 0),
+                                          n),
+                              NULL);
 
         return r;
 }
@@ -1233,28 +1278,37 @@ int server_process_datagram(sd_event_source *es, int fd, uint32_t revents, void 
 
 static int dispatch_sigusr1(sd_event_source *es, const struct signalfd_siginfo *si, void *userdata) {
         Server *s = userdata;
+        int r;
 
         assert(s);
 
-        log_info("Received request to flush runtime journal from PID %"PRIu32, si->ssi_pid);
+        log_info("Received request to flush runtime journal from PID " PID_FMT, si->ssi_pid);
 
         server_flush_to_var(s);
         server_sync(s);
         server_vacuum(s, false, false);
 
-        (void) touch("/run/systemd/journal/flushed");
+        r = touch("/run/systemd/journal/flushed");
+        if (r < 0)
+                log_warning_errno(r, "Failed to touch /run/systemd/journal/flushed, ignoring: %m");
 
         return 0;
 }
 
 static int dispatch_sigusr2(sd_event_source *es, const struct signalfd_siginfo *si, void *userdata) {
         Server *s = userdata;
+        int r;
 
         assert(s);
 
-        log_info("Received request to rotate journal from PID %"PRIu32, si->ssi_pid);
+        log_info("Received request to rotate journal from PID " PID_FMT, si->ssi_pid);
         server_rotate(s);
         server_vacuum(s, true, true);
+
+        /* Let clients know when the most recent rotation happened. */
+        r = write_timestamp_file_atomic("/run/systemd/journal/rotated", now(CLOCK_MONOTONIC));
+        if (r < 0)
+                log_warning_errno(r, "Failed to write /run/systemd/journal/rotated, ignoring: %m");
 
         return 0;
 }
@@ -1270,12 +1324,30 @@ static int dispatch_sigterm(sd_event_source *es, const struct signalfd_siginfo *
         return 0;
 }
 
+static int dispatch_sigrtmin1(sd_event_source *es, const struct signalfd_siginfo *si, void *userdata) {
+        Server *s = userdata;
+        int r;
+
+        assert(s);
+
+        log_debug("Received request to sync from PID " PID_FMT, si->ssi_pid);
+
+        server_sync(s);
+
+        /* Let clients know when the most recent sync happened. */
+        r = write_timestamp_file_atomic("/run/systemd/journal/synced", now(CLOCK_MONOTONIC));
+        if (r < 0)
+                log_warning_errno(r, "Failed to write /run/systemd/journal/synced, ignoring: %m");
+
+        return 0;
+}
+
 static int setup_signals(Server *s) {
         int r;
 
         assert(s);
 
-        assert(sigprocmask_many(SIG_SETMASK, NULL, SIGINT, SIGTERM, SIGUSR1, SIGUSR2, -1) >= 0);
+        assert(sigprocmask_many(SIG_SETMASK, NULL, SIGINT, SIGTERM, SIGUSR1, SIGUSR2, SIGRTMIN+1, -1) >= 0);
 
         r = sd_event_add_signal(s->event, &s->sigusr1_event_source, SIGUSR1, dispatch_sigusr1, s);
         if (r < 0)
@@ -1289,7 +1361,32 @@ static int setup_signals(Server *s) {
         if (r < 0)
                 return r;
 
+        /* Let's process SIGTERM late, so that we flush all queued
+         * messages to disk before we exit */
+        r = sd_event_source_set_priority(s->sigterm_event_source, SD_EVENT_PRIORITY_NORMAL+20);
+        if (r < 0)
+                return r;
+
+        /* When journald is invoked on the terminal (when debugging),
+         * it's useful if C-c is handled equivalent to SIGTERM. */
         r = sd_event_add_signal(s->event, &s->sigint_event_source, SIGINT, dispatch_sigterm, s);
+        if (r < 0)
+                return r;
+
+        r = sd_event_source_set_priority(s->sigint_event_source, SD_EVENT_PRIORITY_NORMAL+20);
+        if (r < 0)
+                return r;
+
+        /* SIGRTMIN+1 causes an immediate sync. We process this very
+         * late, so that everything else queued at this point is
+         * really written to disk. Clients can watch
+         * /run/systemd/journal/synced with inotify until its mtime
+         * changes to see when a sync happened. */
+        r = sd_event_add_signal(s->event, &s->sigrtmin1_event_source, SIGRTMIN+1, dispatch_sigrtmin1, s);
+        if (r < 0)
+                return r;
+
+        r = sd_event_source_set_priority(s->sigrtmin1_event_source, SD_EVENT_PRIORITY_NORMAL+15);
         if (r < 0)
                 return r;
 
@@ -1308,8 +1405,8 @@ static int server_parse_proc_cmdline(Server *s) {
         }
 
         p = line;
-        for(;;) {
-                _cleanup_free_ char *word;
+        for (;;) {
+                _cleanup_free_ char *word = NULL;
 
                 r = extract_first_word(&p, &word, NULL, 0);
                 if (r < 0)
@@ -1353,8 +1450,8 @@ static int server_parse_proc_cmdline(Server *s) {
 static int server_parse_config_file(Server *s) {
         assert(s);
 
-        return config_parse_many("/etc/systemd/journald.conf",
-                                 CONF_DIRS_NULSTR("systemd/journald.conf"),
+        return config_parse_many(PKGSYSCONFDIR "/journald.conf",
+                                 CONF_PATHS_NULSTR("systemd/journald.conf.d"),
                                  "Journal\0",
                                  config_item_perf_lookup, journald_gperf_lookup,
                                  false, s);
@@ -1457,6 +1554,170 @@ static int server_open_hostname(Server *s) {
         return 0;
 }
 
+static int dispatch_notify_event(sd_event_source *es, int fd, uint32_t revents, void *userdata) {
+        Server *s = userdata;
+        int r;
+
+        assert(s);
+        assert(s->notify_event_source == es);
+        assert(s->notify_fd == fd);
+
+        /* The $NOTIFY_SOCKET is writable again, now send exactly one
+         * message on it. Either it's the wtachdog event, the initial
+         * READY=1 event or an stdout stream event. If there's nothing
+         * to write anymore, turn our event source off. The next time
+         * there's something to send it will be turned on again. */
+
+        if (!s->sent_notify_ready) {
+                static const char p[] =
+                        "READY=1\n"
+                        "STATUS=Processing requests...";
+                ssize_t l;
+
+                l = send(s->notify_fd, p, strlen(p), MSG_DONTWAIT);
+                if (l < 0) {
+                        if (errno == EAGAIN)
+                                return 0;
+
+                        return log_error_errno(errno, "Failed to send READY=1 notification message: %m");
+                }
+
+                s->sent_notify_ready = true;
+                log_debug("Sent READY=1 notification.");
+
+        } else if (s->send_watchdog) {
+
+                static const char p[] =
+                        "WATCHDOG=1";
+
+                ssize_t l;
+
+                l = send(s->notify_fd, p, strlen(p), MSG_DONTWAIT);
+                if (l < 0) {
+                        if (errno == EAGAIN)
+                                return 0;
+
+                        return log_error_errno(errno, "Failed to send WATCHDOG=1 notification message: %m");
+                }
+
+                s->send_watchdog = false;
+                log_debug("Sent WATCHDOG=1 notification.");
+
+        } else if (s->stdout_streams_notify_queue)
+                /* Dispatch one stream notification event */
+                stdout_stream_send_notify(s->stdout_streams_notify_queue);
+
+        /* Leave us enabled if there's still more to do. */
+        if (s->send_watchdog || s->stdout_streams_notify_queue)
+                return 0;
+
+        /* There was nothing to do anymore, let's turn ourselves off. */
+        r = sd_event_source_set_enabled(es, SD_EVENT_OFF);
+        if (r < 0)
+                return log_error_errno(r, "Failed to turn off notify event source: %m");
+
+        return 0;
+}
+
+static int dispatch_watchdog(sd_event_source *es, uint64_t usec, void *userdata) {
+        Server *s = userdata;
+        int r;
+
+        assert(s);
+
+        s->send_watchdog = true;
+
+        r = sd_event_source_set_enabled(s->notify_event_source, SD_EVENT_ON);
+        if (r < 0)
+                log_warning_errno(r, "Failed to turn on notify event source: %m");
+
+        r = sd_event_source_set_time(s->watchdog_event_source, usec + s->watchdog_usec / 2);
+        if (r < 0)
+                return log_error_errno(r, "Failed to restart watchdog event source: %m");
+
+        r = sd_event_source_set_enabled(s->watchdog_event_source, SD_EVENT_ON);
+        if (r < 0)
+                return log_error_errno(r, "Failed to enable watchdog event source: %m");
+
+        return 0;
+}
+
+static int server_connect_notify(Server *s) {
+        union sockaddr_union sa = {
+                .un.sun_family = AF_UNIX,
+        };
+        const char *e;
+        int r;
+
+        assert(s);
+        assert(s->notify_fd < 0);
+        assert(!s->notify_event_source);
+
+        /*
+          So here's the problem: we'd like to send notification
+          messages to PID 1, but we cannot do that via sd_notify(),
+          since that's synchronous, and we might end up blocking on
+          it. Specifically: given that PID 1 might block on
+          dbus-daemon during IPC, and dbus-daemon is logging to us,
+          and might hence block on us, we might end up in a deadlock
+          if we block on sending PID 1 notification messages — by
+          generating a full blocking circle. To avoid this, let's
+          create a non-blocking socket, and connect it to the
+          notification socket, and then wait for POLLOUT before we
+          send anything. This should efficiently avoid any deadlocks,
+          as we'll never block on PID 1, hence PID 1 can safely block
+          on dbus-daemon which can safely block on us again.
+
+          Don't think that this issue is real? It is, see:
+          https://github.com/systemd/systemd/issues/1505
+        */
+
+        e = getenv("NOTIFY_SOCKET");
+        if (!e)
+                return 0;
+
+        if ((e[0] != '@' && e[0] != '/') || e[1] == 0) {
+                log_error("NOTIFY_SOCKET set to an invalid value: %s", e);
+                return -EINVAL;
+        }
+
+        if (strlen(e) > sizeof(sa.un.sun_path)) {
+                log_error("NOTIFY_SOCKET path too long: %s", e);
+                return -EINVAL;
+        }
+
+        s->notify_fd = socket(AF_UNIX, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0);
+        if (s->notify_fd < 0)
+                return log_error_errno(errno, "Failed to create notify socket: %m");
+
+        (void) fd_inc_sndbuf(s->notify_fd, NOTIFY_SNDBUF_SIZE);
+
+        strncpy(sa.un.sun_path, e, sizeof(sa.un.sun_path));
+        if (sa.un.sun_path[0] == '@')
+                sa.un.sun_path[0] = 0;
+
+        r = connect(s->notify_fd, &sa.sa, SOCKADDR_UN_LEN(sa.un));
+        if (r < 0)
+                return log_error_errno(errno, "Failed to connect to notify socket: %m");
+
+        r = sd_event_add_io(s->event, &s->notify_event_source, s->notify_fd, EPOLLOUT, dispatch_notify_event, s);
+        if (r < 0)
+                return log_error_errno(r, "Failed to watch notification socket: %m");
+
+        if (sd_watchdog_enabled(false, &s->watchdog_usec) > 0) {
+                s->send_watchdog = true;
+
+                r = sd_event_add_time(s->event, &s->watchdog_event_source, CLOCK_MONOTONIC, now(CLOCK_MONOTONIC) + s->watchdog_usec/2, s->watchdog_usec/4, dispatch_watchdog, s);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to add watchdog time event: %m");
+        }
+
+        /* This should fire pretty soon, which we'll use to send the
+         * READY=1 event. */
+
+        return 0;
+}
+
 int server_init(Server *s) {
         _cleanup_fdset_free_ FDSet *fds = NULL;
         int n, r, fd;
@@ -1465,9 +1726,11 @@ int server_init(Server *s) {
         assert(s);
 
         zero(*s);
-        s->syslog_fd = s->native_fd = s->stdout_fd = s->dev_kmsg_fd = s->audit_fd = s->hostname_fd = -1;
+        s->syslog_fd = s->native_fd = s->stdout_fd = s->dev_kmsg_fd = s->audit_fd = s->hostname_fd = s->notify_fd = -1;
         s->compress = true;
         s->seal = true;
+
+        s->watchdog_usec = USEC_INFINITY;
 
         s->sync_interval_usec = DEFAULT_SYNC_INTERVAL_USEC;
         s->sync_scheduled = false;
@@ -1507,11 +1770,13 @@ int server_init(Server *s) {
         if (!s->mmap)
                 return log_oom();
 
+        s->deferred_closes = set_new(NULL);
+        if (!s->deferred_closes)
+                return log_oom();
+
         r = sd_event_default(&s->event);
         if (r < 0)
                 return log_error_errno(r, "Failed to create event loop: %m");
-
-        sd_event_set_watchdog(s->event, true);
 
         n = sd_listen_fds(true);
         if (n < 0)
@@ -1637,6 +1902,8 @@ int server_init(Server *s) {
         server_cache_boot_id(s);
         server_cache_machine_id(s);
 
+        (void) server_connect_notify(s);
+
         return system_journal_open(s, false);
 }
 
@@ -1660,17 +1927,22 @@ void server_done(Server *s) {
         JournalFile *f;
         assert(s);
 
+        if (s->deferred_closes) {
+                journal_file_close_set(s->deferred_closes);
+                set_free(s->deferred_closes);
+        }
+
         while (s->stdout_streams)
                 stdout_stream_free(s->stdout_streams);
 
         if (s->system_journal)
-                journal_file_close(s->system_journal);
+                (void) journal_file_close(s->system_journal);
 
         if (s->runtime_journal)
-                journal_file_close(s->runtime_journal);
+                (void) journal_file_close(s->runtime_journal);
 
         while ((f = ordered_hashmap_steal_first(s->user_journals)))
-                journal_file_close(f);
+                (void) journal_file_close(f);
 
         ordered_hashmap_free(s->user_journals);
 
@@ -1684,7 +1956,10 @@ void server_done(Server *s) {
         sd_event_source_unref(s->sigusr2_event_source);
         sd_event_source_unref(s->sigterm_event_source);
         sd_event_source_unref(s->sigint_event_source);
+        sd_event_source_unref(s->sigrtmin1_event_source);
         sd_event_source_unref(s->hostname_event_source);
+        sd_event_source_unref(s->notify_event_source);
+        sd_event_source_unref(s->watchdog_event_source);
         sd_event_unref(s->event);
 
         safe_close(s->syslog_fd);
@@ -1693,6 +1968,7 @@ void server_done(Server *s) {
         safe_close(s->dev_kmsg_fd);
         safe_close(s->audit_fd);
         safe_close(s->hostname_fd);
+        safe_close(s->notify_fd);
 
         if (s->rate_limit)
                 journal_rate_limit_free(s->rate_limit);

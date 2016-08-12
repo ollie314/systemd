@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -20,15 +18,19 @@
 ***/
 
 #include <errno.h>
+#include <fnmatch.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "alloc-util.h"
 #include "escape.h"
+#include "extract-word.h"
+#include "fileio.h"
 #include "string-util.h"
-#include "util.h"
 #include "strv.h"
+#include "util.h"
 
 char *strv_find(char **l, const char *name) {
         char **i;
@@ -137,16 +139,16 @@ char **strv_new_ap(const char *x, va_list ap) {
         va_list aq;
 
         /* As a special trick we ignore all listed strings that equal
-         * (const char*) -1. This is supposed to be used with the
+         * STRV_IGNORE. This is supposed to be used with the
          * STRV_IFNOTNULL() macro to include possibly NULL strings in
          * the string list. */
 
         if (x) {
-                n = x == (const char*) -1 ? 0 : 1;
+                n = x == STRV_IGNORE ? 0 : 1;
 
                 va_copy(aq, ap);
                 while ((s = va_arg(aq, const char*))) {
-                        if (s == (const char*) -1)
+                        if (s == STRV_IGNORE)
                                 continue;
 
                         n++;
@@ -160,7 +162,7 @@ char **strv_new_ap(const char *x, va_list ap) {
                 return NULL;
 
         if (x) {
-                if (x != (const char*) -1) {
+                if (x != STRV_IGNORE) {
                         a[i] = strdup(x);
                         if (!a[i])
                                 goto fail;
@@ -169,7 +171,7 @@ char **strv_new_ap(const char *x, va_list ap) {
 
                 while ((s = va_arg(ap, const char*))) {
 
-                        if (s == (const char*) -1)
+                        if (s == STRV_IGNORE)
                                 continue;
 
                         a[i] = strdup(s);
@@ -369,7 +371,7 @@ char *strv_join(char **l, const char *separator) {
 
         n = 0;
         STRV_FOREACH(s, l) {
-                if (n != 0)
+                if (s != l)
                         n += k;
                 n += strlen(*s);
         }
@@ -380,7 +382,7 @@ char *strv_join(char **l, const char *separator) {
 
         e = r;
         STRV_FOREACH(s, l) {
-                if (e != r)
+                if (s != l)
                         e = stpcpy(e, separator);
 
                 e = stpcpy(e, *s);
@@ -556,6 +558,42 @@ int strv_extend(char ***l, const char *value) {
         return strv_consume(l, v);
 }
 
+int strv_extend_front(char ***l, const char *value) {
+        size_t n, m;
+        char *v, **c;
+
+        assert(l);
+
+        /* Like strv_extend(), but prepends rather than appends the new entry */
+
+        if (!value)
+                return 0;
+
+        n = strv_length(*l);
+
+        /* Increase and overflow check. */
+        m = n + 2;
+        if (m < n)
+                return -ENOMEM;
+
+        v = strdup(value);
+        if (!v)
+                return -ENOMEM;
+
+        c = realloc_multiply(*l, sizeof(char*), m);
+        if (!c) {
+                free(v);
+                return -ENOMEM;
+        }
+
+        memmove(c+1, c, n * sizeof(char*));
+        c[0] = v;
+        c[n+1] = NULL;
+
+        *l = c;
+        return 0;
+}
+
 char **strv_uniq(char **l) {
         char **i;
 
@@ -600,6 +638,17 @@ char **strv_remove(char **l, const char *s) {
 }
 
 char **strv_parse_nulstr(const char *s, size_t l) {
+        /* l is the length of the input data, which will be split at NULs into
+         * elements of the resulting strv. Hence, the number of items in the resulting strv
+         * will be equal to one plus the number of NUL bytes in the l bytes starting at s,
+         * unless s[l-1] is NUL, in which case the final empty string is not stored in
+         * the resulting strv, and length is equal to the number of NUL bytes.
+         *
+         * Note that contrary to a normal nulstr which cannot contain empty strings, because
+         * the input data is terminated by any two consequent NUL bytes, this parser accepts
+         * empty strings in s.
+         */
+
         const char *p;
         unsigned c = 0, i = 0;
         char **v;
@@ -662,6 +711,13 @@ char **strv_split_nulstr(const char *s) {
 }
 
 int strv_make_nulstr(char **l, char **p, size_t *q) {
+        /* A valid nulstr with two NULs at the end will be created, but
+         * q will be the length without the two trailing NULs. Thus the output
+         * string is a valid nulstr and can be iterated over using NULSTR_FOREACH,
+         * and can also be parsed by strv_parse_nulstr as long as the length
+         * is provided separately.
+         */
+
         size_t n_allocated = 0, n = 0;
         _cleanup_free_ char *m = NULL;
         char **i;
@@ -674,7 +730,7 @@ int strv_make_nulstr(char **l, char **p, size_t *q) {
 
                 z = strlen(*i);
 
-                if (!GREEDY_REALLOC(m, n_allocated, n + z + 1))
+                if (!GREEDY_REALLOC(m, n_allocated, n + z + 2))
                         return -ENOMEM;
 
                 memcpy(m + n, *i, z + 1);
@@ -685,11 +741,14 @@ int strv_make_nulstr(char **l, char **p, size_t *q) {
                 m = new0(char, 1);
                 if (!m)
                         return -ENOMEM;
-                n = 0;
-        }
+                n = 1;
+        } else
+                /* make sure there is a second extra NUL at the end of resulting nulstr */
+                m[n] = '\0';
 
+        assert(n > 0);
         *p = m;
-        *q = n;
+        *q = n - 1;
 
         m = NULL;
 
@@ -765,13 +824,8 @@ char **strv_reverse(char **l) {
         if (n <= 1)
                 return l;
 
-        for (i = 0; i < n / 2; i++) {
-                char *t;
-
-                t = l[i];
-                l[i] = l[n-1-i];
-                l[n-1-i] = t;
-        }
+        for (i = 0; i < n / 2; i++)
+                SWAP_TWO(l[i], l[n-1-i]);
 
         return l;
 }
@@ -800,7 +854,7 @@ bool strv_fnmatch(char* const* patterns, const char *s, int flags) {
         char* const* p;
 
         STRV_FOREACH(p, patterns)
-                if (fnmatch(*p, s, 0) == 0)
+                if (fnmatch(*p, s, flags) == 0)
                         return true;
 
         return false;
@@ -842,7 +896,7 @@ int strv_extend_n(char ***l, const char *value, size_t n) {
         if (n == 0)
                 return 0;
 
-        /* Adds the value value n times to l */
+        /* Adds the value n times to l */
 
         k = strv_length(*l);
 
@@ -867,4 +921,23 @@ rollback:
 
         nl[k] = NULL;
         return -ENOMEM;
+}
+
+int fputstrv(FILE *f, char **l, const char *separator, bool *space) {
+        bool b = false;
+        char **s;
+        int r;
+
+        /* Like fputs(), but for strv, and with a less stupid argument order */
+
+        if (!space)
+                space = &b;
+
+        STRV_FOREACH(s, l) {
+                r = fputs_with_space(f, *s, separator, space);
+                if (r < 0)
+                        return r;
+        }
+
+        return 0;
 }

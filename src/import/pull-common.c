@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -165,7 +163,7 @@ static int hash_url(const char *url, char **ret) {
 
         assert(url);
 
-        siphash24((uint8_t *) &h, url, strlen(url), k.bytes);
+        h = siphash24(url, strlen(url), k.bytes);
         if (asprintf(ret, "%"PRIx64, h) < 0)
                 return -ENOMEM;
 
@@ -332,7 +330,7 @@ int pull_verify(PullJob *main_job,
         _cleanup_close_ int sig_file = -1;
         const char *p, *line;
         char sig_file_path[] = "/tmp/sigXXXXXX", gpg_home[] = "/tmp/gpghomeXXXXXX";
-        _cleanup_sigkill_wait_ pid_t pid = 0;
+        _cleanup_(sigkill_waitp) pid_t pid = 0;
         bool gpg_home_created = false;
         int r;
 
@@ -508,9 +506,7 @@ int pull_verify(PullJob *main_job,
                 cmd[k++] = "-";
                 cmd[k++] = NULL;
 
-                fd_cloexec(STDIN_FILENO, false);
-                fd_cloexec(STDOUT_FILENO, false);
-                fd_cloexec(STDERR_FILENO, false);
+                stdio_unset_cloexec();
 
                 execvp("gpg2", (char * const *) cmd);
                 execvp("gpg", (char * const *) cmd);

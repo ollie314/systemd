@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -37,8 +35,8 @@
 #include <valgrind/valgrind.h>
 #endif
 
-#include "sd-daemon.h"
 #include "sd-bus.h"
+#include "sd-daemon.h"
 
 #include "alloc-util.h"
 #include "architecture.h"
@@ -72,6 +70,7 @@
 #include "parse-util.h"
 #include "proc-cmdline.h"
 #include "process-util.h"
+#include "raw-clone.h"
 #include "rlimit-util.h"
 #include "selinux-setup.h"
 #include "selinux-util.h"
@@ -83,6 +82,7 @@
 #include "strv.h"
 #include "switch-root.h"
 #include "terminal-util.h"
+#include "umask-util.h"
 #include "user-util.h"
 #include "virt.h"
 #include "watchdog.h"
@@ -92,11 +92,10 @@ static enum {
         ACTION_HELP,
         ACTION_VERSION,
         ACTION_TEST,
-        ACTION_DUMP_CONFIGURATION_ITEMS,
-        ACTION_DONE
+        ACTION_DUMP_CONFIGURATION_ITEMS
 } arg_action = ACTION_RUN;
 static char *arg_default_unit = NULL;
-static ManagerRunningAs arg_running_as = _MANAGER_RUNNING_AS_INVALID;
+static bool arg_system = false;
 static bool arg_dump_core = true;
 static int arg_crash_chvt = -1;
 static bool arg_crash_shell = false;
@@ -104,7 +103,7 @@ static bool arg_crash_reboot = false;
 static bool arg_confirm_spawn = false;
 static ShowStatus arg_show_status = _SHOW_STATUS_UNSET;
 static bool arg_switched_root = false;
-static int arg_no_pager = -1;
+static bool arg_no_pager = false;
 static char ***arg_join_controllers = NULL;
 static ExecOutput arg_default_std_output = EXEC_OUTPUT_JOURNAL;
 static ExecOutput arg_default_std_error = EXEC_OUTPUT_INHERIT;
@@ -117,23 +116,18 @@ static usec_t arg_runtime_watchdog = 0;
 static usec_t arg_shutdown_watchdog = 10 * USEC_PER_MINUTE;
 static char **arg_default_environment = NULL;
 static struct rlimit *arg_default_rlimit[_RLIMIT_MAX] = {};
-static uint64_t arg_capability_bounding_set_drop = 0;
+static uint64_t arg_capability_bounding_set = CAP_ALL;
 static nsec_t arg_timer_slack_nsec = NSEC_INFINITY;
 static usec_t arg_default_timer_accuracy_usec = 1 * USEC_PER_MINUTE;
 static Set* arg_syscall_archs = NULL;
 static FILE* arg_serialization = NULL;
 static bool arg_default_cpu_accounting = false;
+static bool arg_default_io_accounting = false;
 static bool arg_default_blockio_accounting = false;
 static bool arg_default_memory_accounting = false;
-static bool arg_default_tasks_accounting = false;
-
-static void pager_open_if_enabled(void) {
-
-        if (arg_no_pager <= 0)
-                return;
-
-        pager_open(false);
-}
+static bool arg_default_tasks_accounting = true;
+static uint64_t arg_default_tasks_max = UINT64_MAX;
+static sd_id128_t arg_machine_id = {};
 
 noreturn static void freeze_or_reboot(void) {
 
@@ -168,23 +162,19 @@ noreturn static void crash(int sig) {
                 /* We want to wait for the core process, hence let's enable SIGCHLD */
                 (void) sigaction(SIGCHLD, &sa, NULL);
 
-                pid = raw_clone(SIGCHLD, NULL);
+                pid = raw_clone(SIGCHLD);
                 if (pid < 0)
                         log_emergency_errno(errno, "Caught <%s>, cannot fork for core dump: %m", signal_to_string(sig));
                 else if (pid == 0) {
-                        struct rlimit rl = {
-                                .rlim_cur = RLIM_INFINITY,
-                                .rlim_max = RLIM_INFINITY,
-                        };
-
                         /* Enable default signal handler for core dump */
+
                         sa = (struct sigaction) {
                                 .sa_handler = SIG_DFL,
                         };
                         (void) sigaction(sig, &sa, NULL);
 
-                        /* Don't limit the core dump size */
-                        (void) setrlimit(RLIMIT_CORE, &rl);
+                        /* Don't limit the coredump size */
+                        (void) setrlimit(RLIMIT_CORE, &RLIMIT_MAKE_CONST(RLIM_INFINITY));
 
                         /* Just to be sure... */
                         (void) chdir("/");
@@ -231,7 +221,7 @@ noreturn static void crash(int sig) {
                 log_notice("Executing crash shell in 10s...");
                 (void) sleep(10);
 
-                pid = raw_clone(SIGCHLD, NULL);
+                pid = raw_clone(SIGCHLD);
                 if (pid < 0)
                         log_emergency_errno(errno, "Failed to fork off crash shell: %m");
                 else if (pid == 0) {
@@ -299,22 +289,22 @@ static int parse_crash_chvt(const char *value) {
         return 0;
 }
 
+static int set_machine_id(const char *m) {
+        sd_id128_t t;
+        assert(m);
+
+        if (sd_id128_from_string(m, &t) < 0)
+                return -EINVAL;
+
+        if (sd_id128_is_null(t))
+                return -EINVAL;
+
+        arg_machine_id = t;
+        return 0;
+}
+
 static int parse_proc_cmdline_item(const char *key, const char *value) {
 
-        static const char * const rlmap[] = {
-                "emergency", SPECIAL_EMERGENCY_TARGET,
-                "-b",        SPECIAL_EMERGENCY_TARGET,
-                "rescue",    SPECIAL_RESCUE_TARGET,
-                "single",    SPECIAL_RESCUE_TARGET,
-                "-s",        SPECIAL_RESCUE_TARGET,
-                "s",         SPECIAL_RESCUE_TARGET,
-                "S",         SPECIAL_RESCUE_TARGET,
-                "1",         SPECIAL_RESCUE_TARGET,
-                "2",         SPECIAL_MULTI_USER_TARGET,
-                "3",         SPECIAL_MULTI_USER_TARGET,
-                "4",         SPECIAL_MULTI_USER_TARGET,
-                "5",         SPECIAL_GRAPHICAL_TARGET,
-        };
         int r;
 
         assert(key);
@@ -401,6 +391,12 @@ static int parse_proc_cmdline_item(const char *key, const char *value) {
                 } else
                         log_warning("Environment variable name '%s' is not valid. Ignoring.", value);
 
+        } else if (streq(key, "systemd.machine_id") && value) {
+
+               r = set_machine_id(value);
+               if (r < 0)
+                       log_warning("MachineID '%s' is not valid. Ignoring.", value);
+
         } else if (streq(key, "quiet") && !value) {
 
                 if (arg_show_status == _SHOW_STATUS_UNSET)
@@ -414,13 +410,22 @@ static int parse_proc_cmdline_item(const char *key, const char *value) {
                 if (detect_container() > 0)
                         log_set_target(LOG_TARGET_CONSOLE);
 
-        } else if (!in_initrd() && !value) {
-                unsigned i;
+        } else if (!value) {
+                const char *target;
 
                 /* SysV compatibility */
-                for (i = 0; i < ELEMENTSOF(rlmap); i += 2)
-                        if (streq(key, rlmap[i]))
-                                return free_and_strdup(&arg_default_unit, rlmap[i+1]);
+                target = runlevel_to_target(key);
+                if (target)
+                        return free_and_strdup(&arg_default_unit, target);
+
+        } else if (streq(key, "systemd.default_timeout_start_sec") && value) {
+
+                r = parse_sec(value, &arg_default_timeout_start_usec);
+                if (r < 0)
+                        log_warning_errno(r, "Failed to parse default start timeout: %s, ignoring.", value);
+
+                if (arg_default_timeout_start_usec <= 0)
+                        arg_default_timeout_start_usec = USEC_INFINITY;
         }
 
         return 0;
@@ -657,7 +662,7 @@ static int parse_config_file(void) {
                 { "Manager", "JoinControllers",           config_parse_join_controllers, 0, &arg_join_controllers                  },
                 { "Manager", "RuntimeWatchdogSec",        config_parse_sec,              0, &arg_runtime_watchdog                  },
                 { "Manager", "ShutdownWatchdogSec",       config_parse_sec,              0, &arg_shutdown_watchdog                 },
-                { "Manager", "CapabilityBoundingSet",     config_parse_bounding_set,     0, &arg_capability_bounding_set_drop      },
+                { "Manager", "CapabilityBoundingSet",     config_parse_capability_set,   0, &arg_capability_bounding_set           },
 #ifdef HAVE_SECCOMP
                 { "Manager", "SystemCallArchitectures",   config_parse_syscall_archs,    0, &arg_syscall_archs                     },
 #endif
@@ -668,38 +673,53 @@ static int parse_config_file(void) {
                 { "Manager", "DefaultTimeoutStartSec",    config_parse_sec,              0, &arg_default_timeout_start_usec        },
                 { "Manager", "DefaultTimeoutStopSec",     config_parse_sec,              0, &arg_default_timeout_stop_usec         },
                 { "Manager", "DefaultRestartSec",         config_parse_sec,              0, &arg_default_restart_usec              },
-                { "Manager", "DefaultStartLimitInterval", config_parse_sec,              0, &arg_default_start_limit_interval      },
+                { "Manager", "DefaultStartLimitInterval", config_parse_sec,              0, &arg_default_start_limit_interval      }, /* obsolete alias */
+                { "Manager", "DefaultStartLimitIntervalSec",config_parse_sec,            0, &arg_default_start_limit_interval      },
                 { "Manager", "DefaultStartLimitBurst",    config_parse_unsigned,         0, &arg_default_start_limit_burst         },
                 { "Manager", "DefaultEnvironment",        config_parse_environ,          0, &arg_default_environment               },
-                { "Manager", "DefaultLimitCPU",           config_parse_limit,            0, &arg_default_rlimit[RLIMIT_CPU]        },
-                { "Manager", "DefaultLimitFSIZE",         config_parse_limit,            0, &arg_default_rlimit[RLIMIT_FSIZE]      },
-                { "Manager", "DefaultLimitDATA",          config_parse_limit,            0, &arg_default_rlimit[RLIMIT_DATA]       },
-                { "Manager", "DefaultLimitSTACK",         config_parse_limit,            0, &arg_default_rlimit[RLIMIT_STACK]      },
-                { "Manager", "DefaultLimitCORE",          config_parse_limit,            0, &arg_default_rlimit[RLIMIT_CORE]       },
-                { "Manager", "DefaultLimitRSS",           config_parse_limit,            0, &arg_default_rlimit[RLIMIT_RSS]        },
-                { "Manager", "DefaultLimitNOFILE",        config_parse_limit,            0, &arg_default_rlimit[RLIMIT_NOFILE]     },
-                { "Manager", "DefaultLimitAS",            config_parse_limit,            0, &arg_default_rlimit[RLIMIT_AS]         },
-                { "Manager", "DefaultLimitNPROC",         config_parse_limit,            0, &arg_default_rlimit[RLIMIT_NPROC]      },
-                { "Manager", "DefaultLimitMEMLOCK",       config_parse_limit,            0, &arg_default_rlimit[RLIMIT_MEMLOCK]    },
-                { "Manager", "DefaultLimitLOCKS",         config_parse_limit,            0, &arg_default_rlimit[RLIMIT_LOCKS]      },
-                { "Manager", "DefaultLimitSIGPENDING",    config_parse_limit,            0, &arg_default_rlimit[RLIMIT_SIGPENDING] },
-                { "Manager", "DefaultLimitMSGQUEUE",      config_parse_limit,            0, &arg_default_rlimit[RLIMIT_MSGQUEUE]   },
-                { "Manager", "DefaultLimitNICE",          config_parse_limit,            0, &arg_default_rlimit[RLIMIT_NICE]       },
-                { "Manager", "DefaultLimitRTPRIO",        config_parse_limit,            0, &arg_default_rlimit[RLIMIT_RTPRIO]     },
-                { "Manager", "DefaultLimitRTTIME",        config_parse_limit,            0, &arg_default_rlimit[RLIMIT_RTTIME]     },
+                { "Manager", "DefaultLimitCPU",           config_parse_limit,            RLIMIT_CPU, arg_default_rlimit            },
+                { "Manager", "DefaultLimitFSIZE",         config_parse_limit,            RLIMIT_FSIZE, arg_default_rlimit          },
+                { "Manager", "DefaultLimitDATA",          config_parse_limit,            RLIMIT_DATA, arg_default_rlimit           },
+                { "Manager", "DefaultLimitSTACK",         config_parse_limit,            RLIMIT_STACK, arg_default_rlimit          },
+                { "Manager", "DefaultLimitCORE",          config_parse_limit,            RLIMIT_CORE, arg_default_rlimit           },
+                { "Manager", "DefaultLimitRSS",           config_parse_limit,            RLIMIT_RSS, arg_default_rlimit            },
+                { "Manager", "DefaultLimitNOFILE",        config_parse_limit,            RLIMIT_NOFILE, arg_default_rlimit         },
+                { "Manager", "DefaultLimitAS",            config_parse_limit,            RLIMIT_AS, arg_default_rlimit             },
+                { "Manager", "DefaultLimitNPROC",         config_parse_limit,            RLIMIT_NPROC, arg_default_rlimit          },
+                { "Manager", "DefaultLimitMEMLOCK",       config_parse_limit,            RLIMIT_MEMLOCK, arg_default_rlimit        },
+                { "Manager", "DefaultLimitLOCKS",         config_parse_limit,            RLIMIT_LOCKS, arg_default_rlimit          },
+                { "Manager", "DefaultLimitSIGPENDING",    config_parse_limit,            RLIMIT_SIGPENDING, arg_default_rlimit     },
+                { "Manager", "DefaultLimitMSGQUEUE",      config_parse_limit,            RLIMIT_MSGQUEUE, arg_default_rlimit       },
+                { "Manager", "DefaultLimitNICE",          config_parse_limit,            RLIMIT_NICE, arg_default_rlimit           },
+                { "Manager", "DefaultLimitRTPRIO",        config_parse_limit,            RLIMIT_RTPRIO, arg_default_rlimit         },
+                { "Manager", "DefaultLimitRTTIME",        config_parse_limit,            RLIMIT_RTTIME, arg_default_rlimit         },
                 { "Manager", "DefaultCPUAccounting",      config_parse_bool,             0, &arg_default_cpu_accounting            },
+                { "Manager", "DefaultIOAccounting",       config_parse_bool,             0, &arg_default_io_accounting             },
                 { "Manager", "DefaultBlockIOAccounting",  config_parse_bool,             0, &arg_default_blockio_accounting        },
                 { "Manager", "DefaultMemoryAccounting",   config_parse_bool,             0, &arg_default_memory_accounting         },
                 { "Manager", "DefaultTasksAccounting",    config_parse_bool,             0, &arg_default_tasks_accounting          },
+                { "Manager", "DefaultTasksMax",           config_parse_tasks_max,        0, &arg_default_tasks_max                 },
                 {}
         };
 
         const char *fn, *conf_dirs_nulstr;
 
-        fn = arg_running_as == MANAGER_SYSTEM ? PKGSYSCONFDIR "/system.conf" : PKGSYSCONFDIR "/user.conf";
-        conf_dirs_nulstr = arg_running_as == MANAGER_SYSTEM ? CONF_DIRS_NULSTR("systemd/system.conf") : CONF_DIRS_NULSTR("systemd/user.conf");
-        config_parse_many(fn, conf_dirs_nulstr, "Manager\0",
-                          config_item_table_lookup, items, false, NULL);
+        fn = arg_system ?
+                PKGSYSCONFDIR "/system.conf" :
+                PKGSYSCONFDIR "/user.conf";
+
+        conf_dirs_nulstr = arg_system ?
+                CONF_PATHS_NULSTR("systemd/system.conf.d") :
+                CONF_PATHS_NULSTR("systemd/user.conf.d");
+
+        config_parse_many(fn, conf_dirs_nulstr, "Manager\0", config_item_table_lookup, items, false, NULL);
+
+        /* Traditionally "0" was used to turn off the default unit timeouts. Fix this up so that we used USEC_INFINITY
+         * like everywhere else. */
+        if (arg_default_timeout_start_usec <= 0)
+                arg_default_timeout_start_usec = USEC_INFINITY;
+        if (arg_default_timeout_stop_usec <= 0)
+                arg_default_timeout_stop_usec = USEC_INFINITY;
 
         return 0;
 }
@@ -717,9 +737,11 @@ static void manager_set_defaults(Manager *m) {
         m->default_start_limit_interval = arg_default_start_limit_interval;
         m->default_start_limit_burst = arg_default_start_limit_burst;
         m->default_cpu_accounting = arg_default_cpu_accounting;
+        m->default_io_accounting = arg_default_io_accounting;
         m->default_blockio_accounting = arg_default_blockio_accounting;
         m->default_memory_accounting = arg_default_memory_accounting;
         m->default_tasks_accounting = arg_default_tasks_accounting;
+        m->default_tasks_max = arg_default_tasks_max;
 
         manager_set_default_rlimits(m, arg_default_rlimit);
         manager_environment_add(m, NULL, arg_default_environment);
@@ -748,7 +770,8 @@ static int parse_argv(int argc, char *argv[]) {
                 ARG_DESERIALIZE,
                 ARG_SWITCHED_ROOT,
                 ARG_DEFAULT_STD_OUTPUT,
-                ARG_DEFAULT_STD_ERROR
+                ARG_DEFAULT_STD_ERROR,
+                ARG_MACHINE_ID
         };
 
         static const struct option options[] = {
@@ -774,6 +797,7 @@ static int parse_argv(int argc, char *argv[]) {
                 { "switched-root",            no_argument,       NULL, ARG_SWITCHED_ROOT            },
                 { "default-standard-output",  required_argument, NULL, ARG_DEFAULT_STD_OUTPUT,      },
                 { "default-standard-error",   required_argument, NULL, ARG_DEFAULT_STD_ERROR,       },
+                { "machine-id",               required_argument, NULL, ARG_MACHINE_ID               },
                 {}
         };
 
@@ -859,17 +883,15 @@ static int parse_argv(int argc, char *argv[]) {
                         break;
 
                 case ARG_SYSTEM:
-                        arg_running_as = MANAGER_SYSTEM;
+                        arg_system = true;
                         break;
 
                 case ARG_USER:
-                        arg_running_as = MANAGER_USER;
+                        arg_system = false;
                         break;
 
                 case ARG_TEST:
                         arg_action = ACTION_TEST;
-                        if (arg_no_pager < 0)
-                                arg_no_pager = true;
                         break;
 
                 case ARG_NO_PAGER:
@@ -969,10 +991,16 @@ static int parse_argv(int argc, char *argv[]) {
                         arg_switched_root = true;
                         break;
 
+                case ARG_MACHINE_ID:
+                        r = set_machine_id(optarg);
+                        if (r < 0) {
+                                log_error("MachineID '%s' is not valid.", optarg);
+                                return r;
+                        }
+                        break;
+
                 case 'h':
                         arg_action = ACTION_HELP;
-                        if (arg_no_pager < 0)
-                                arg_no_pager = true;
                         break;
 
                 case 'D':
@@ -1050,7 +1078,7 @@ static int prepare_reexecute(Manager *m, FILE **_f, FDSet **_fds, bool switching
                 return log_error_errno(r, "Failed to create serialization file: %m");
 
         /* Make sure nothing is really destructed when we shut down */
-        m->n_reloading ++;
+        m->n_reloading++;
         bus_manager_send_reloading(m, true);
 
         fds = fdset_new();
@@ -1111,33 +1139,6 @@ static int bump_rlimit_nofile(struct rlimit *saved_rlimit) {
                 return log_error_errno(r, "Setting RLIMIT_NOFILE failed: %m");
 
         return 0;
-}
-
-static void test_mtab(void) {
-
-        static const char ok[] =
-                "/proc/self/mounts\0"
-                "/proc/mounts\0"
-                "../proc/self/mounts\0"
-                "../proc/mounts\0";
-
-        _cleanup_free_ char *p = NULL;
-        int r;
-
-        /* Check that /etc/mtab is a symlink to the right place or
-         * non-existing. But certainly not a file, or a symlink to
-         * some weird place... */
-
-        r = readlink_malloc("/etc/mtab", &p);
-        if (r == -ENOENT)
-                return;
-        if (r >= 0 && nulstr_contains(ok, p))
-                return;
-
-        log_error("/etc/mtab is not a symlink or not pointing to /proc/self/mounts. "
-                  "This is not supported anymore. "
-                  "Please replace /etc/mtab with a symlink to /proc/self/mounts.");
-        freeze_or_reboot();
 }
 
 static void test_usr(void) {
@@ -1234,20 +1235,98 @@ static int status_welcome(void) {
         if (r < 0 && r != -ENOENT)
                 log_warning_errno(r, "Failed to read os-release file: %m");
 
-        return status_printf(NULL, false, false,
-                             "\nWelcome to \x1B[%sm%s\x1B[0m!\n",
-                             isempty(ansi_color) ? "1" : ansi_color,
-                             isempty(pretty_name) ? "Linux" : pretty_name);
+        if (log_get_show_color())
+                return status_printf(NULL, false, false,
+                                     "\nWelcome to \x1B[%sm%s\x1B[0m!\n",
+                                     isempty(ansi_color) ? "1" : ansi_color,
+                                     isempty(pretty_name) ? "Linux" : pretty_name);
+        else
+                return status_printf(NULL, false, false,
+                                     "\nWelcome to %s!\n",
+                                     isempty(pretty_name) ? "Linux" : pretty_name);
 }
 
 static int write_container_id(void) {
         const char *c;
+        int r;
 
         c = getenv("container");
         if (isempty(c))
                 return 0;
 
-        return write_string_file("/run/systemd/container", c, WRITE_STRING_FILE_CREATE);
+        RUN_WITH_UMASK(0022)
+                r = write_string_file("/run/systemd/container", c, WRITE_STRING_FILE_CREATE);
+        if (r < 0)
+                return log_warning_errno(r, "Failed to write /run/systemd/container, ignoring: %m");
+
+        return 1;
+}
+
+static int bump_unix_max_dgram_qlen(void) {
+        _cleanup_free_ char *qlen = NULL;
+        unsigned long v;
+        int r;
+
+        /* Let's bump the net.unix.max_dgram_qlen sysctl. The kernel
+         * default of 16 is simply too low. We set the value really
+         * really early during boot, so that it is actually applied to
+         * all our sockets, including the $NOTIFY_SOCKET one. */
+
+        r = read_one_line_file("/proc/sys/net/unix/max_dgram_qlen", &qlen);
+        if (r < 0)
+                return log_warning_errno(r, "Failed to read AF_UNIX datagram queue length, ignoring: %m");
+
+        r = safe_atolu(qlen, &v);
+        if (r < 0)
+                return log_warning_errno(r, "Failed to parse AF_UNIX datagram queue length, ignoring: %m");
+
+        if (v >= DEFAULT_UNIX_MAX_DGRAM_QLEN)
+                return 0;
+
+        qlen = mfree(qlen);
+        if (asprintf(&qlen, "%lu\n", DEFAULT_UNIX_MAX_DGRAM_QLEN) < 0)
+                return log_oom();
+
+        r = write_string_file("/proc/sys/net/unix/max_dgram_qlen", qlen, 0);
+        if (r < 0)
+                return log_full_errno(IN_SET(r, -EROFS, -EPERM, -EACCES) ? LOG_DEBUG : LOG_WARNING, r,
+                                      "Failed to bump AF_UNIX datagram queue length, ignoring: %m");
+
+        return 1;
+}
+
+static int fixup_environment(void) {
+        _cleanup_free_ char *term = NULL;
+        int r;
+
+        /* We expect the environment to be set correctly
+         * if run inside a container. */
+        if (detect_container() > 0)
+                return 0;
+
+        /* When started as PID1, the kernel uses /dev/console
+         * for our stdios and uses TERM=linux whatever the
+         * backend device used by the console. We try to make
+         * a better guess here since some consoles might not
+         * have support for color mode for example.
+         *
+         * However if TERM was configured through the kernel
+         * command line then leave it alone. */
+
+        r = get_proc_cmdline_key("TERM=", &term);
+        if (r < 0)
+                return r;
+
+        if (r == 0) {
+                term = strdup(default_term_for_tty("/dev/console"));
+                if (!term)
+                        return -ENOMEM;
+        }
+
+        if (setenv("TERM", term, 1) < 0)
+                return -errno;
+
+        return 0;
 }
 
 int main(int argc, char *argv[]) {
@@ -1279,7 +1358,6 @@ int main(int argc, char *argv[]) {
                 /* This is compatibility support for SysV, where
                  * calling init as a user is identical to telinit. */
 
-                errno = -ENOENT;
                 execv(SYSTEMCTL_BINARY_PATH, argv);
                 log_error_errno(errno, "Failed to exec " SYSTEMCTL_BINARY_PATH ": %m");
                 return 1;
@@ -1310,7 +1388,6 @@ int main(int argc, char *argv[]) {
         saved_argv = argv;
         saved_argc = argc;
 
-        log_show_color(isatty(STDERR_FILENO) > 0);
         log_set_upgrade_syslog_to_journal(true);
 
         /* Disable the umask logic */
@@ -1320,8 +1397,7 @@ int main(int argc, char *argv[]) {
         if (getpid() == 1 && detect_container() <= 0) {
 
                 /* Running outside of a container as PID 1 */
-                arg_running_as = MANAGER_SYSTEM;
-                make_null_stdio();
+                arg_system = true;
                 log_set_target(LOG_TARGET_KMSG);
                 log_open();
 
@@ -1329,28 +1405,32 @@ int main(int argc, char *argv[]) {
                         initrd_timestamp = userspace_timestamp;
 
                 if (!skip_setup) {
-                        mount_setup_early();
+                        r = mount_setup_early();
+                        if (r < 0) {
+                                error_message = "Failed to early mount API filesystems";
+                                goto finish;
+                        }
                         dual_timestamp_get(&security_start_timestamp);
                         if (mac_selinux_setup(&loaded_policy) < 0) {
                                 error_message = "Failed to load SELinux policy";
                                 goto finish;
-                        } else if (ima_setup() < 0) {
-                                error_message = "Failed to load IMA policy";
-                                goto finish;
                         } else if (mac_smack_setup(&loaded_policy) < 0) {
                                 error_message = "Failed to load SMACK policy";
+                                goto finish;
+                        } else if (ima_setup() < 0) {
+                                error_message = "Failed to load IMA policy";
                                 goto finish;
                         }
                         dual_timestamp_get(&security_finish_timestamp);
                 }
 
-                if (mac_selinux_init(NULL) < 0) {
+                if (mac_selinux_init() < 0) {
                         error_message = "Failed to initialize SELinux policy";
                         goto finish;
                 }
 
                 if (!skip_setup) {
-                        if (clock_is_localtime() > 0) {
+                        if (clock_is_localtime(NULL) > 0) {
                                 int min;
 
                                 /*
@@ -1370,7 +1450,7 @@ int main(int argc, char *argv[]) {
                                 /*
                                  * Do a dummy very first call to seal the kernel's time warp magic.
                                  *
-                                 * Do not call this this from inside the initrd. The initrd might not
+                                 * Do not call this from inside the initrd. The initrd might not
                                  * carry /etc/adjtime with LOCAL, but the real system could be set up
                                  * that way. In such case, we need to delay the time-warp or the sealing
                                  * until we reach the real system.
@@ -1380,8 +1460,14 @@ int main(int argc, char *argv[]) {
                                  * saving time change. All kernel local time concepts will be treated
                                  * as UTC that way.
                                  */
-                                clock_reset_timewarp();
+                                (void) clock_reset_timewarp();
                         }
+
+                        r = clock_apply_epoch();
+                        if (r < 0)
+                                log_error_errno(r, "Current system time is before build time, but cannot correct: %m");
+                        else if (r > 0)
+                                log_info("System time before build time, advancing clock.");
                 }
 
                 /* Set the default for later on, but don't actually
@@ -1394,7 +1480,7 @@ int main(int argc, char *argv[]) {
 
         } else if (getpid() == 1) {
                 /* Running inside a container, as PID 1 */
-                arg_running_as = MANAGER_SYSTEM;
+                arg_system = true;
                 log_set_target(LOG_TARGET_CONSOLE);
                 log_close_console(); /* force reopen of /dev/console */
                 log_open();
@@ -1404,18 +1490,40 @@ int main(int argc, char *argv[]) {
 
                 /* clear the kernel timestamp,
                  * because we are in a container */
-                kernel_timestamp.monotonic = 0ULL;
-                kernel_timestamp.realtime = 0ULL;
-
+                kernel_timestamp = DUAL_TIMESTAMP_NULL;
         } else {
                 /* Running as user instance */
-                arg_running_as = MANAGER_USER;
+                arg_system = false;
                 log_set_target(LOG_TARGET_AUTO);
                 log_open();
 
                 /* clear the kernel timestamp,
                  * because we are not PID 1 */
                 kernel_timestamp = DUAL_TIMESTAMP_NULL;
+        }
+
+        if (getpid() == 1) {
+                /* Don't limit the core dump size, so that coredump handlers such as systemd-coredump (which honour the limit)
+                 * will process core dumps for system services by default. */
+                (void) setrlimit(RLIMIT_CORE, &RLIMIT_MAKE_CONST(RLIM_INFINITY));
+
+                /* But at the same time, turn off the core_pattern logic by default, so that no coredumps are stored
+                 * until the systemd-coredump tool is enabled via sysctl. */
+                if (!skip_setup)
+                        (void) write_string_file("/proc/sys/kernel/core_pattern", "|/bin/false", 0);
+        }
+
+        if (arg_system) {
+                if (fixup_environment() < 0) {
+                        error_message = "Failed to fix up PID1 environment";
+                        goto finish;
+                }
+
+                /* Try to figure out if we can use colors with the console. No
+                 * need to do that for user instances since they never log
+                 * into the console. */
+                log_show_color(colors_enabled());
+                make_null_stdio();
         }
 
         /* Initialize default unit */
@@ -1451,12 +1559,14 @@ int main(int argc, char *argv[]) {
         (void) reset_all_signal_handlers();
         (void) ignore_signals(SIGNALS_IGNORE, -1);
 
+        arg_default_tasks_max = system_tasks_max_scale(15U, 100U); /* 15% the system PIDs equals 4915 by default. */
+
         if (parse_config_file() < 0) {
                 error_message = "Failed to parse config file";
                 goto finish;
         }
 
-        if (arg_running_as == MANAGER_SYSTEM) {
+        if (arg_system) {
                 r = parse_proc_cmdline(parse_proc_cmdline_item);
                 if (r < 0)
                         log_warning_errno(r, "Failed to parse kernel command line, ignoring: %m");
@@ -1477,14 +1587,14 @@ int main(int argc, char *argv[]) {
                 goto finish;
         }
 
-        if (arg_running_as == MANAGER_USER &&
+        if (!arg_system &&
             arg_action == ACTION_RUN &&
             sd_booted() <= 0) {
                 log_error("Trying to run as user instance, but the system has not been booted with systemd.");
                 goto finish;
         }
 
-        if (arg_running_as == MANAGER_SYSTEM &&
+        if (arg_system &&
             arg_action == ACTION_RUN &&
             running_in_chroot() > 0) {
                 log_error("Cannot be run in a chroot() environment.");
@@ -1494,7 +1604,8 @@ int main(int argc, char *argv[]) {
         if (arg_action == ACTION_TEST)
                 skip_setup = true;
 
-        pager_open_if_enabled();
+        if (arg_action == ACTION_TEST || arg_action == ACTION_HELP)
+                pager_open(arg_no_pager, false);
 
         if (arg_action == ACTION_HELP) {
                 retval = help();
@@ -1503,15 +1614,13 @@ int main(int argc, char *argv[]) {
                 retval = version();
                 goto finish;
         } else if (arg_action == ACTION_DUMP_CONFIGURATION_ITEMS) {
+                pager_open(arg_no_pager, false);
                 unit_dump_config_items(stdout);
-                retval = EXIT_SUCCESS;
-                goto finish;
-        } else if (arg_action == ACTION_DONE) {
                 retval = EXIT_SUCCESS;
                 goto finish;
         }
 
-        if (arg_running_as == MANAGER_USER &&
+        if (!arg_system &&
             !getenv("XDG_RUNTIME_DIR")) {
                 log_error("Trying to run as user instance, but $XDG_RUNTIME_DIR is not set.");
                 goto finish;
@@ -1534,7 +1643,7 @@ int main(int argc, char *argv[]) {
         if (arg_serialization)
                 assert_se(fdset_remove(fds, fileno(arg_serialization)) >= 0);
 
-        if (arg_running_as == MANAGER_SYSTEM)
+        if (arg_system)
                 /* Become a session leader if we aren't one yet. */
                 setsid();
 
@@ -1543,7 +1652,7 @@ int main(int argc, char *argv[]) {
 
         /* Reset the console, but only if this is really init and we
          * are freshly booted */
-        if (arg_running_as == MANAGER_SYSTEM && arg_action == ACTION_RUN) {
+        if (arg_system && arg_action == ACTION_RUN) {
 
                 /* If we are init, we connect stdin/stdout/stderr to
                  * /dev/null and make sure we don't have a controlling
@@ -1570,7 +1679,7 @@ int main(int argc, char *argv[]) {
                         goto finish;
         }
 
-        if (arg_running_as == MANAGER_SYSTEM) {
+        if (arg_system) {
                 int v;
 
                 log_info(PACKAGE_STRING " running in %ssystem mode. (" SYSTEMD_FEATURES ")",
@@ -1606,33 +1715,33 @@ int main(int argc, char *argv[]) {
                           arg_action == ACTION_TEST ? " test" : "", getuid(), t);
         }
 
-        if (arg_running_as == MANAGER_SYSTEM && !skip_setup) {
+        if (arg_system && !skip_setup) {
                 if (arg_show_status > 0)
                         status_welcome();
 
                 hostname_setup();
-                machine_id_setup(NULL);
+                machine_id_setup(NULL, arg_machine_id, NULL);
                 loopback_setup();
+                bump_unix_max_dgram_qlen();
 
-                test_mtab();
                 test_usr();
         }
 
-        if (arg_running_as == MANAGER_SYSTEM && arg_runtime_watchdog > 0)
+        if (arg_system && arg_runtime_watchdog > 0 && arg_runtime_watchdog != USEC_INFINITY)
                 watchdog_set_timeout(&arg_runtime_watchdog);
 
         if (arg_timer_slack_nsec != NSEC_INFINITY)
                 if (prctl(PR_SET_TIMERSLACK, arg_timer_slack_nsec) < 0)
                         log_error_errno(errno, "Failed to adjust timer slack: %m");
 
-        if (arg_capability_bounding_set_drop) {
-                r = capability_bounding_set_drop_usermode(arg_capability_bounding_set_drop);
+        if (!cap_test_all(arg_capability_bounding_set)) {
+                r = capability_bounding_set_drop_usermode(arg_capability_bounding_set);
                 if (r < 0) {
                         log_emergency_errno(r, "Failed to drop capability bounding set of usermode helpers: %m");
                         error_message = "Failed to drop capability bounding set of usermode helpers";
                         goto finish;
                 }
-                r = capability_bounding_set_drop(arg_capability_bounding_set_drop, true);
+                r = capability_bounding_set_drop(arg_capability_bounding_set, true);
                 if (r < 0) {
                         log_emergency_errno(r, "Failed to drop capability bounding set: %m");
                         error_message = "Failed to drop capability bounding set";
@@ -1648,24 +1757,24 @@ int main(int argc, char *argv[]) {
                 }
         }
 
-        if (arg_running_as == MANAGER_USER)
+        if (!arg_system)
                 /* Become reaper of our children */
                 if (prctl(PR_SET_CHILD_SUBREAPER, 1) < 0)
                         log_warning_errno(errno, "Failed to make us a subreaper: %m");
 
-        if (arg_running_as == MANAGER_SYSTEM) {
+        if (arg_system) {
                 bump_rlimit_nofile(&saved_rlimit_nofile);
 
                 if (empty_etc) {
                         r = unit_file_preset_all(UNIT_FILE_SYSTEM, false, NULL, UNIT_FILE_PRESET_ENABLE_ONLY, false, NULL, 0);
                         if (r < 0)
-                                log_warning_errno(r, "Failed to populate /etc with preset unit settings, ignoring: %m");
+                                log_full_errno(r == -EEXIST ? LOG_NOTICE : LOG_WARNING, r, "Failed to populate /etc with preset unit settings, ignoring: %m");
                         else
                                 log_info("Populated /etc with preset unit settings.");
                 }
         }
 
-        r = manager_new(arg_running_as, arg_action == ACTION_TEST, &m);
+        r = manager_new(arg_system ? UNIT_FILE_SYSTEM : UNIT_FILE_USER, arg_action == ACTION_TEST, &m);
         if (r < 0) {
                 log_emergency_errno(r, "Failed to allocate manager object: %m");
                 error_message = "Failed to allocate manager object";
@@ -1701,7 +1810,7 @@ int main(int argc, char *argv[]) {
         arg_serialization = safe_fclose(arg_serialization);
 
         if (queue_default_job) {
-                _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+                _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
                 Unit *target = NULL;
                 Job *default_unit_job;
 
@@ -1741,11 +1850,13 @@ int main(int argc, char *argv[]) {
                         manager_dump_units(m, stdout, "\t");
                 }
 
-                r = manager_add_job(m, JOB_START, target, JOB_ISOLATE, false, &error, &default_unit_job);
+                r = manager_add_job(m, JOB_START, target, JOB_ISOLATE, &error, &default_unit_job);
                 if (r == -EPERM) {
                         log_debug("Default target could not be isolated, starting instead: %s", bus_error_message(&error, r));
 
-                        r = manager_add_job(m, JOB_START, target, JOB_REPLACE, false, &error, &default_unit_job);
+                        sd_bus_error_free(&error);
+
+                        r = manager_add_job(m, JOB_START, target, JOB_REPLACE, &error, &default_unit_job);
                         if (r < 0) {
                                 log_emergency("Failed to start default target: %s", bus_error_message(&error, r));
                                 error_message = "Failed to start default target";
@@ -1826,7 +1937,7 @@ int main(int argc, char *argv[]) {
                 case MANAGER_EXIT:
                         retval = m->return_value;
 
-                        if (m->running_as == MANAGER_USER) {
+                        if (MANAGER_IS_USER(m)) {
                                 log_debug("Exit.");
                                 goto finish;
                         }
@@ -1902,6 +2013,9 @@ finish:
                                 log_error_errno(r, "Failed to switch root, trying to continue: %m");
                 }
 
+                /* Reopen the console */
+                (void) make_console_stdio();
+
                 args_size = MAX(6, argc+1);
                 args = newa(const char*, args_size);
 
@@ -1922,16 +2036,21 @@ finish:
                         args[i++] = SYSTEMD_BINARY_PATH;
                         if (switch_root_dir)
                                 args[i++] = "--switched-root";
-                        args[i++] = arg_running_as == MANAGER_SYSTEM ? "--system" : "--user";
+                        args[i++] = arg_system ? "--system" : "--user";
                         args[i++] = "--deserialize";
                         args[i++] = sfd;
                         args[i++] = NULL;
 
-                        /* do not pass along the environment we inherit from the kernel or initrd */
-                        if (switch_root_dir)
-                                (void) clearenv();
-
                         assert(i <= args_size);
+
+                        /*
+                         * We want valgrind to print its memory usage summary before reexecution.
+                         * Valgrind won't do this is on its own on exec(), but it will do it on exit().
+                         * Hence, to ensure we get a summary here, fork() off a child, let it exit() cleanly,
+                         * so that it prints the summary, and wait() for it in the parent, before proceeding into the exec().
+                         */
+                        valgrind_summary_hack();
+
                         (void) execv(args[0], (char* const*) args);
                 }
 
@@ -1943,9 +2062,6 @@ finish:
 
                 arg_serialization = safe_fclose(arg_serialization);
                 fds = fdset_free(fds);
-
-                /* Reopen the console */
-                (void) make_console_stdio();
 
                 for (j = 1, i = 1; j < (unsigned) argc; j++)
                         args[i++] = argv[j];
@@ -2038,7 +2154,7 @@ finish:
 
                 assert(pos < ELEMENTSOF(command_line));
 
-                if (arm_reboot_watchdog && arg_shutdown_watchdog > 0) {
+                if (arm_reboot_watchdog && arg_shutdown_watchdog > 0 && arg_shutdown_watchdog != USEC_INFINITY) {
                         char *e;
 
                         /* If we reboot let's set the shutdown

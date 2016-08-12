@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -117,7 +115,6 @@ static void device_init(Unit *u) {
         u->job_timeout = u->manager->default_timeout_start_usec;
 
         u->ignore_on_isolate = true;
-        u->ignore_on_snapshot = true;
 }
 
 static void device_done(Unit *u) {
@@ -268,7 +265,7 @@ static int device_add_udev_wants(Unit *u, struct udev_device *dev) {
         assert(u);
         assert(dev);
 
-        property = u->manager->running_as == MANAGER_USER ? "MANAGER_USER_WANTS" : "SYSTEMD_WANTS";
+        property = MANAGER_IS_USER(u->manager) ? "SYSTEMD_USER_WANTS" : "SYSTEMD_WANTS";
         wants = udev_device_get_property_value(dev, property);
         if (!wants)
                 return 0;
@@ -316,12 +313,19 @@ static int device_setup_unit(Manager *m, struct udev_device *dev, const char *pa
 
         u = manager_get_unit(m, e);
 
-        if (u &&
-            sysfs &&
-            DEVICE(u)->sysfs &&
-            !path_equal(DEVICE(u)->sysfs, sysfs)) {
-                log_unit_debug(u, "Device %s appeared twice with different sysfs paths %s and %s", e, DEVICE(u)->sysfs, sysfs);
-                return -EEXIST;
+        /* The device unit can still be present even if the device was
+         * unplugged: a mount unit can reference it hence preventing
+         * the GC to have garbaged it. That's desired since the device
+         * unit may have a dependency on the mount unit which was
+         * added during the loading of the later. */
+        if (dev && u && DEVICE(u)->state == DEVICE_PLUGGED) {
+                /* This unit is in plugged state: we're sure it's
+                 * attached to a device. */
+                if (!path_equal(DEVICE(u)->sysfs, sysfs)) {
+                        log_unit_debug(u, "Dev %s appeared twice with different sysfs paths %s and %s",
+                                       e, DEVICE(u)->sysfs, sysfs);
+                        return -EEXIST;
+                }
         }
 
         if (!u) {
@@ -602,7 +606,7 @@ static void device_shutdown(Manager *m) {
         m->devices_by_sysfs = hashmap_free(m->devices_by_sysfs);
 }
 
-static int device_enumerate(Manager *m) {
+static void device_enumerate(Manager *m) {
         _cleanup_udev_enumerate_unref_ struct udev_enumerate *e = NULL;
         struct udev_list_entry *item = NULL, *first = NULL;
         int r;
@@ -612,7 +616,7 @@ static int device_enumerate(Manager *m) {
         if (!m->udev_monitor) {
                 m->udev_monitor = udev_monitor_new_from_netlink(m->udev, "udev");
                 if (!m->udev_monitor) {
-                        r = -ENOMEM;
+                        log_oom();
                         goto fail;
                 }
 
@@ -622,37 +626,49 @@ static int device_enumerate(Manager *m) {
                 (void) udev_monitor_set_receive_buffer_size(m->udev_monitor, 128*1024*1024);
 
                 r = udev_monitor_filter_add_match_tag(m->udev_monitor, "systemd");
-                if (r < 0)
+                if (r < 0) {
+                        log_error_errno(r, "Failed to add udev tag match: %m");
                         goto fail;
+                }
 
                 r = udev_monitor_enable_receiving(m->udev_monitor);
-                if (r < 0)
+                if (r < 0) {
+                        log_error_errno(r, "Failed to enable udev event reception: %m");
                         goto fail;
+                }
 
                 r = sd_event_add_io(m->event, &m->udev_event_source, udev_monitor_get_fd(m->udev_monitor), EPOLLIN, device_dispatch_io, m);
-                if (r < 0)
+                if (r < 0) {
+                        log_error_errno(r, "Failed to watch udev file descriptor: %m");
                         goto fail;
+                }
 
                 (void) sd_event_source_set_description(m->udev_event_source, "device");
         }
 
         e = udev_enumerate_new(m->udev);
         if (!e) {
-                r = -ENOMEM;
+                log_oom();
                 goto fail;
         }
 
         r = udev_enumerate_add_match_tag(e, "systemd");
-        if (r < 0)
+        if (r < 0) {
+                log_error_errno(r, "Failed to create udev tag enumeration: %m");
                 goto fail;
+        }
 
         r = udev_enumerate_add_match_is_initialized(e);
-        if (r < 0)
+        if (r < 0) {
+                log_error_errno(r, "Failed to install initialization match into enumeration: %m");
                 goto fail;
+        }
 
         r = udev_enumerate_scan_devices(e);
-        if (r < 0)
+        if (r < 0) {
+                log_error_errno(r, "Failed to enumerate devices: %m");
                 goto fail;
+        }
 
         first = udev_enumerate_get_list_entry(e);
         udev_list_entry_foreach(item, first) {
@@ -675,13 +691,10 @@ static int device_enumerate(Manager *m) {
                 device_update_found_by_sysfs(m, sysfs, true, DEVICE_FOUND_UDEV, false);
         }
 
-        return 0;
+        return;
 
 fail:
-        log_error_errno(r, "Failed to enumerate devices: %m");
-
         device_shutdown(m);
-        return r;
 }
 
 static int device_dispatch_io(sd_event_source *source, int fd, uint32_t revents, void *userdata) {
@@ -827,8 +840,6 @@ const UnitVTable device_vtable = {
                 "Unit\0"
                 "Device\0"
                 "Install\0",
-
-        .no_instances = true,
 
         .init = device_init,
         .done = device_done,

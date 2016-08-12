@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,8 +17,8 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <sys/prctl.h>
 #include <curl/curl.h>
+#include <sys/prctl.h>
 
 #include "sd-daemon.h"
 
@@ -253,10 +251,12 @@ static int tar_pull_make_local_copy(TarPull *i) {
                 r = copy_file_atomic(i->settings_path, local_settings, 0664, i->force_local, 0);
                 if (r == -EEXIST)
                         log_warning_errno(r, "Settings file %s already exists, not replacing.", local_settings);
-                else if (r < 0 && r != -ENOENT)
+                else if (r == -ENOENT)
+                        log_debug_errno(r, "Skipping creation of settings file, since none was found.");
+                else if (r < 0)
                         log_warning_errno(r, "Failed to copy settings files %s, ignoring: %m", local_settings);
                 else
-                        log_info("Created new settings file '%s.nspawn'", i->local);
+                        log_info("Created new settings file %s.", local_settings);
         }
 
         return 0;
@@ -416,7 +416,7 @@ static int tar_pull_job_on_open_disk_tar(PullJob *j) {
                 if (mkdir(i->temp_path, 0755) < 0)
                         return log_error_errno(errno, "Failed to create directory %s: %m", i->temp_path);
         } else if (r < 0)
-                return log_error_errno(errno, "Failed to create subvolume %s: %m", i->temp_path);
+                return log_error_errno(r, "Failed to create subvolume %s: %m", i->temp_path);
         else
                 (void) import_assign_pool_quota_and_warn(i->temp_path);
 

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -20,11 +18,11 @@
 ***/
 
 #include <errno.h>
-#include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/statvfs.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 /* When we include libgen.h because we need dirname() we immediately
@@ -34,18 +32,16 @@
 #undef basename
 
 #include "alloc-util.h"
-#include "fd-util.h"
-#include "fileio.h"
+#include "extract-word.h"
 #include "fs-util.h"
 #include "log.h"
 #include "macro.h"
 #include "missing.h"
-#include "parse-util.h"
 #include "path-util.h"
 #include "stat-util.h"
 #include "string-util.h"
 #include "strv.h"
-#include "util.h"
+#include "time-util.h"
 
 bool path_is_absolute(const char *p) {
         return p[0] == '/';
@@ -104,7 +100,7 @@ int path_make_absolute_cwd(const char *p, char **ret) {
 
                 cwd = get_current_dir_name();
                 if (!cwd)
-                        return -errno;
+                        return negative_errno();
 
                 c = strjoin(cwd, "/", p, NULL);
         }
@@ -573,10 +569,10 @@ static int binary_is_good(const char *binary) {
         if (r < 0)
                 return r;
 
-        return !path_equal(d, "true") &&
-               !path_equal(d, "/bin/true") &&
-               !path_equal(d, "/usr/bin/true") &&
-               !path_equal(d, "/dev/null");
+        return !PATH_IN_SET(d, "true"
+                               "/bin/true",
+                               "/usr/bin/true",
+                               "/dev/null");
 }
 
 int fsck_exists(const char *fstype) {
@@ -760,34 +756,53 @@ char *file_in_same_dir(const char *path, const char *filename) {
         return ret;
 }
 
-bool hidden_file_allow_backup(const char *filename) {
+bool hidden_or_backup_file(const char *filename) {
+        const char *p;
+
         assert(filename);
 
-        return
-                filename[0] == '.' ||
-                streq(filename, "lost+found") ||
-                streq(filename, "aquota.user") ||
-                streq(filename, "aquota.group") ||
-                endswith(filename, ".rpmnew") ||
-                endswith(filename, ".rpmsave") ||
-                endswith(filename, ".rpmorig") ||
-                endswith(filename, ".dpkg-old") ||
-                endswith(filename, ".dpkg-new") ||
-                endswith(filename, ".dpkg-tmp") ||
-                endswith(filename, ".dpkg-dist") ||
-                endswith(filename, ".dpkg-bak") ||
-                endswith(filename, ".dpkg-backup") ||
-                endswith(filename, ".dpkg-remove") ||
-                endswith(filename, ".swp");
-}
-
-bool hidden_file(const char *filename) {
-        assert(filename);
-
-        if (endswith(filename, "~"))
+        if (filename[0] == '.' ||
+            streq(filename, "lost+found") ||
+            streq(filename, "aquota.user") ||
+            streq(filename, "aquota.group") ||
+            endswith(filename, "~"))
                 return true;
 
-        return hidden_file_allow_backup(filename);
+        p = strrchr(filename, '.');
+        if (!p)
+                return false;
+
+        /* Please, let's not add more entries to the list below. If external projects think it's a good idea to come up
+         * with always new suffixes and that everybody else should just adjust to that, then it really should be on
+         * them. Hence, in future, let's not add any more entries. Instead, let's ask those packages to instead adopt
+         * one of the generic suffixes/prefixes for hidden files or backups, possibly augmented with an additional
+         * string. Specifically: there's now:
+         *
+         *    The generic suffixes "~" and ".bak" for backup files
+         *    The generic prefix "." for hidden files
+         *
+         * Thus, if a new package manager "foopkg" wants its own set of ".foopkg-new", ".foopkg-old", ".foopkg-dist"
+         * or so registered, let's refuse that and ask them to use ".foopkg.new", ".foopkg.old" or ".foopkg~" instead.
+         */
+
+        return STR_IN_SET(p + 1,
+                          "rpmnew",
+                          "rpmsave",
+                          "rpmorig",
+                          "dpkg-old",
+                          "dpkg-new",
+                          "dpkg-tmp",
+                          "dpkg-dist",
+                          "dpkg-bak",
+                          "dpkg-backup",
+                          "dpkg-remove",
+                          "ucf-new",
+                          "ucf-old",
+                          "ucf-dist",
+                          "swp",
+                          "bak",
+                          "old",
+                          "new");
 }
 
 bool is_device_path(const char *path) {

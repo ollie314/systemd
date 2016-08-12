@@ -1,4 +1,4 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
+#pragma once
 
 /***
   This file is part of systemd.
@@ -19,8 +19,6 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#pragma once
-
 typedef struct MacVlan MacVlan;
 
 #include "networkd-netdev.h"
@@ -40,6 +38,8 @@ struct MacVlan {
         MacVlanMode mode;
 };
 
+DEFINE_NETDEV_CAST(MACVLAN, MacVlan);
+DEFINE_NETDEV_CAST(MACVTAP, MacVlan);
 extern const NetDevVTable macvlan_vtable;
 extern const NetDevVTable macvtap_vtable;
 

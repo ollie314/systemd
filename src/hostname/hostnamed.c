@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -21,14 +19,13 @@
 
 #include <errno.h>
 #include <string.h>
-#include <unistd.h>
 #include <sys/utsname.h>
+#include <unistd.h>
 
 #include "alloc-util.h"
 #include "bus-util.h"
 #include "def.h"
 #include "env-util.h"
-#include "event-util.h"
 #include "fileio-label.h"
 #include "hostname-util.h"
 #include "parse-util.h"
@@ -213,10 +210,10 @@ try_dmi:
            unreliable enough, so let's not do any additional guesswork
            on top of that.
 
-           See the SMBIOS Specification 2.7.1 section 7.4.1 for
+           See the SMBIOS Specification 3.0 section 7.4.1 for
            details about the values listed here:
 
-           http://www.dmtf.org/sites/default/files/standards/documents/DSP0134_2.7.1.pdf
+           https://www.dmtf.org/sites/default/files/standards/documents/DSP0134_3.0.0.pdf
          */
 
         switch (t) {
@@ -238,7 +235,11 @@ try_dmi:
 
         case 0x11:
         case 0x1C:
+        case 0x1D:
                 return "server";
+
+        case 0x1E:
+                return "tablet";
         }
 
         return NULL;
@@ -478,8 +479,7 @@ static int method_set_static_hostname(sd_bus_message *m, void *userdata, sd_bus_
         if (r < 0)
                 return r;
 
-        if (isempty(name))
-                name = NULL;
+        name = empty_to_null(name);
 
         if (streq_ptr(name, c->data[PROP_STATIC_HOSTNAME]))
                 return sd_bus_reply_method_return(m, NULL);
@@ -498,9 +498,9 @@ static int method_set_static_hostname(sd_bus_message *m, void *userdata, sd_bus_
         if (r == 0)
                 return 1; /* No authorization for now, but the async polkit stuff will call us again when it has it */
 
-        if (isempty(name)) {
+        if (isempty(name))
                 c->data[PROP_STATIC_HOSTNAME] = mfree(c->data[PROP_STATIC_HOSTNAME]);
-        } else {
+        else {
                 char *h;
 
                 if (!hostname_is_valid(name, false))
@@ -545,8 +545,7 @@ static int set_machine_info(Context *c, sd_bus_message *m, int prop, sd_bus_mess
         if (r < 0)
                 return r;
 
-        if (isempty(name))
-                name = NULL;
+        name = empty_to_null(name);
 
         if (streq_ptr(name, c->data[prop]))
                 return sd_bus_reply_method_return(m, NULL);
@@ -569,9 +568,9 @@ static int set_machine_info(Context *c, sd_bus_message *m, int prop, sd_bus_mess
         if (r == 0)
                 return 1; /* No authorization for now, but the async polkit stuff will call us again when it has it */
 
-        if (isempty(name)) {
+        if (isempty(name))
                 c->data[prop] = mfree(c->data[prop]);
-        } else {
+        else {
                 char *h;
 
                 /* The icon name might ultimately be used as file
@@ -665,7 +664,7 @@ static const sd_bus_vtable hostname_vtable[] = {
 };
 
 static int connect_bus(Context *c, sd_event *event, sd_bus **_bus) {
-        _cleanup_bus_flush_close_unref_ sd_bus *bus = NULL;
+        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         int r;
 
         assert(c);
@@ -696,8 +695,8 @@ static int connect_bus(Context *c, sd_event *event, sd_bus **_bus) {
 
 int main(int argc, char *argv[]) {
         Context context = {};
-        _cleanup_event_unref_ sd_event *event = NULL;
-        _cleanup_bus_flush_close_unref_ sd_bus *bus = NULL;
+        _cleanup_(sd_event_unrefp) sd_event *event = NULL;
+        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         int r;
 
         log_set_target(LOG_TARGET_AUTO);
@@ -705,7 +704,7 @@ int main(int argc, char *argv[]) {
         log_open();
 
         umask(0022);
-        mac_selinux_init("/etc");
+        mac_selinux_init();
 
         if (argc != 1) {
                 log_error("This program takes no arguments.");

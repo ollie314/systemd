@@ -56,8 +56,7 @@
 #   https://github.com/systemd/systemd
 # or create a bug report on https://github.com/systemd/systemd/issues and
 # include your new rules, a description of the device, and the output of
-#   udevadm info /dev/input/eventXX
-# (or /dev/input/event*).
+#   udevadm info /dev/input/eventXX.
 
 ##########################################
 # Acer
@@ -214,7 +213,7 @@ evdev:atkbd:dmi:bvn*:bvr*:bd*:svnDell*:pn*
  KEYBOARD_KEY_8a=suspend                                # Fn+F1 hibernate
  KEYBOARD_KEY_8b=switchvideomode                        # Fn+F8 CRT/LCD (high keycode: "displaytoggle")
  KEYBOARD_KEY_8c=unknown                                # Fn+Right Auto Brightness
- KEYBOARD_KEY_8F=switchvideomode                        # Fn+F7 aspect ratio
+ KEYBOARD_KEY_8f=switchvideomode                        # Fn+F7 aspect ratio
  KEYBOARD_KEY_90=previoussong                           # Front panel previous song
  KEYBOARD_KEY_91=prog1                                  # Wi-Fi Catcher (Dell-specific)
  KEYBOARD_KEY_92=media                                  # MediaDirect button (house icon)
@@ -379,6 +378,7 @@ evdev:input:b0003v0458p0708*
 ###########################################################
 
 evdev:atkbd:dmi:bvn*:bvr*:bd*:svnHewlett-Packard*:pn*:pvr*
+evdev:atkbd:dmi:bvn*:bvr*:bd*:svnHP*:pn*:pvr*
  KEYBOARD_KEY_81=fn_esc
  KEYBOARD_KEY_89=battery                                # Fn+F8
  KEYBOARD_KEY_8a=screenlock                             # Fn+F6
@@ -482,22 +482,35 @@ evdev:atkbd:dmi:bvn*:bvr*:bd*:svnHewlett-Packard*:pnFalco:pvr*
  KEYBOARD_KEY_43=volumedown
  KEYBOARD_KEY_44=volumeup
  KEYBOARD_KEY_db=search # Same position as caps lock key on most keyboards
-# KEYBOARD_KEY_3e=fullscreen, no defined key sym
-
+ # KEYBOARD_KEY_3e=fullscreen, no defined key sym
 
 # HP EliteBook 725 G2
 evdev:atkbd:dmi:bvn*:bvr*:bd*:svnHewlett-Packard*:pnHPLicrice:pvr*
 # HP ProBook 440 G2
 evdev:atkbd:dmi:bvn*:bvr*:bd*:svnHewlett-Packard*:pnHP440G2:pvr*
-# HP ProBook 445 G1
-evdev:atkbd:dmi:bvn*:bvr*:bd*:svnHewlett-Packard*:pnHPProBook445G1NotebookPC:pvr*
-# HP ProBook 450 G0
-evdev:atkbd:dmi:bvn*:bvr*:bd*:svnHewlett-Packard*:pnHPProBook450G0:pvr*
+# several HP ProBooks 4xx
+evdev:atkbd:dmi:bvn*:bvr*:bd*:svnHewlett-Packard*:pnHP*ProBook4*:pvr*
+evdev:atkbd:dmi:bvn*:bvr*:bd*:svnHP*:pnHP*ProBook*4*:pvr*
+# HP ZBook
+evdev:atkbd:dmi:bvn*:bvr*:bd*:svnHewlett-Packard*:pnHPZBook*:pvr*
  KEYBOARD_KEY_81=f20                                    # Fn+F8; Microphone mute button, should be micmute
+
+# HP Folio 1040g2
+evdev:atkbd:dmi:bvn*:bvr*:bd*:svnHewlett-Packard*:pnHPEliteBookFolio1040G2:pvr*
+ KEYBOARD_KEY_81=f20                                    # Fn+F8; Microphone mute button, should be micmute
+ KEYBOARD_KEY_d8=!f23                                   # touchpad off
+ KEYBOARD_KEY_d9=!f22                                   # touchpad on
 
 # HP ProBook 6555b
 evdev:atkbd:dmi:bvn*:bvr*:bd*:svnHewlett-Packard:pnHPProBook6555b:*
  KEYBOARD_KEY_b2=www                                    # Earth
+
+# HP ProBook 440 G3
+evdev:atkbd:dmi:bvn*:bvr*:svnHP*:pnHP*ProBook*440*G3*
+# HP ProBook 640 G2
+evdev:atkbd:dmi:bvn*:bvr*:svnHP*:pnHP*ProBook*640*G2*
+ KEYBOARD_KEY_85=unknown                                # lid close; also reported via special evdev
+ KEYBOARD_KEY_f8=unknown                                # rf kill; also reported via special evdev
 
 ###########################################################
 # IBM
@@ -652,6 +665,11 @@ evdev:atkbd:dmi:bvn*:bvr*:svnLENOVO*:pn*IdeaPad*Z370*:pvr*
 evdev:atkbd:dmi:bvn*:bvr*:bd*:svnLENOVO*:pn*Lenovo*V480*:pvr*
  KEYBOARD_KEY_f1=f21
 
+# Lenovo Thinkcentre M800z AIO machine
+# key_scancode 00 is KEY_MICMUTE
+keyboard:name:Microphone Mute Button:dmi:bvn*:bvr*:bd*:svnLENOVO*:pn*
+ KEYBOARD_KEY_00=f20
+
 # enhanced USB keyboard
 evdev:input:b0003v04B3p301B*
  KEYBOARD_KEY_90001=prog1 # ThinkVantage
@@ -675,7 +693,7 @@ evdev:input:b0003v046DpC308*
  KEYBOARD_KEY_90003=finance                             # Finance
  KEYBOARD_KEY_90004=prog1                               # My Sites
  KEYBOARD_KEY_90005=prog2                               # Community
- KEYBOARD_KEY_C0183=media                               # Media
+ KEYBOARD_KEY_c0183=media                               # Media
 
 # Cordless Desktop S510
 evdev:input:b0003v046DpC50C*
@@ -744,18 +762,18 @@ evdev:input:b0003v046DpC309*
   KEYBOARD_KEY_90002=camera       # webcam
   KEYBOARD_KEY_90003=prog1        # iTouch
   KEYBOARD_KEY_90004=shop         # Shopping
-  KEYBOARD_KEY_C0201=new          # New (F1)
-  KEYBOARD_KEY_C0289=reply        # Reply mail (F2)
-  KEYBOARD_KEY_C028B=forwardmail  # Forward mail (F3)
-  KEYBOARD_KEY_C028C=send         # Send (F4)
-  KEYBOARD_KEY_C021A=undo         # Undo (F5).
-  KEYBOARD_KEY_C0279=redo         # Redo (F6).
-  KEYBOARD_KEY_C0208=print        # Print (F7)
-  KEYBOARD_KEY_C0207=save         # Save (F8)
-  KEYBOARD_KEY_C0194=file         # My Computer (F9)
-  KEYBOARD_KEY_C01A7=documents    # My Documents (F10)
-  KEYBOARD_KEY_C01B6=images       # My Pictures (F11) ??
-  KEYBOARD_KEY_C01B7=sound        # My Music (F12) ??
+  KEYBOARD_KEY_c0201=new          # New (F1)
+  KEYBOARD_KEY_c0289=reply        # Reply mail (F2)
+  KEYBOARD_KEY_c028b=forwardmail  # Forward mail (F3)
+  KEYBOARD_KEY_c028c=send         # Send (F4)
+  KEYBOARD_KEY_c021a=undo         # Undo (F5).
+  KEYBOARD_KEY_c0279=redo         # Redo (F6).
+  KEYBOARD_KEY_c0208=print        # Print (F7)
+  KEYBOARD_KEY_c0207=save         # Save (F8)
+  KEYBOARD_KEY_c0194=file         # My Computer (F9)
+  KEYBOARD_KEY_c01a7=documents    # My Documents (F10)
+  KEYBOARD_KEY_c01b6=images       # My Pictures (F11) ??
+  KEYBOARD_KEY_c01b7=sound        # My Music (F12) ??
 
 
 ###########################################################
@@ -778,6 +796,14 @@ evdev:atkbd:dmi:bvn*:bvr*:bd*:svnMAXDATA:pnPro*7000*:pvr*
 # Medion
 ###########################################################
 
+# Akoya
+evdev:atkbd:dmi:bvn*:bvr*:svnMedion*:pnAkoya*:pvr*
+ KEYBOARD_KEY_a0=!mute
+ KEYBOARD_KEY_ae=!volumedown
+ KEYBOARD_KEY_b0=!volumeup
+ KEYBOARD_KEY_19=!p
+ KEYBOARD_KEY_df=sleep
+ 
 # FID2060
 evdev:atkbd:dmi:bvn*:bvr*:bd*:svnMEDION*:pn*FID2060*:pvr*
  KEYBOARD_KEY_6b=channeldown                            # Thottle Down
@@ -870,7 +896,7 @@ evdev:atkbd:dmi:bvn*:bvr*:bd*:svnOLPC:pnXO:*
  KEYBOARD_KEY_c2=f8
  KEYBOARD_KEY_c3=f9
  KEYBOARD_KEY_c4=f10
- KEYBOARD_KEY_c7=f11
+ # KEYBOARD_KEY_c7=f11 # FIXME!
  KEYBOARD_KEY_d8=f12
  KEYBOARD_KEY_f7=f13
  KEYBOARD_KEY_f6=f14
@@ -890,7 +916,7 @@ evdev:atkbd:dmi:bvn*:bvr*:bd*:svnOLPC:pnXO:*
  KEYBOARD_KEY_c9=pageup
  KEYBOARD_KEY_d1=pagedown
  KEYBOARD_KEY_c7=home
- KEYBOARD_KEY_cF=end
+ KEYBOARD_KEY_cf=end
  KEYBOARD_KEY_73=hp
  KEYBOARD_KEY_7e=hp
  KEYBOARD_KEY_db=leftmeta                               # left grab

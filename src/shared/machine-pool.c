@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,10 +17,24 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include <errno.h>
+#include <fcntl.h>
+#include <linux/loop.h>
+#include <signal.h>
+#include <stdbool.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/file.h>
+#include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/statvfs.h>
-#include <sys/vfs.h>
+#include <unistd.h>
+
+#include "sd-bus-protocol.h"
+#include "sd-bus.h"
 
 #include "alloc-util.h"
 #include "btrfs-util.h"
@@ -30,7 +42,10 @@
 #include "fileio.h"
 #include "fs-util.h"
 #include "lockfile-util.h"
+#include "log.h"
 #include "machine-pool.h"
+#include "macro.h"
+#include "missing.h"
 #include "mkdir.h"
 #include "mount-util.h"
 #include "parse-util.h"
@@ -39,7 +54,6 @@
 #include "signal-util.h"
 #include "stat-util.h"
 #include "string-util.h"
-#include "util.h"
 
 #define VAR_LIB_MACHINES_SIZE_START (1024UL*1024UL*500UL)
 #define VAR_LIB_MACHINES_FREE_MIN (1024UL*1024UL*750UL)
@@ -125,7 +139,7 @@ static int setup_machine_raw(uint64_t size, sd_bus_error *error) {
 
                 execlp("mkfs.btrfs", "-Lvar-lib-machines", tmp, NULL);
                 if (errno == ENOENT)
-                        return 99;
+                        _exit(99);
 
                 _exit(EXIT_FAILURE);
         }
@@ -225,10 +239,8 @@ int setup_machine_directory(uint64_t size, sd_bus_error *error) {
         }
 
         r = mkfs_exists("btrfs");
-        if (r == -ENOENT) {
-                log_debug("mkfs.btrfs is missing, cannot create loopback file for /var/lib/machines.");
-                return 0;
-        }
+        if (r == 0)
+                return sd_bus_error_set_errnof(error, ENOENT, "Cannot set up /var/lib/machines, mkfs.btrfs is missing");
         if (r < 0)
                 return r;
 
@@ -378,7 +390,7 @@ int grow_machine_directory(void) {
         if (b.f_bavail > b.f_blocks / 3)
                 return 0;
 
-        /* Calculate how much we are willing to add at maximum */
+        /* Calculate how much we are willing to add at most */
         max_add = ((uint64_t) a.f_bavail * (uint64_t) a.f_bsize) - VAR_LIB_MACHINES_FREE_MIN;
 
         /* Calculate the old size */

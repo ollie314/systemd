@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -40,6 +38,7 @@
 #include "parse-util.h"
 #include "path-util.h"
 #include "process-util.h"
+#include "stdio-util.h"
 #include "terminal-util.h"
 #include "unit-name.h"
 #include "util.h"
@@ -73,13 +72,14 @@ static bool arg_batch = false;
 static bool arg_raw = false;
 static usec_t arg_delay = 1*USEC_PER_SEC;
 static char* arg_machine = NULL;
+static char* arg_root = NULL;
+static bool arg_recursive = true;
 
-enum {
+static enum {
         COUNT_PIDS,
         COUNT_USERSPACE_PROCESSES,
         COUNT_ALL_PROCESSES,
 } arg_count = COUNT_PIDS;
-static bool arg_recursive = true;
 
 static enum {
         ORDER_PATH,
@@ -270,13 +270,15 @@ static int process(
                 if (g->memory > 0)
                         g->memory_valid = true;
 
-        } else if (streq(controller, "blkio") && cg_unified() <= 0) {
+        } else if ((streq(controller, "io") && cg_unified() > 0) ||
+                   (streq(controller, "blkio") && cg_unified() <= 0)) {
                 _cleanup_fclose_ FILE *f = NULL;
                 _cleanup_free_ char *p = NULL;
+                bool unified = cg_unified() > 0;
                 uint64_t wr = 0, rd = 0;
                 nsec_t timestamp;
 
-                r = cg_get_path(controller, path, "blkio.io_service_bytes", &p);
+                r = cg_get_path(controller, path, unified ? "io.stat" : "blkio.io_service_bytes", &p);
                 if (r < 0)
                         return r;
 
@@ -294,25 +296,38 @@ static int process(
                         if (!fgets(line, sizeof(line), f))
                                 break;
 
+                        /* Trim and skip the device */
                         l = strstrip(line);
                         l += strcspn(l, WHITESPACE);
                         l += strspn(l, WHITESPACE);
 
-                        if (first_word(l, "Read")) {
-                                l += 4;
-                                q = &rd;
-                        } else if (first_word(l, "Write")) {
-                                l += 5;
-                                q = &wr;
-                        } else
-                                continue;
+                        if (unified) {
+                                while (!isempty(l)) {
+                                        if (sscanf(l, "rbytes=%" SCNu64, &k))
+                                                rd += k;
+                                        else if (sscanf(l, "wbytes=%" SCNu64, &k))
+                                                wr += k;
 
-                        l += strspn(l, WHITESPACE);
-                        r = safe_atou64(l, &k);
-                        if (r < 0)
-                                continue;
+                                        l += strcspn(l, WHITESPACE);
+                                        l += strspn(l, WHITESPACE);
+                                }
+                        } else {
+                                if (first_word(l, "Read")) {
+                                        l += 4;
+                                        q = &rd;
+                                } else if (first_word(l, "Write")) {
+                                        l += 5;
+                                        q = &wr;
+                                } else
+                                        continue;
 
-                        *q += k;
+                                l += strspn(l, WHITESPACE);
+                                r = safe_atou64(l, &k);
+                                if (r < 0)
+                                        continue;
+
+                                *q += k;
+                        }
                 }
 
                 timestamp = now_nsec(CLOCK_MONOTONIC);
@@ -363,7 +378,7 @@ static int refresh_one(
                 Group **ret) {
 
         _cleanup_closedir_ DIR *d = NULL;
-        Group *ours;
+        Group *ours = NULL;
         int r;
 
         assert(controller);
@@ -438,6 +453,9 @@ static int refresh(const char *root, Hashmap *a, Hashmap *b, unsigned iteration)
         if (r < 0)
                 return r;
         r = refresh_one("memory", root, a, b, iteration, 0, NULL);
+        if (r < 0)
+                return r;
+        r = refresh_one("io", root, a, b, iteration, 0, NULL);
         if (r < 0)
                 return r;
         r = refresh_one("blkio", root, a, b, iteration, 0, NULL);
@@ -541,7 +559,7 @@ static void display(Hashmap *a) {
 
         assert(a);
 
-        if (on_tty())
+        if (!terminal_is_dumb())
                 fputs(ANSI_HOME_CLEAR, stdout);
 
         array = alloca(sizeof(Group*) * hashmap_size(a));
@@ -565,9 +583,9 @@ static void display(Hashmap *a) {
         }
 
         if (arg_cpu_type == CPU_PERCENT)
-                snprintf(buffer, sizeof(buffer), "%6s", "%CPU");
+                xsprintf(buffer, "%6s", "%CPU");
         else
-                snprintf(buffer, sizeof(buffer), "%*s", maxtcpu, "CPU Time");
+                xsprintf(buffer, "%*s", maxtcpu, "CPU Time");
 
         rows = lines();
         if (rows <= 10)
@@ -636,7 +654,7 @@ static void display(Hashmap *a) {
 }
 
 static void help(void) {
-        printf("%s [OPTIONS...]\n\n"
+        printf("%s [OPTIONS...] [CGROUP]\n\n"
                "Show top control groups by their resource usage.\n\n"
                "  -h --help           Show this help\n"
                "     --version        Show package version\n"
@@ -818,7 +836,13 @@ static int parse_argv(int argc, char *argv[]) {
                         assert_not_reached("Unhandled option");
                 }
 
-        if (optind < argc) {
+        if (optind == argc-1) {
+                if (arg_machine) {
+                        log_error("Specifying a control group path together with the -M option is not allowed");
+                        return -EINVAL;
+                }
+                arg_root = argv[optind];
+        } else if (optind < argc) {
                 log_error("Too many arguments.");
                 return -EINVAL;
         }
@@ -841,11 +865,22 @@ static const char* counting_what(void) {
 }
 
 static int get_cgroup_root(char **ret) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_bus_flush_close_unref_ sd_bus *bus = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         _cleanup_free_ char *unit = NULL, *path = NULL;
         const char *m;
         int r;
+
+        if (arg_root) {
+                char *aux;
+
+                aux = strdup(arg_root);
+                if (!aux)
+                        return log_oom();
+
+                *ret = aux;
+                return 0;
+        }
 
         if (!arg_machine) {
                 r = cg_get_root_path(ret);

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -23,14 +21,17 @@
 
 #include <endian.h>
 
+#include "sd-bus.h"
 #include "sd-dhcp-client.h"
 #include "sd-dhcp-server.h"
 #include "sd-dhcp6-client.h"
 #include "sd-ipv4ll.h"
 #include "sd-lldp.h"
 #include "sd-ndisc.h"
+#include "sd-netlink.h"
 
-typedef struct Link Link;
+#include "list.h"
+#include "set.h"
 
 typedef enum LinkState {
         LINK_STATE_PENDING,
@@ -56,19 +57,22 @@ typedef enum LinkOperationalState {
         _LINK_OPERSTATE_INVALID = -1
 } LinkOperationalState;
 
-#include "networkd.h"
-#include "networkd-network.h"
-#include "networkd-address.h"
+typedef struct Manager Manager;
+typedef struct Network Network;
+typedef struct Address Address;
 
-struct Link {
+typedef struct Link {
         Manager *manager;
 
         int n_ref;
 
         int ifindex;
         char *ifname;
+        char *kind;
+        unsigned short iftype;
         char *state_file;
         struct ether_addr mac;
+        struct in6_addr ipv6ll_address;
         uint32_t mtu;
         struct udev_device *udev_device;
 
@@ -85,6 +89,8 @@ struct Link {
 
         Set *addresses;
         Set *addresses_foreign;
+        Set *routes;
+        Set *routes_foreign;
 
         sd_dhcp_client *dhcp_client;
         sd_dhcp_lease *dhcp_lease;
@@ -94,9 +100,12 @@ struct Link {
         bool dhcp4_configured;
         bool dhcp6_configured;
 
+        unsigned ndisc_messages;
+        bool ndisc_configured;
+
         sd_ipv4ll *ipv4ll;
-        bool ipv4ll_address;
-        bool ipv4ll_route;
+        bool ipv4ll_address:1;
+        bool ipv4ll_route:1;
 
         bool static_configured;
 
@@ -104,16 +113,24 @@ struct Link {
 
         sd_dhcp_server *dhcp_server;
 
-        sd_ndisc *ndisc_router_discovery;
+        sd_ndisc *ndisc;
+        Set *ndisc_rdnss;
+        Set *ndisc_dnssl;
+
         sd_dhcp6_client *dhcp6_client;
         bool rtnl_extended_attrs;
 
+        /* This is about LLDP reception */
         sd_lldp *lldp;
         char *lldp_file;
 
+        /* This is about LLDP transmission */
+        unsigned lldp_tx_fast; /* The LLDP txFast counter (See 802.1ab-2009, section 9.2.5.18) */
+        sd_event_source *lldp_emit_event_source;
+
         Hashmap *bound_by_links;
         Hashmap *bound_to_links;
-};
+} Link;
 
 Link *link_unref(Link *link);
 Link *link_ref(Link *link);
@@ -139,21 +156,16 @@ int link_save(Link *link);
 int link_carrier_reset(Link *link);
 bool link_has_carrier(Link *link);
 
+int link_ipv6ll_gained(Link *link, const struct in6_addr *address);
+
 int link_set_mtu(Link *link, uint32_t mtu);
 int link_set_hostname(Link *link, const char *hostname);
 int link_set_timezone(Link *link, const char *timezone);
 
 int ipv4ll_configure(Link *link);
 int dhcp4_configure(Link *link);
-int dhcp6_configure(Link *link, bool information_request);
-int ndisc_configure(Link *link);
-
-bool link_lldp_enabled(Link *link);
-bool link_ipv4ll_enabled(Link *link);
-bool link_ipv6ll_enabled(Link *link);
-bool link_dhcp4_server_enabled(Link *link);
-bool link_dhcp4_enabled(Link *link);
-bool link_dhcp6_enabled(Link *link);
+int dhcp6_configure(Link *link);
+int dhcp6_request_address(Link *link, int ir);
 
 const char* link_state_to_string(LinkState s) _const_;
 LinkState link_state_from_string(const char *s) _pure_;

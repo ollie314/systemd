@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -26,3 +24,4 @@ int parse_proc_cmdline(int (*parse_word)(const char *key, const char *value));
 int get_proc_cmdline_key(const char *parameter, char **value);
 
 int shall_restore_state(void);
+const char* runlevel_to_target(const char *rl);

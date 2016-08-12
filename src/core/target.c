@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -52,9 +50,7 @@ static int target_add_default_dependencies(Target *t) {
 
         static const UnitDependency deps[] = {
                 UNIT_REQUIRES,
-                UNIT_REQUIRES_OVERRIDABLE,
                 UNIT_REQUISITE,
-                UNIT_REQUISITE_OVERRIDABLE,
                 UNIT_WANTS,
                 UNIT_BINDS_TO,
                 UNIT_PART_OF

@@ -1,16 +1,15 @@
-#include "networkd.h"
-#include "networkd-netdev-bond.h"
-#include "networkd-netdev-macvlan.h"
 #include "dhcp6-internal.h"
 #include "dhcp6-protocol.h"
-#include "netlink-internal.h"
 #include "ethtool-util.h"
-
+#include "netlink-internal.h"
+#include "networkd-netdev-bond.h"
+#include "networkd-netdev-macvlan.h"
+#include "networkd.h"
 #include "test-tables.h"
 
 int main(int argc, char **argv) {
         test_table(bond_mode, NETDEV_BOND_MODE);
-        /* test_table(link_state, LINK_STATE);  -- not a reversible mapping */
+        /* test_table(link_state, LINK_STATE);  — not a reversible mapping */
         test_table(link_operstate, LINK_OPERSTATE);
         test_table(address_family_boolean, ADDRESS_FAMILY_BOOLEAN);
         test_table(netdev_kind, NETDEV_KIND);

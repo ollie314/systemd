@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -325,6 +323,18 @@ static void test_extract_first_word(void) {
         assert_se(extract_first_word(&p, &t, ":", EXTRACT_DONT_COALESCE_SEPARATORS) == 0);
         assert_se(!t);
         assert_se(!p);
+
+        p = "foo\\xbar";
+        assert_se(extract_first_word(&p, &t, NULL, 0) > 0);
+        assert_se(streq(t, "fooxbar"));
+        free(t);
+        assert_se(p == NULL);
+
+        p = "foo\\xbar";
+        assert_se(extract_first_word(&p, &t, NULL, EXTRACT_RETAIN_ESCAPE) > 0);
+        assert_se(streq(t, "foo\\xbar"));
+        free(t);
+        assert_se(p == NULL);
 }
 
 static void test_extract_first_word_and_warn(void) {

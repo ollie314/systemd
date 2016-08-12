@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -38,7 +36,6 @@
 #include "io-util.h"
 #include "list.h"
 #include "missing.h"
-#include "resolve-util.h"
 #include "socket-util.h"
 #include "util.h"
 
@@ -179,7 +176,7 @@ static int getnameinfo_done(sd_resolve_query *q);
 static void resolve_query_disconnect(sd_resolve_query *q);
 
 #define RESOLVE_DONT_DESTROY(resolve) \
-        _cleanup_resolve_unref_ _unused_ sd_resolve *_dont_destroy_##resolve = sd_resolve_ref(resolve)
+        _cleanup_(sd_resolve_unrefp) _unused_ sd_resolve *_dont_destroy_##resolve = sd_resolve_ref(resolve)
 
 static int send_died(int out_fd) {
 
@@ -220,9 +217,8 @@ static void *serialize_addrinfo(void *p, const struct addrinfo *ai, size_t *leng
 
         memcpy((uint8_t*) p, &s, sizeof(AddrInfoSerialization));
         memcpy((uint8_t*) p + sizeof(AddrInfoSerialization), ai->ai_addr, ai->ai_addrlen);
-
-        if (ai->ai_canonname)
-                memcpy((char*) p + sizeof(AddrInfoSerialization) + ai->ai_addrlen, ai->ai_canonname, cnl);
+        memcpy_safe((char*) p + sizeof(AddrInfoSerialization) + ai->ai_addrlen,
+                    ai->ai_canonname, cnl);
 
         *length += l;
         return (uint8_t*) p + l;
@@ -407,7 +403,7 @@ static void* thread_worker(void *p) {
         assert_se(pthread_sigmask(SIG_BLOCK, &fullset, NULL) == 0);
 
         /* Assign a pretty name to this thread */
-        prctl(PR_SET_NAME, (unsigned long) "sd-resolve");
+        (void) prctl(PR_SET_NAME, (unsigned long) "sd-resolve");
 
         while (!resolve->dead) {
                 union {
@@ -451,7 +447,7 @@ static int start_threads(sd_resolve *resolve, unsigned extra) {
                 if (r != 0)
                         return -r;
 
-                resolve->n_valid_workers ++;
+                resolve->n_valid_workers++;
         }
 
         return 0;
@@ -583,18 +579,13 @@ static void resolve_free(sd_resolve *resolve) {
                         (void) send(resolve->fds[REQUEST_SEND_FD], &req, req.length, MSG_NOSIGNAL);
         }
 
-        /* Now terminate them and wait until they are gone. */
-        for (i = 0; i < resolve->n_valid_workers; i++) {
-                for (;;) {
-                        if (pthread_join(resolve->workers[i], NULL) != EINTR)
-                                break;
-                }
-        }
+        /* Now terminate them and wait until they are gone.
+           If we get an error than most likely the thread already exited. */
+        for (i = 0; i < resolve->n_valid_workers; i++)
+                (void) pthread_join(resolve->workers[i], NULL);
 
         /* Close all communication channels */
-        for (i = 0; i < _FD_MAX; i++)
-                safe_close(resolve->fds[i]);
-
+        close_many(resolve->fds, _FD_MAX);
         free(resolve);
 }
 
@@ -665,7 +656,7 @@ static int complete_query(sd_resolve *resolve, sd_resolve_query *q) {
         assert(q->resolve == resolve);
 
         q->done = true;
-        resolve->n_done ++;
+        resolve->n_done++;
 
         resolve->current = sd_resolve_query_ref(q);
 
@@ -1199,7 +1190,7 @@ static int io_callback(sd_event_source *s, int fd, uint32_t revents, void *userd
         return 1;
 }
 
-_public_ int sd_resolve_attach_event(sd_resolve *resolve, sd_event *event, int priority) {
+_public_ int sd_resolve_attach_event(sd_resolve *resolve, sd_event *event, int64_t priority) {
         int r;
 
         assert_return(resolve, -EINVAL);

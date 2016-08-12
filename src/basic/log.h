@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -26,6 +24,7 @@
 #include <stdbool.h>
 #include <stdlib.h>
 #include <sys/signalfd.h>
+#include <sys/socket.h>
 #include <syslog.h>
 
 #include "sd-id128.h"
@@ -127,6 +126,15 @@ int log_oom_internal(
                 int line,
                 const char *func);
 
+int log_format_iovec(
+                struct iovec *iovec,
+                unsigned iovec_len,
+                unsigned *n,
+                bool newline_separator,
+                int error,
+                const char *format,
+                va_list ap);
+
 /* This modifies the buffer passed! */
 int log_dump_internal(
                 int level,
@@ -185,7 +193,7 @@ void log_assert_failed_return(
 #ifdef LOG_TRACE
 #  define log_trace(...) log_debug(__VA_ARGS__)
 #else
-#  define log_trace(...) do {} while(0)
+#  define log_trace(...) do {} while (0)
 #endif
 
 /* Structured logging */
@@ -238,5 +246,4 @@ int log_syntax_internal(
                         log_syntax_internal(unit, _level, config_file, config_line, 0, __FILE__, __LINE__, __func__, \
                                             "String is not UTF-8 clean, ignoring assignment: %s", strna(_p)); \
                 }                                                       \
-                -EINVAL;                                                \
         })

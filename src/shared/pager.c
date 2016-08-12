@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,7 +17,11 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <fcntl.h>
+#include <errno.h>
+#include <signal.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/prctl.h>
@@ -28,13 +30,13 @@
 #include "copy.h"
 #include "fd-util.h"
 #include "locale-util.h"
+#include "log.h"
 #include "macro.h"
 #include "pager.h"
 #include "process-util.h"
 #include "signal-util.h"
 #include "string-util.h"
 #include "terminal-util.h"
-#include "util.h"
 
 static pid_t pager_pid = 0;
 
@@ -50,15 +52,18 @@ noreturn static void pager_fallback(void) {
         _exit(EXIT_SUCCESS);
 }
 
-int pager_open(bool jump_to_end) {
+int pager_open(bool no_pager, bool jump_to_end) {
         _cleanup_close_pair_ int fd[2] = { -1, -1 };
         const char *pager;
         pid_t parent_pid;
 
+        if (no_pager)
+                return 0;
+
         if (pager_pid > 0)
                 return 1;
 
-        if (!on_tty())
+        if (terminal_is_dumb())
                 return 0;
 
         pager = getenv("SYSTEMD_PAGER");

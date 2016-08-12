@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /* This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
  * the Free Software Foundation; either version 2.1 of the License, or
@@ -16,12 +14,13 @@
 #include <efi.h>
 #include <efilib.h>
 
-#include "util.h"
-#include "pefile.h"
 #include "disk.h"
 #include "graphics.h"
-#include "splash.h"
 #include "linux.h"
+#include "pefile.h"
+#include "splash.h"
+#include "util.h"
+#include "measure.h"
 
 /* magic string to find in the binary image */
 static const char __attribute__((used)) magic[] = "#### LoaderInfo: systemd-stub " VERSION " ####";
@@ -99,6 +98,18 @@ EFI_STATUS efi_main(EFI_HANDLE image, EFI_SYSTEM_TABLE *sys_table) {
                 for (i = 0; i < cmdline_len; i++)
                         line[i] = options[i];
                 cmdline = line;
+
+#ifdef SD_BOOT_LOG_TPM
+                /* Try to log any options to the TPM, escpecially manually edited options */
+                err = tpm_log_event(SD_TPM_PCR,
+                                    (EFI_PHYSICAL_ADDRESS) loaded_image->LoadOptions,
+                                    loaded_image->LoadOptionsSize, loaded_image->LoadOptions);
+                if (EFI_ERROR(err)) {
+                        Print(L"Unable to add image options measurement: %r", err);
+                        uefi_call_wrapper(BS->Stall, 1, 3 * 1000 * 1000);
+                        return err;
+                }
+#endif
         }
 
         /* export the device path this image is started from */

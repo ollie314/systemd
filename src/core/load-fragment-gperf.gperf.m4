@@ -19,9 +19,9 @@ m4_dnl Define the context options only once
 m4_define(`EXEC_CONTEXT_CONFIG_ITEMS',
 `$1.WorkingDirectory,            config_parse_working_directory,     0,                             offsetof($1, exec_context)
 $1.RootDirectory,                config_parse_unit_path_printf,      0,                             offsetof($1, exec_context.root_directory)
-$1.User,                         config_parse_unit_string_printf,    0,                             offsetof($1, exec_context.user)
-$1.Group,                        config_parse_unit_string_printf,    0,                             offsetof($1, exec_context.group)
-$1.SupplementaryGroups,          config_parse_strv,                  0,                             offsetof($1, exec_context.supplementary_groups)
+$1.User,                         config_parse_user_group,            0,                             offsetof($1, exec_context.user)
+$1.Group,                        config_parse_user_group,            0,                             offsetof($1, exec_context.group)
+$1.SupplementaryGroups,          config_parse_user_group_strv,       0,                             offsetof($1, exec_context.supplementary_groups)
 $1.Nice,                         config_parse_exec_nice,             0,                             offsetof($1, exec_context)
 $1.OOMScoreAdjust,               config_parse_exec_oom_score_adjust, 0,                             offsetof($1, exec_context)
 $1.IOSchedulingClass,            config_parse_exec_io_class,         0,                             offsetof($1, exec_context)
@@ -33,6 +33,8 @@ $1.CPUAffinity,                  config_parse_exec_cpu_affinity,     0,         
 $1.UMask,                        config_parse_mode,                  0,                             offsetof($1, exec_context.umask)
 $1.Environment,                  config_parse_environ,               0,                             offsetof($1, exec_context.environment)
 $1.EnvironmentFile,              config_parse_unit_env_file,         0,                             offsetof($1, exec_context.environment_files)
+$1.PassEnvironment,              config_parse_pass_environ,          0,                             offsetof($1, exec_context.pass_environment)
+$1.DynamicUser,                  config_parse_bool,                  0,                             offsetof($1, exec_context.dynamic_user)
 $1.StandardInput,                config_parse_input,                 0,                             offsetof($1, exec_context.std_input)
 $1.StandardOutput,               config_parse_output,                0,                             offsetof($1, exec_context.std_output)
 $1.StandardError,                config_parse_output,                0,                             offsetof($1, exec_context.std_error)
@@ -44,19 +46,24 @@ $1.SyslogIdentifier,             config_parse_unit_string_printf,    0,         
 $1.SyslogFacility,               config_parse_log_facility,          0,                             offsetof($1, exec_context.syslog_priority)
 $1.SyslogLevel,                  config_parse_log_level,             0,                             offsetof($1, exec_context.syslog_priority)
 $1.SyslogLevelPrefix,            config_parse_bool,                  0,                             offsetof($1, exec_context.syslog_level_prefix)
-$1.Capabilities,                 config_parse_exec_capabilities,     0,                             offsetof($1, exec_context)
+$1.Capabilities,                 config_parse_warn_compat,           DISABLED_LEGACY,               offsetof($1, exec_context)
 $1.SecureBits,                   config_parse_exec_secure_bits,      0,                             offsetof($1, exec_context)
-$1.CapabilityBoundingSet,        config_parse_bounding_set,          0,                             offsetof($1, exec_context.capability_bounding_set_drop)
+$1.CapabilityBoundingSet,        config_parse_capability_set,        0,                             offsetof($1, exec_context.capability_bounding_set)
+$1.AmbientCapabilities,          config_parse_capability_set,        0,                             offsetof($1, exec_context.capability_ambient_set)
 $1.TimerSlackNSec,               config_parse_nsec,                  0,                             offsetof($1, exec_context.timer_slack_nsec)
 $1.NoNewPrivileges,              config_parse_no_new_privileges,     0,                             offsetof($1, exec_context)
 m4_ifdef(`HAVE_SECCOMP',
 `$1.SystemCallFilter,            config_parse_syscall_filter,        0,                             offsetof($1, exec_context)
 $1.SystemCallArchitectures,      config_parse_syscall_archs,         0,                             offsetof($1, exec_context.syscall_archs)
 $1.SystemCallErrorNumber,        config_parse_syscall_errno,         0,                             offsetof($1, exec_context)
+$1.MemoryDenyWriteExecute,       config_parse_bool,                  0,                             offsetof($1, exec_context.memory_deny_write_execute)
+$1.RestrictRealtime,             config_parse_bool,                  0,                             offsetof($1, exec_context.restrict_realtime)
 $1.RestrictAddressFamilies,      config_parse_address_families,      0,                             offsetof($1, exec_context)',
 `$1.SystemCallFilter,            config_parse_warn_compat,           DISABLED_CONFIGURATION,        0
 $1.SystemCallArchitectures,      config_parse_warn_compat,           DISABLED_CONFIGURATION,        0
 $1.SystemCallErrorNumber,        config_parse_warn_compat,           DISABLED_CONFIGURATION,        0
+$1.MemoryDenyWriteExecute,       config_parse_warn_compat,           DISABLED_CONFIGURATION,        0
+$1.RestrictRealtime,             config_parse_warn_compat,           DISABLED_CONFIGURATION,        0
 $1.RestrictAddressFamilies,      config_parse_warn_compat,           DISABLED_CONFIGURATION,        0')
 $1.LimitCPU,                     config_parse_limit,                 RLIMIT_CPU,                    offsetof($1, exec_context.rlimit)
 $1.LimitFSIZE,                   config_parse_limit,                 RLIMIT_FSIZE,                  offsetof($1, exec_context.rlimit)
@@ -74,12 +81,16 @@ $1.LimitMSGQUEUE,                config_parse_limit,                 RLIMIT_MSGQ
 $1.LimitNICE,                    config_parse_limit,                 RLIMIT_NICE,                   offsetof($1, exec_context.rlimit)
 $1.LimitRTPRIO,                  config_parse_limit,                 RLIMIT_RTPRIO,                 offsetof($1, exec_context.rlimit)
 $1.LimitRTTIME,                  config_parse_limit,                 RLIMIT_RTTIME,                 offsetof($1, exec_context.rlimit)
-$1.ReadWriteDirectories,         config_parse_namespace_path_strv,   0,                             offsetof($1, exec_context.read_write_dirs)
-$1.ReadOnlyDirectories,          config_parse_namespace_path_strv,   0,                             offsetof($1, exec_context.read_only_dirs)
-$1.InaccessibleDirectories,      config_parse_namespace_path_strv,   0,                             offsetof($1, exec_context.inaccessible_dirs)
+$1.ReadWriteDirectories,         config_parse_namespace_path_strv,   0,                             offsetof($1, exec_context.read_write_paths)
+$1.ReadOnlyDirectories,          config_parse_namespace_path_strv,   0,                             offsetof($1, exec_context.read_only_paths)
+$1.InaccessibleDirectories,      config_parse_namespace_path_strv,   0,                             offsetof($1, exec_context.inaccessible_paths)
+$1.ReadWritePaths,               config_parse_namespace_path_strv,   0,                             offsetof($1, exec_context.read_write_paths)
+$1.ReadOnlyPaths,                config_parse_namespace_path_strv,   0,                             offsetof($1, exec_context.read_only_paths)
+$1.InaccessiblePaths,            config_parse_namespace_path_strv,   0,                             offsetof($1, exec_context.inaccessible_paths)
 $1.PrivateTmp,                   config_parse_bool,                  0,                             offsetof($1, exec_context.private_tmp)
-$1.PrivateNetwork,               config_parse_bool,                  0,                             offsetof($1, exec_context.private_network)
 $1.PrivateDevices,               config_parse_bool,                  0,                             offsetof($1, exec_context.private_devices)
+$1.PrivateNetwork,               config_parse_bool,                  0,                             offsetof($1, exec_context.private_network)
+$1.PrivateUsers,                 config_parse_bool,                  0,                             offsetof($1, exec_context.private_users)
 $1.ProtectSystem,                config_parse_protect_system,        0,                             offsetof($1, exec_context)
 $1.ProtectHome,                  config_parse_protect_home,          0,                             offsetof($1, exec_context)
 $1.MountFlags,                   config_parse_exec_mount_flags,      0,                             offsetof($1, exec_context)
@@ -115,9 +126,20 @@ $1.CPUShares,                    config_parse_cpu_shares,            0,         
 $1.StartupCPUShares,             config_parse_cpu_shares,            0,                             offsetof($1, cgroup_context.startup_cpu_shares)
 $1.CPUQuota,                     config_parse_cpu_quota,             0,                             offsetof($1, cgroup_context)
 $1.MemoryAccounting,             config_parse_bool,                  0,                             offsetof($1, cgroup_context.memory_accounting)
+$1.MemoryLow,                    config_parse_memory_limit,          0,                             offsetof($1, cgroup_context)
+$1.MemoryHigh,                   config_parse_memory_limit,          0,                             offsetof($1, cgroup_context)
+$1.MemoryMax,                    config_parse_memory_limit,          0,                             offsetof($1, cgroup_context)
 $1.MemoryLimit,                  config_parse_memory_limit,          0,                             offsetof($1, cgroup_context)
 $1.DeviceAllow,                  config_parse_device_allow,          0,                             offsetof($1, cgroup_context)
 $1.DevicePolicy,                 config_parse_device_policy,         0,                             offsetof($1, cgroup_context.device_policy)
+$1.IOAccounting,                 config_parse_bool,                  0,                             offsetof($1, cgroup_context.io_accounting)
+$1.IOWeight,                     config_parse_io_weight,             0,                             offsetof($1, cgroup_context.io_weight)
+$1.StartupIOWeight,              config_parse_io_weight,             0,                             offsetof($1, cgroup_context.startup_io_weight)
+$1.IODeviceWeight,               config_parse_io_device_weight,      0,                             offsetof($1, cgroup_context)
+$1.IOReadBandwidthMax,           config_parse_io_limit,              0,                             offsetof($1, cgroup_context)
+$1.IOWriteBandwidthMax,          config_parse_io_limit,              0,                             offsetof($1, cgroup_context)
+$1.IOReadIOPSMax,                config_parse_io_limit,              0,                             offsetof($1, cgroup_context)
+$1.IOWriteIOPSMax,               config_parse_io_limit,              0,                             offsetof($1, cgroup_context)
 $1.BlockIOAccounting,            config_parse_bool,                  0,                             offsetof($1, cgroup_context.blockio_accounting)
 $1.BlockIOWeight,                config_parse_blockio_weight,        0,                             offsetof($1, cgroup_context.blockio_weight)
 $1.StartupBlockIOWeight,         config_parse_blockio_weight,        0,                             offsetof($1, cgroup_context.startup_blockio_weight)
@@ -125,17 +147,15 @@ $1.BlockIODeviceWeight,          config_parse_blockio_device_weight, 0,         
 $1.BlockIOReadBandwidth,         config_parse_blockio_bandwidth,     0,                             offsetof($1, cgroup_context)
 $1.BlockIOWriteBandwidth,        config_parse_blockio_bandwidth,     0,                             offsetof($1, cgroup_context)
 $1.TasksAccounting,              config_parse_bool,                  0,                             offsetof($1, cgroup_context.tasks_accounting)
-$1.TasksMax,                     config_parse_tasks_max,             0,                             offsetof($1, cgroup_context)
+$1.TasksMax,                     config_parse_tasks_max,             0,                             offsetof($1, cgroup_context.tasks_max)
 $1.Delegate,                     config_parse_bool,                  0,                             offsetof($1, cgroup_context.delegate)
-$1.NetClass,                     config_parse_netclass,              0,                             offsetof($1, cgroup_context)'
+$1.NetClass,                     config_parse_warn_compat,           DISABLED_LEGACY,               0'
 )m4_dnl
 Unit.Description,                config_parse_unit_string_printf,    0,                             offsetof(Unit, description)
 Unit.Documentation,              config_parse_documentation,         0,                             offsetof(Unit, documentation)
 Unit.SourcePath,                 config_parse_path,                  0,                             offsetof(Unit, source_path)
 Unit.Requires,                   config_parse_unit_deps,             UNIT_REQUIRES,                 0
-Unit.RequiresOverridable,        config_parse_unit_deps,             UNIT_REQUIRES_OVERRIDABLE,     0
 Unit.Requisite,                  config_parse_unit_deps,             UNIT_REQUISITE,                0
-Unit.RequisiteOverridable,       config_parse_unit_deps,             UNIT_REQUISITE_OVERRIDABLE,    0
 Unit.Wants,                      config_parse_unit_deps,             UNIT_WANTS,                    0
 Unit.BindsTo,                    config_parse_unit_deps,             UNIT_BINDS_TO,                 0
 Unit.BindTo,                     config_parse_unit_deps,             UNIT_BINDS_TO,                 0
@@ -149,6 +169,8 @@ Unit.ReloadPropagatedFrom,       config_parse_unit_deps,             UNIT_RELOAD
 Unit.PropagateReloadFrom,        config_parse_unit_deps,             UNIT_RELOAD_PROPAGATED_FROM,   0
 Unit.PartOf,                     config_parse_unit_deps,             UNIT_PART_OF,                  0
 Unit.JoinsNamespaceOf,           config_parse_unit_deps,             UNIT_JOINS_NAMESPACE_OF,       0
+Unit.RequiresOverridable,        config_parse_obsolete_unit_deps,    UNIT_REQUIRES,                 0
+Unit.RequisiteOverridable,       config_parse_obsolete_unit_deps,    UNIT_REQUISITE,    0
 Unit.RequiresMountsFor,          config_parse_unit_requires_mounts_for, 0,                          0
 Unit.StopWhenUnneeded,           config_parse_bool,                  0,                             offsetof(Unit, stop_when_unneeded)
 Unit.RefuseManualStart,          config_parse_bool,                  0,                             offsetof(Unit, refuse_manual_start)
@@ -158,10 +180,16 @@ Unit.DefaultDependencies,        config_parse_bool,                  0,         
 Unit.OnFailureJobMode,           config_parse_job_mode,              0,                             offsetof(Unit, on_failure_job_mode)
 Unit.OnFailureIsolate,           config_parse_job_mode_isolate,      0,                             offsetof(Unit, on_failure_job_mode)
 Unit.IgnoreOnIsolate,            config_parse_bool,                  0,                             offsetof(Unit, ignore_on_isolate)
-Unit.IgnoreOnSnapshot,           config_parse_bool,                  0,                             offsetof(Unit, ignore_on_snapshot)
-Unit.JobTimeoutSec,              config_parse_sec,                   0,                             offsetof(Unit, job_timeout)
+Unit.IgnoreOnSnapshot,           config_parse_warn_compat,           DISABLED_LEGACY,               0
+Unit.JobTimeoutSec,              config_parse_sec_fix_0,             0,                             offsetof(Unit, job_timeout)
 Unit.JobTimeoutAction,           config_parse_failure_action,        0,                             offsetof(Unit, job_timeout_action)
 Unit.JobTimeoutRebootArgument,   config_parse_string,                0,                             offsetof(Unit, job_timeout_reboot_arg)
+Unit.StartLimitIntervalSec,      config_parse_sec,                   0,                             offsetof(Unit, start_limit.interval)
+m4_dnl The following is a legacy alias name for compatibility
+Unit.StartLimitInterval,         config_parse_sec,                   0,                             offsetof(Unit, start_limit.interval)
+Unit.StartLimitBurst,            config_parse_unsigned,              0,                             offsetof(Unit, start_limit.burst)
+Unit.StartLimitAction,           config_parse_failure_action,        0,                             offsetof(Unit, start_limit_action)
+Unit.RebootArgument,             config_parse_string,                0,                             offsetof(Unit, reboot_arg)
 Unit.ConditionPathExists,        config_parse_unit_condition_path,   CONDITION_PATH_EXISTS,         offsetof(Unit, conditions)
 Unit.ConditionPathExistsGlob,    config_parse_unit_condition_path,   CONDITION_PATH_EXISTS_GLOB,    offsetof(Unit, conditions)
 Unit.ConditionPathIsDirectory,   config_parse_unit_condition_path,   CONDITION_PATH_IS_DIRECTORY,   offsetof(Unit, conditions)
@@ -209,14 +237,16 @@ Service.ExecReload,              config_parse_exec,                  SERVICE_EXE
 Service.ExecStop,                config_parse_exec,                  SERVICE_EXEC_STOP,             offsetof(Service, exec_command)
 Service.ExecStopPost,            config_parse_exec,                  SERVICE_EXEC_STOP_POST,        offsetof(Service, exec_command)
 Service.RestartSec,              config_parse_sec,                   0,                             offsetof(Service, restart_usec)
-Service.TimeoutSec,              config_parse_service_timeout,       0,                             offsetof(Service, timeout_start_usec)
-Service.TimeoutStartSec,         config_parse_service_timeout,       0,                             offsetof(Service, timeout_start_usec)
-Service.TimeoutStopSec,          config_parse_service_timeout,       0,                             offsetof(Service, timeout_stop_usec)
+Service.TimeoutSec,              config_parse_service_timeout,       0,                             0
+Service.TimeoutStartSec,         config_parse_service_timeout,       0,                             0
+Service.TimeoutStopSec,          config_parse_service_timeout,       0,                             0
+Service.RuntimeMaxSec,           config_parse_sec,                   0,                             offsetof(Service, runtime_max_usec)
 Service.WatchdogSec,             config_parse_sec,                   0,                             offsetof(Service, watchdog_usec)
-Service.StartLimitInterval,      config_parse_sec,                   0,                             offsetof(Service, start_limit.interval)
-Service.StartLimitBurst,         config_parse_unsigned,              0,                             offsetof(Service, start_limit.burst)
-Service.StartLimitAction,        config_parse_failure_action,        0,                             offsetof(Service, start_limit_action)
-Service.RebootArgument,          config_parse_string,                0,                             offsetof(Service, reboot_arg)
+m4_dnl The following three only exist for compatibility, they moved into Unit, see above
+Service.StartLimitInterval,      config_parse_sec,                   0,                             offsetof(Unit, start_limit.interval)
+Service.StartLimitBurst,         config_parse_unsigned,              0,                             offsetof(Unit, start_limit.burst)
+Service.StartLimitAction,        config_parse_failure_action,        0,                             offsetof(Unit, start_limit_action)
+Service.RebootArgument,          config_parse_string,                0,                             offsetof(Unit, reboot_arg)
 Service.FailureAction,           config_parse_failure_action,        0,                             offsetof(Service, failure_action)
 Service.Type,                    config_parse_service_type,          0,                             offsetof(Service, type)
 Service.Restart,                 config_parse_service_restart,       0,                             offsetof(Service, restart)
@@ -233,7 +263,7 @@ Service.BusName,                 config_parse_bus_name,              0,         
 Service.FileDescriptorStoreMax,  config_parse_unsigned,              0,                             offsetof(Service, n_fd_store_max)
 Service.NotifyAccess,            config_parse_notify_access,         0,                             offsetof(Service, notify_access)
 Service.Sockets,                 config_parse_service_sockets,       0,                             0
-Service.BusPolicy,               config_parse_bus_endpoint_policy,   0,                             offsetof(Service, exec_context)
+Service.BusPolicy,               config_parse_warn_compat,           DISABLED_LEGACY,               0
 Service.USBFunctionDescriptors,  config_parse_path,                  0,                             offsetof(Service, usb_function_descriptors)
 Service.USBFunctionStrings,      config_parse_path,                  0,                             offsetof(Service, usb_function_strings)
 EXEC_CONTEXT_CONFIG_ITEMS(Service)m4_dnl
@@ -248,6 +278,7 @@ Socket.ListenNetlink,            config_parse_socket_listen,         SOCKET_SOCK
 Socket.ListenSpecial,            config_parse_socket_listen,         SOCKET_SPECIAL,                0
 Socket.ListenMessageQueue,       config_parse_socket_listen,         SOCKET_MQUEUE,                 0
 Socket.ListenUSBFunction,        config_parse_socket_listen,         SOCKET_USB_FUNCTION,           0
+Socket.SocketProtocol,           config_parse_socket_protocol,       0,                             0
 Socket.BindIPv6Only,             config_parse_socket_bind,           0,                             0,
 Socket.Backlog,                  config_parse_unsigned,              0,                             offsetof(Socket, backlog)
 Socket.BindToDevice,             config_parse_socket_bindtodevice,   0,                             0
@@ -256,13 +287,14 @@ Socket.ExecStartPost,            config_parse_exec,                  SOCKET_EXEC
 Socket.ExecStopPre,              config_parse_exec,                  SOCKET_EXEC_STOP_PRE,          offsetof(Socket, exec_command)
 Socket.ExecStopPost,             config_parse_exec,                  SOCKET_EXEC_STOP_POST,         offsetof(Socket, exec_command)
 Socket.TimeoutSec,               config_parse_sec,                   0,                             offsetof(Socket, timeout_usec)
-Socket.SocketUser,               config_parse_unit_string_printf,    0,                             offsetof(Socket, user)
-Socket.SocketGroup,              config_parse_unit_string_printf,    0,                             offsetof(Socket, group)
+Socket.SocketUser,               config_parse_user_group,            0,                             offsetof(Socket, user)
+Socket.SocketGroup,              config_parse_user_group,            0,                             offsetof(Socket, group)
 Socket.SocketMode,               config_parse_mode,                  0,                             offsetof(Socket, socket_mode)
 Socket.DirectoryMode,            config_parse_mode,                  0,                             offsetof(Socket, directory_mode)
 Socket.Accept,                   config_parse_bool,                  0,                             offsetof(Socket, accept)
 Socket.Writable,                 config_parse_bool,                  0,                             offsetof(Socket, writable)
 Socket.MaxConnections,           config_parse_unsigned,              0,                             offsetof(Socket, max_connections)
+Socket.MaxConnectionsPerSource,  config_parse_unsigned,              0,                             offsetof(Socket, max_connections_per_source)
 Socket.KeepAlive,                config_parse_bool,                  0,                             offsetof(Socket, keep_alive)
 Socket.KeepAliveTimeSec,         config_parse_sec,                   0,                             offsetof(Socket, keep_alive_time)
 Socket.KeepAliveIntervalSec,     config_parse_sec,                   0,                             offsetof(Socket, keep_alive_interval)
@@ -289,6 +321,8 @@ Socket.RemoveOnStop,             config_parse_bool,                  0,         
 Socket.Symlinks,                 config_parse_unit_path_strv_printf, 0,                             offsetof(Socket, symlinks)
 Socket.FileDescriptorName,       config_parse_fdname,                0,                             0
 Socket.Service,                  config_parse_socket_service,        0,                             0
+Socket.TriggerLimitIntervalSec,  config_parse_sec,                   0,                             offsetof(Socket, trigger_limit.interval)
+Socket.TriggerLimitBurst,        config_parse_unsigned,              0,                             offsetof(Socket, trigger_limit.burst)
 m4_ifdef(`HAVE_SMACK',
 `Socket.SmackLabel,              config_parse_string,                0,                             offsetof(Socket, smack)
 Socket.SmackLabelIPIn,           config_parse_string,                0,                             offsetof(Socket, smack_ip_in)
@@ -319,7 +353,6 @@ Mount.Type,                      config_parse_string,                0,         
 Mount.TimeoutSec,                config_parse_sec,                   0,                             offsetof(Mount, timeout_usec)
 Mount.DirectoryMode,             config_parse_mode,                  0,                             offsetof(Mount, directory_mode)
 Mount.SloppyOptions,             config_parse_bool,                  0,                             offsetof(Mount, sloppy_options)
-Mount.SmackFileSystemRootLabel,  config_parse_string,                0,                             offsetof(Mount, smack_fs_root_label)
 EXEC_CONTEXT_CONFIG_ITEMS(Mount)m4_dnl
 CGROUP_CONTEXT_CONFIG_ITEMS(Mount)m4_dnl
 KILL_CONTEXT_CONFIG_ITEMS(Mount)m4_dnl
@@ -344,7 +377,9 @@ Timer.OnUnitActiveSec,           config_parse_timer,                 0,         
 Timer.OnUnitInactiveSec,         config_parse_timer,                 0,                             0
 Timer.Persistent,                config_parse_bool,                  0,                             offsetof(Timer, persistent)
 Timer.WakeSystem,                config_parse_bool,                  0,                             offsetof(Timer, wake_system)
+Timer.RemainAfterElapse,         config_parse_bool,                  0,                             offsetof(Timer, remain_after_elapse)
 Timer.AccuracySec,               config_parse_sec,                   0,                             offsetof(Timer, accuracy_usec)
+Timer.RandomizedDelaySec,        config_parse_sec,                   0,                             offsetof(Timer, random_usec)
 Timer.Unit,                      config_parse_trigger_unit,          0,                             0
 m4_dnl
 Path.PathExists,                 config_parse_path_spec,             0,                             0

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,9 +17,9 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include "bus-type.h"
 #include "bus-gvariant.h"
 #include "bus-signature.h"
+#include "bus-type.h"
 
 int bus_gvariant_get_size(const char *signature) {
         const char *p;

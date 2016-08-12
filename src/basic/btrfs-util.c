@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,9 +17,20 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include <errno.h>
+#include <fcntl.h>
+#include <inttypes.h>
+#include <linux/loop.h>
+#include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
+#include <sys/ioctl.h>
 #include <sys/stat.h>
-#include <sys/vfs.h>
+#include <sys/statfs.h>
+#include <sys/sysmacros.h>
+#include <unistd.h>
+
 #ifdef HAVE_LINUX_BTRFS_H
 #include <linux/btrfs.h>
 #endif
@@ -32,13 +41,16 @@
 #include "copy.h"
 #include "fd-util.h"
 #include "fileio.h"
+#include "io-util.h"
 #include "macro.h"
 #include "missing.h"
 #include "path-util.h"
 #include "selinux-util.h"
 #include "smack-util.h"
+#include "sparse-endian.h"
 #include "stat-util.h"
 #include "string-util.h"
+#include "time-util.h"
 #include "util.h"
 
 /* WARNING: Be careful with file system ioctls! When we get an fd, we
@@ -105,7 +117,7 @@ int btrfs_is_filesystem(int fd) {
         return F_TYPE_EQUAL(sfs.f_type, BTRFS_SUPER_MAGIC);
 }
 
-int btrfs_is_subvol(int fd) {
+int btrfs_is_subvol_fd(int fd) {
         struct stat st;
 
         assert(fd >= 0);
@@ -119,6 +131,18 @@ int btrfs_is_subvol(int fd) {
                 return 0;
 
         return btrfs_is_filesystem(fd);
+}
+
+int btrfs_is_subvol(const char *path) {
+        _cleanup_close_ int fd = -1;
+
+        assert(path);
+
+        fd = open(path, O_RDONLY|O_NOCTTY|O_CLOEXEC|O_DIRECTORY);
+        if (fd < 0)
+                return -errno;
+
+        return btrfs_is_subvol_fd(fd);
 }
 
 int btrfs_subvol_make(const char *path) {
@@ -575,8 +599,12 @@ int btrfs_qgroup_get_quota_fd(int fd, uint64_t qgroupid, BtrfsQuotaInfo *ret) {
                 unsigned i;
 
                 args.key.nr_items = 256;
-                if (ioctl(fd, BTRFS_IOC_TREE_SEARCH, &args) < 0)
+                if (ioctl(fd, BTRFS_IOC_TREE_SEARCH, &args) < 0) {
+                        if (errno == ENOENT) /* quota tree is missing: quota disabled */
+                                break;
+
                         return -errno;
+                }
 
                 if (args.key.nr_items <= 0)
                         break;
@@ -884,6 +912,10 @@ int btrfs_resize_loopback_fd(int fd, uint64_t new_size, bool grow_only) {
         dev_t dev = 0;
         int r;
 
+        /* In contrast to btrfs quota ioctls ftruncate() cannot make sense of "infinity" or file sizes > 2^31 */
+        if (!FILE_SIZE_VALID(new_size))
+                return -EINVAL;
+
         /* btrfs cannot handle file systems < 16M, hence use this as minimum */
         if (new_size < 16*1024*1024)
                 new_size = 16*1024*1024;
@@ -1005,6 +1037,10 @@ static int qgroup_create_or_destroy(int fd, bool b, uint64_t qgroupid) {
 
         for (c = 0;; c++) {
                 if (ioctl(fd, BTRFS_IOC_QGROUP_CREATE, &args) < 0) {
+
+                        /* If quota is not enabled, we get EINVAL. Turn this into a recognizable error */
+                        if (errno == EINVAL)
+                                return -ENOPROTOOPT;
 
                         if (errno == EBUSY && c < 10) {
                                 (void) btrfs_quota_scan_wait(fd);
@@ -1335,8 +1371,12 @@ int btrfs_qgroup_copy_limits(int fd, uint64_t old_qgroupid, uint64_t new_qgroupi
                 unsigned i;
 
                 args.key.nr_items = 256;
-                if (ioctl(fd, BTRFS_IOC_TREE_SEARCH, &args) < 0)
+                if (ioctl(fd, BTRFS_IOC_TREE_SEARCH, &args) < 0) {
+                        if (errno == ENOENT) /* quota tree missing: quota is not enabled, hence nothing to copy */
+                                break;
+
                         return -errno;
+                }
 
                 if (args.key.nr_items <= 0)
                         break;
@@ -1411,12 +1451,16 @@ static int copy_quota_hierarchy(int fd, uint64_t old_subvol_id, uint64_t new_sub
                 return n_old_qgroups;
 
         r = btrfs_subvol_get_parent(fd, old_subvol_id, &old_parent_id);
-        if (r < 0)
+        if (r == -ENXIO)
+                /* We have no parent, hence nothing to copy. */
+                n_old_parent_qgroups = 0;
+        else if (r < 0)
                 return r;
-
-        n_old_parent_qgroups = btrfs_qgroup_find_parents(fd, old_parent_id, &old_parent_qgroups);
-        if (n_old_parent_qgroups < 0)
-                return n_old_parent_qgroups;
+        else {
+                n_old_parent_qgroups = btrfs_qgroup_find_parents(fd, old_parent_id, &old_parent_qgroups);
+                if (n_old_parent_qgroups < 0)
+                        return n_old_parent_qgroups;
+        }
 
         for (i = 0; i < n_old_qgroups; i++) {
                 uint64_t id;
@@ -1670,7 +1714,7 @@ int btrfs_subvol_snapshot_fd(int old_fd, const char *new_path, BtrfsSnapshotFlag
         assert(old_fd >= 0);
         assert(new_path);
 
-        r = btrfs_is_subvol(old_fd);
+        r = btrfs_is_subvol_fd(old_fd);
         if (r < 0)
                 return r;
         if (r == 0) {
@@ -1766,8 +1810,12 @@ int btrfs_qgroup_find_parents(int fd, uint64_t qgroupid, uint64_t **ret) {
                 unsigned i;
 
                 args.key.nr_items = 256;
-                if (ioctl(fd, BTRFS_IOC_TREE_SEARCH, &args) < 0)
+                if (ioctl(fd, BTRFS_IOC_TREE_SEARCH, &args) < 0) {
+                        if (errno == ENOENT) /* quota tree missing: quota is disabled */
+                                break;
+
                         return -errno;
+                }
 
                 if (args.key.nr_items <= 0)
                         break;
@@ -1852,7 +1900,7 @@ int btrfs_subvol_auto_qgroup_fd(int fd, uint64_t subvol_id, bool insert_intermed
          */
 
         if (subvol_id == 0) {
-                r = btrfs_is_subvol(fd);
+                r = btrfs_is_subvol_fd(fd);
                 if (r < 0)
                         return r;
                 if (!r)
@@ -1869,14 +1917,19 @@ int btrfs_subvol_auto_qgroup_fd(int fd, uint64_t subvol_id, bool insert_intermed
         if (n > 0) /* already parent qgroups set up, let's bail */
                 return 0;
 
-        r = btrfs_subvol_get_parent(fd, subvol_id, &parent_subvol);
-        if (r < 0)
-                return r;
-
         qgroups = mfree(qgroups);
-        n = btrfs_qgroup_find_parents(fd, parent_subvol, &qgroups);
-        if (n < 0)
-                return n;
+
+        r = btrfs_subvol_get_parent(fd, subvol_id, &parent_subvol);
+        if (r == -ENXIO)
+                /* No parent, hence no qgroup memberships */
+                n = 0;
+        else if (r < 0)
+                return r;
+        else {
+                n = btrfs_qgroup_find_parents(fd, parent_subvol, &qgroups);
+                if (n < 0)
+                        return n;
+        }
 
         if (insert_intermediary_qgroup) {
                 uint64_t lowest = 256, new_qgroupid;
@@ -2001,7 +2054,7 @@ int btrfs_subvol_get_parent(int fd, uint64_t subvol_id, uint64_t *ret) {
 
                 args.key.nr_items = 256;
                 if (ioctl(fd, BTRFS_IOC_TREE_SEARCH, &args) < 0)
-                        return -errno;
+                        return negative_errno();
 
                 if (args.key.nr_items <= 0)
                         break;

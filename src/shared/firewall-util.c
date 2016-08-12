@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,9 +17,22 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <sys/types.h>
+#warning "Temporary work-around for broken glibc vs. linux kernel header definitions"
+#warning "This really should be removed sooner rather than later, when this is fixed upstream"
+#define _NET_IF_H 1
+
+#include <alloca.h>
 #include <arpa/inet.h>
+#include <endian.h>
+#include <errno.h>
+#include <stddef.h>
+#include <string.h>
+#include <sys/socket.h>
 #include <net/if.h>
+#ifndef IFNAMSIZ
+#define IFNAMSIZ 16
+#endif
+#include <linux/if.h>
 #include <linux/netfilter_ipv4/ip_tables.h>
 #include <linux/netfilter/nf_nat.h>
 #include <linux/netfilter/xt_addrtype.h>
@@ -29,7 +40,9 @@
 
 #include "alloc-util.h"
 #include "firewall-util.h"
-#include "util.h"
+#include "in-addr-util.h"
+#include "macro.h"
+#include "socket-util.h"
 
 DEFINE_TRIVIAL_CLEANUP_FUNC(struct xtc_handle*, iptc_free);
 
@@ -45,10 +58,9 @@ static int entry_fill_basics(
 
         assert(entry);
 
-        if (out_interface && strlen(out_interface) >= IFNAMSIZ)
+        if (out_interface && !ifname_valid(out_interface))
                 return -EINVAL;
-
-        if (in_interface && strlen(in_interface) >= IFNAMSIZ)
+        if (in_interface && !ifname_valid(in_interface))
                 return -EINVAL;
 
         entry->ip.proto = protocol;

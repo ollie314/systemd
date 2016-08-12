@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -32,10 +30,10 @@
 #include "alloc-util.h"
 #include "log.h"
 #include "macro.h"
+#include "microhttpd-util.h"
 #include "string-util.h"
 #include "strv.h"
 #include "util.h"
-#include "microhttpd-util.h"
 
 void microhttpd_logger(void *arg, const char *fmt, va_list ap) {
         char *f;
@@ -62,7 +60,7 @@ static int mhd_respond_internal(struct MHD_Connection *connection,
         if (!response)
                 return MHD_NO;
 
-        log_debug("Queing response %u: %s", code, buffer);
+        log_debug("Queueing response %u: %s", code, buffer);
         MHD_add_response_header(response, "Content-Type", "text/plain");
         r = MHD_queue_response(connection, code, response);
         MHD_destroy_response(response);

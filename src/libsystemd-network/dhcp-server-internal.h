@@ -1,4 +1,4 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
+#pragma once
 
 /***
   This file is part of systemd.
@@ -20,16 +20,13 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#pragma once
-
-#include "sd-event.h"
 #include "sd-dhcp-server.h"
-
-#include "hashmap.h"
-#include "util.h"
-#include "log.h"
+#include "sd-event.h"
 
 #include "dhcp-internal.h"
+#include "hashmap.h"
+#include "log.h"
+#include "util.h"
 
 typedef struct DHCPClientId {
         size_t length;
@@ -66,6 +63,8 @@ struct sd_dhcp_server {
         struct in_addr *ntp, *dns;
         unsigned n_ntp, n_dns;
 
+        bool emit_router;
+
         Hashmap *leases_by_client_id;
         DHCPLease **bound_leases;
         DHCPLease invalid_lease;
@@ -84,9 +83,6 @@ typedef struct DHCPRequest {
         be32_t requested_ip;
         uint32_t lifetime;
 } DHCPRequest;
-
-DEFINE_TRIVIAL_CLEANUP_FUNC(sd_dhcp_server*, sd_dhcp_server_unref);
-#define _cleanup_dhcp_server_unref_ _cleanup_(sd_dhcp_server_unrefp)
 
 #define log_dhcp_server(client, fmt, ...) log_internal(LOG_DEBUG, 0, __FILE__, __LINE__, __func__, "DHCP SERVER: " fmt, ##__VA_ARGS__)
 

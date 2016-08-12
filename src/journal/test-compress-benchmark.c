@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd
 
@@ -27,7 +25,8 @@
 #include "string-util.h"
 #include "util.h"
 
-typedef int (compress_t)(const void *src, uint64_t src_size, void *dst, size_t *dst_size);
+typedef int (compress_t)(const void *src, uint64_t src_size, void *dst,
+                         size_t dst_alloc_size, size_t *dst_size);
 typedef int (decompress_t)(const void *src, uint64_t src_size,
                            void **dst, size_t *dst_alloc_size, size_t* dst_size, size_t dst_max);
 
@@ -106,13 +105,15 @@ static void test_compress_decompress(const char* label, const char* type,
                 int r;
 
                 size = permute(i);
+                if (size == 0)
+                        continue;
 
                 log_debug("%s %zu %zu", type, i, size);
 
                 memzero(buf, MIN(size + 1000, MAX_SIZE));
 
-                r = compress(text, size, buf, &j);
-                /* assume compression must be successful except for small inputs */
+                r = compress(text, size, buf, size, &j);
+                /* assume compression must be successful except for small or random inputs */
                 assert_se(r == 0 || (size < 2048 && r == -ENOBUFS) || streq(type, "random"));
 
                 /* check for overwrites */
@@ -163,7 +164,7 @@ int main(int argc, char *argv[]) {
                 arg_duration = x * USEC_PER_SEC;
         }
         if (argc == 3)
-                (void) safe_atolu(argv[2], &arg_start);
+                (void) safe_atozu(argv[2], &arg_start);
         else
                 arg_start = getpid();
 

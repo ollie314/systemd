@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -31,9 +29,11 @@
 #include "bus-util.h"
 #include "cgroup-util.h"
 #include "fd-util.h"
+#include "fileio.h"
 #include "formats-util.h"
 #include "hostname-util.h"
 #include "image-dbus.h"
+#include "io-util.h"
 #include "machine-dbus.h"
 #include "machine-image.h"
 #include "machine-pool.h"
@@ -199,8 +199,11 @@ static int method_get_machine_by_pid(sd_bus_message *message, void *userdata, sd
         if (r < 0)
                 return r;
 
+        if (pid < 0)
+                return -EINVAL;
+
         if (pid == 0) {
-                _cleanup_bus_creds_unref_ sd_bus_creds *creds = NULL;
+                _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
 
                 r = sd_bus_query_sender_creds(message, SD_BUS_CREDS_PID, &creds);
                 if (r < 0)
@@ -225,7 +228,7 @@ static int method_get_machine_by_pid(sd_bus_message *message, void *userdata, sd
 }
 
 static int method_list_machines(sd_bus_message *message, void *userdata, sd_bus_error *error) {
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         Manager *m = userdata;
         Machine *machine;
         Iterator i;
@@ -330,7 +333,7 @@ static int method_create_or_register_machine(Manager *manager, sd_bus_message *m
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Root directory must be empty or an absolute path");
 
         if (leader == 0) {
-                _cleanup_bus_creds_unref_ sd_bus_creds *creds = NULL;
+                _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
 
                 r = sd_bus_query_sender_creds(message, SD_BUS_CREDS_PID, &creds);
                 if (r < 0)
@@ -551,7 +554,7 @@ static int method_get_machine_os_release(sd_bus_message *message, void *userdata
 }
 
 static int method_list_images(sd_bus_message *message, void *userdata, sd_bus_error *error) {
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         _cleanup_(image_hashmap_freep) Hashmap *images = NULL;
         Manager *m = userdata;
         Image *image;
@@ -704,6 +707,26 @@ static int method_copy_machine(sd_bus_message *message, void *userdata, sd_bus_e
         return bus_machine_method_copy(message, machine, error);
 }
 
+static int method_open_machine_root_directory(sd_bus_message *message, void *userdata, sd_bus_error *error) {
+        Manager *m = userdata;
+        Machine *machine;
+        const char *name;
+        int r;
+
+        assert(message);
+        assert(m);
+
+        r = sd_bus_message_read(message, "s", &name);
+        if (r < 0)
+                return r;
+
+        machine = hashmap_get(m->machines, name);
+        if (!machine)
+                return sd_bus_error_setf(error, BUS_ERROR_NO_SUCH_MACHINE, "No machine '%s' known", name);
+
+        return bus_machine_method_open_root_directory(message, machine, error);
+}
+
 static int method_remove_image(sd_bus_message *message, void *userdata, sd_bus_error *error) {
         _cleanup_(image_unrefp) Image* i = NULL;
         const char *name;
@@ -800,6 +823,236 @@ static int method_mark_image_read_only(sd_bus_message *message, void *userdata, 
         return bus_image_method_mark_read_only(message, i, error);
 }
 
+static int clean_pool_done(Operation *operation, int ret, sd_bus_error *error) {
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
+        _cleanup_fclose_ FILE *f = NULL;
+        bool success;
+        size_t n;
+        int r;
+
+        assert(operation);
+        assert(operation->extra_fd >= 0);
+
+        if (lseek(operation->extra_fd, 0, SEEK_SET) == (off_t) -1)
+                return -errno;
+
+        f = fdopen(operation->extra_fd, "re");
+        if (!f)
+                return -errno;
+
+        operation->extra_fd = -1;
+
+        /* The resulting temporary file starts with a boolean value that indicates success or not. */
+        errno = 0;
+        n = fread(&success, 1, sizeof(success), f);
+        if (n != sizeof(success))
+                return ret < 0 ? ret : (errno != 0 ? -errno : -EIO);
+
+        if (ret < 0) {
+                _cleanup_free_ char *name = NULL;
+
+                /* The clean-up operation failed. In this case the resulting temporary file should contain a boolean
+                 * set to false followed by the name of the failed image. Let's try to read this and use it for the
+                 * error message. If we can't read it, don't mind, and return the naked error. */
+
+                if (success) /* The resulting temporary file could not be updated, ignore it. */
+                        return ret;
+
+                r = read_nul_string(f, &name);
+                if (r < 0 || isempty(name)) /* Same here... */
+                        return ret;
+
+                return sd_bus_error_set_errnof(error, ret, "Failed to remove image %s: %m", name);
+        }
+
+        assert(success);
+
+        r = sd_bus_message_new_method_return(operation->message, &reply);
+        if (r < 0)
+                return r;
+
+        r = sd_bus_message_open_container(reply, 'a', "(st)");
+        if (r < 0)
+                return r;
+
+        /* On success the resulting temporary file will contain a list of image names that were removed followed by
+         * their size on disk. Let's read that and turn it into a bus message. */
+        for (;;) {
+                _cleanup_free_ char *name = NULL;
+                uint64_t size;
+
+                r = read_nul_string(f, &name);
+                if (r < 0)
+                        return r;
+                if (isempty(name)) /* reached the end */
+                        break;
+
+                errno = 0;
+                n = fread(&size, 1, sizeof(size), f);
+                if (n != sizeof(size))
+                        return errno != 0 ? -errno : -EIO;
+
+                r = sd_bus_message_append(reply, "(st)", name, size);
+                if (r < 0)
+                        return r;
+        }
+
+        r = sd_bus_message_close_container(reply);
+        if (r < 0)
+                return r;
+
+        return sd_bus_send(NULL, reply, NULL);
+}
+
+static int method_clean_pool(sd_bus_message *message, void *userdata, sd_bus_error *error) {
+        enum {
+                REMOVE_ALL,
+                REMOVE_HIDDEN,
+        } mode;
+
+        _cleanup_close_pair_ int errno_pipe_fd[2] = { -1, -1 };
+        _cleanup_close_ int result_fd = -1;
+        Manager *m = userdata;
+        Operation *operation;
+        const char *mm;
+        pid_t child;
+        int r;
+
+        assert(message);
+
+        if (m->n_operations >= OPERATIONS_MAX)
+                return sd_bus_error_setf(error, SD_BUS_ERROR_LIMITS_EXCEEDED, "Too many ongoing operations.");
+
+        r = sd_bus_message_read(message, "s", &mm);
+        if (r < 0)
+                return r;
+
+        if (streq(mm, "all"))
+                mode = REMOVE_ALL;
+        else if (streq(mm, "hidden"))
+                mode = REMOVE_HIDDEN;
+        else
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Unknown mode '%s'.", mm);
+
+        r = bus_verify_polkit_async(
+                        message,
+                        CAP_SYS_ADMIN,
+                        "org.freedesktop.machine1.manage-machines",
+                        NULL,
+                        false,
+                        UID_INVALID,
+                        &m->polkit_registry,
+                        error);
+        if (r < 0)
+                return r;
+        if (r == 0)
+                return 1; /* Will call us back */
+
+        if (pipe2(errno_pipe_fd, O_CLOEXEC|O_NONBLOCK) < 0)
+                return sd_bus_error_set_errnof(error, errno, "Failed to create pipe: %m");
+
+        /* Create a temporary file we can dump information about deleted images into. We use a temporary file for this
+         * instead of a pipe or so, since this might grow quit large in theory and we don't want to process this
+         * continuously */
+        result_fd = open_tmpfile_unlinkable(NULL, O_RDWR|O_CLOEXEC);
+        if (result_fd < 0)
+                return -errno;
+
+        /* This might be a slow operation, run it asynchronously in a background process */
+        child = fork();
+        if (child < 0)
+                return sd_bus_error_set_errnof(error, errno, "Failed to fork(): %m");
+
+        if (child == 0) {
+                _cleanup_(image_hashmap_freep) Hashmap *images = NULL;
+                bool success = true;
+                Image *image;
+                Iterator i;
+                ssize_t l;
+
+                errno_pipe_fd[0] = safe_close(errno_pipe_fd[0]);
+
+                images = hashmap_new(&string_hash_ops);
+                if (!images) {
+                        r = -ENOMEM;
+                        goto child_fail;
+                }
+
+                r = image_discover(images);
+                if (r < 0)
+                        goto child_fail;
+
+                l = write(result_fd, &success, sizeof(success));
+                if (l < 0) {
+                        r = -errno;
+                        goto child_fail;
+                }
+
+                HASHMAP_FOREACH(image, images, i) {
+
+                        /* We can't remove vendor images (i.e. those in /usr) */
+                        if (IMAGE_IS_VENDOR(image))
+                                continue;
+
+                        if (IMAGE_IS_HOST(image))
+                                continue;
+
+                        if (mode == REMOVE_HIDDEN && !IMAGE_IS_HIDDEN(image))
+                                continue;
+
+                        r = image_remove(image);
+                        if (r == -EBUSY) /* keep images that are currently being used. */
+                                continue;
+                        if (r < 0) {
+                                /* If the operation failed, let's override everything we wrote, and instead write there at which image we failed. */
+                                success = false;
+                                (void) ftruncate(result_fd, 0);
+                                (void) lseek(result_fd, 0, SEEK_SET);
+                                (void) write(result_fd, &success, sizeof(success));
+                                (void) write(result_fd, image->name, strlen(image->name)+1);
+                                goto child_fail;
+                        }
+
+                        l = write(result_fd, image->name, strlen(image->name)+1);
+                        if (l < 0) {
+                                r = -errno;
+                                goto child_fail;
+                        }
+
+                        l = write(result_fd, &image->usage_exclusive, sizeof(image->usage_exclusive));
+                        if (l < 0) {
+                                r = -errno;
+                                goto child_fail;
+                        }
+                }
+
+                result_fd = safe_close(result_fd);
+                _exit(EXIT_SUCCESS);
+
+        child_fail:
+                (void) write(errno_pipe_fd[1], &r, sizeof(r));
+                _exit(EXIT_FAILURE);
+        }
+
+        errno_pipe_fd[1] = safe_close(errno_pipe_fd[1]);
+
+        /* The clean-up might take a while, hence install a watch on the child and return */
+
+        r = operation_new(m, NULL, child, message, errno_pipe_fd[0], &operation);
+        if (r < 0) {
+                (void) sigkill_wait(child);
+                return r;
+        }
+
+        operation->extra_fd = result_fd;
+        operation->done = clean_pool_done;
+
+        result_fd = -1;
+        errno_pipe_fd[0] = -1;
+
+        return 1;
+}
+
 static int method_set_pool_limit(sd_bus_message *message, void *userdata, sd_bus_error *error) {
         Manager *m = userdata;
         uint64_t limit;
@@ -810,6 +1063,8 @@ static int method_set_pool_limit(sd_bus_message *message, void *userdata, sd_bus
         r = sd_bus_message_read(message, "t", &limit);
         if (r < 0)
                 return r;
+        if (!FILE_SIZE_VALID_OR_INFINITY(limit))
+                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "New limit out of range");
 
         r = bus_verify_polkit_async(
                         message,
@@ -830,11 +1085,14 @@ static int method_set_pool_limit(sd_bus_message *message, void *userdata, sd_bus
         if (r < 0)
                 return r;
 
-        r = btrfs_resize_loopback("/var/lib/machines", limit, false);
-        if (r == -ENOTTY)
-                return sd_bus_error_setf(error, SD_BUS_ERROR_NOT_SUPPORTED, "Quota is only supported on btrfs.");
-        if (r < 0 && r != -ENODEV) /* ignore ENODEV, as that's what is returned if the file system is not on loopback */
-                return sd_bus_error_set_errnof(error, r, "Failed to adjust loopback limit: %m");
+        /* Resize the backing loopback device, if there is one, except if we asked to drop any limit */
+        if (limit != (uint64_t) -1) {
+                r = btrfs_resize_loopback("/var/lib/machines", limit, false);
+                if (r == -ENOTTY)
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_NOT_SUPPORTED, "Quota is only supported on btrfs.");
+                if (r < 0 && r != -ENODEV) /* ignore ENODEV, as that's what is returned if the file system is not on loopback */
+                        return sd_bus_error_set_errnof(error, r, "Failed to adjust loopback limit: %m");
+        }
 
         (void) btrfs_qgroup_set_limit("/var/lib/machines", 0, limit);
 
@@ -907,7 +1165,7 @@ static int method_map_from_machine_user(sd_bus_message *message, void *userdata,
                 if (k < 0 && feof(f))
                         break;
                 if (k != 3) {
-                        if (ferror(f) && errno != 0)
+                        if (ferror(f) && errno > 0)
                                 return -errno;
 
                         return -EIO;
@@ -965,7 +1223,7 @@ static int method_map_to_machine_user(sd_bus_message *message, void *userdata, s
                         if (k < 0 && feof(f))
                                 break;
                         if (k != 3) {
-                                if (ferror(f) && errno != 0)
+                                if (ferror(f) && errno > 0)
                                         return -errno;
 
                                 return -EIO;
@@ -1025,7 +1283,7 @@ static int method_map_from_machine_group(sd_bus_message *message, void *groupdat
                 if (k < 0 && feof(f))
                         break;
                 if (k != 3) {
-                        if (ferror(f) && errno != 0)
+                        if (ferror(f) && errno > 0)
                                 return -errno;
 
                         return -EIO;
@@ -1083,7 +1341,7 @@ static int method_map_to_machine_group(sd_bus_message *message, void *groupdata,
                         if (k < 0 && feof(f))
                                 break;
                         if (k != 3) {
-                                if (ferror(f) && errno != 0)
+                                if (ferror(f) && errno > 0)
                                         return -errno;
 
                                 return -EIO;
@@ -1131,12 +1389,14 @@ const sd_bus_vtable manager_vtable[] = {
         SD_BUS_METHOD("BindMountMachine", "sssbb", NULL, method_bind_mount_machine, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("CopyFromMachine", "sss", NULL, method_copy_machine, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("CopyToMachine", "sss", NULL, method_copy_machine, SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD("OpenMachineRootDirectory", "s", "h", method_open_machine_root_directory, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("RemoveImage", "s", NULL, method_remove_image, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("RenameImage", "ss", NULL, method_rename_image, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("CloneImage", "ssb", NULL, method_clone_image, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("MarkImageReadOnly", "sb", NULL, method_mark_image_read_only, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("SetPoolLimit", "t", NULL, method_set_pool_limit, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("SetImageLimit", "st", NULL, method_set_image_limit, SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD("CleanPool", "s", "a(st)", method_clean_pool, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("MapFromMachineUser", "su", "u", method_map_from_machine_user, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("MapToMachineUser", "u", "sou", method_map_to_machine_user, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("MapFromMachineGroup", "su", "u", method_map_from_machine_group, SD_BUS_VTABLE_UNPRIVILEGED),
@@ -1173,7 +1433,7 @@ int match_job_removed(sd_bus_message *message, void *userdata, sd_bus_error *err
                         if (streq(result, "done"))
                                 machine_send_create_reply(machine, NULL);
                         else {
-                                _cleanup_bus_error_free_ sd_bus_error e = SD_BUS_ERROR_NULL;
+                                _cleanup_(sd_bus_error_free) sd_bus_error e = SD_BUS_ERROR_NULL;
 
                                 sd_bus_error_setf(&e, BUS_ERROR_JOB_FAILED, "Start job for unit %s failed with '%s'", unit, result);
 
@@ -1205,7 +1465,7 @@ int match_properties_changed(sd_bus_message *message, void *userdata, sd_bus_err
         r = unit_name_from_dbus_path(path, &unit);
         if (r == -EINVAL) /* not for a unit */
                 return 0;
-        if (r < 0){
+        if (r < 0) {
                 log_oom();
                 return 0;
         }
@@ -1277,7 +1537,7 @@ int manager_start_scope(
                 sd_bus_error *error,
                 char **job) {
 
-        _cleanup_bus_message_unref_ sd_bus_message *m = NULL, *reply = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL, *reply = NULL;
         int r;
 
         assert(manager);
@@ -1322,6 +1582,10 @@ int manager_start_scope(
         if (r < 0)
                 return r;
 
+        r = sd_bus_message_append(m, "(sv)", "TasksMax", "t", UINT64_C(16384));
+        if (r < 0)
+                return bus_log_create_error(r);
+
         if (more_properties) {
                 r = sd_bus_message_copy(m, more_properties, true);
                 if (r < 0)
@@ -1359,7 +1623,7 @@ int manager_start_scope(
 }
 
 int manager_stop_unit(Manager *manager, const char *unit, sd_bus_error *error, char **job) {
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         int r;
 
         assert(manager);
@@ -1422,8 +1686,8 @@ int manager_kill_unit(Manager *manager, const char *unit, int signo, sd_bus_erro
 }
 
 int manager_unit_is_active(Manager *manager, const char *unit) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         _cleanup_free_ char *path = NULL;
         const char *state;
         int r;
@@ -1464,8 +1728,8 @@ int manager_unit_is_active(Manager *manager, const char *unit) {
 }
 
 int manager_job_is_active(Manager *manager, const char *path) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_bus_message_unref_ sd_bus_message *reply = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *reply = NULL;
         int r;
 
         assert(manager);
@@ -1505,7 +1769,7 @@ int manager_get_machine_by_pid(Manager *m, pid_t pid, Machine **machine) {
         assert(pid >= 1);
         assert(machine);
 
-        mm = hashmap_get(m->machine_leaders, UINT_TO_PTR(pid));
+        mm = hashmap_get(m->machine_leaders, PID_TO_PTR(pid));
         if (!mm) {
                 _cleanup_free_ char *unit = NULL;
 

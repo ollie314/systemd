@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -25,7 +23,7 @@
 #include "sd-dhcp6-client.h"
 
 #include "network-internal.h"
-#include "networkd-link.h"
+#include "networkd.h"
 
 static int dhcp6_lease_address_acquired(sd_dhcp6_client *client, Link *link);
 
@@ -62,10 +60,15 @@ static int dhcp6_address_handler(sd_netlink *rtnl, sd_netlink_message *m,
         return 1;
 }
 
-static int dhcp6_address_change(Link *link, struct in6_addr *ip6_addr,
-                                uint32_t lifetime_preferred, uint32_t lifetime_valid) {
-        int r;
+static int dhcp6_address_change(
+                Link *link,
+                struct in6_addr *ip6_addr,
+                uint32_t lifetime_preferred,
+                uint32_t lifetime_valid) {
+
         _cleanup_address_free_ Address *addr = NULL;
+        char buffer[INET6_ADDRSTRLEN];
+        int r;
 
         r = address_new(&addr);
         if (r < 0)
@@ -81,8 +84,8 @@ static int dhcp6_address_change(Link *link, struct in6_addr *ip6_addr,
         addr->cinfo.ifa_valid = lifetime_valid;
 
         log_link_info(link,
-                      "DHCPv6 address "SD_NDISC_ADDRESS_FORMAT_STR"/%d timeout preferred %d valid %d",
-                      SD_NDISC_ADDRESS_FORMAT_VAL(addr->in_addr.in6),
+                      "DHCPv6 address %s/%d timeout preferred %d valid %d",
+                      inet_ntop(AF_INET6, &addr->in_addr.in6, buffer, sizeof(buffer)),
                       addr->prefixlen, lifetime_preferred, lifetime_valid);
 
         r = address_configure(addr, link, dhcp6_address_handler, true);
@@ -105,8 +108,8 @@ static int dhcp6_lease_address_acquired(sd_dhcp6_client *client, Link *link) {
         sd_dhcp6_lease_reset_address_iter(lease);
 
         while (sd_dhcp6_lease_get_address(lease, &ip6_addr,
-                                                &lifetime_preferred,
-                                                &lifetime_valid) >= 0) {
+                                                 &lifetime_preferred,
+                                                 &lifetime_valid) >= 0) {
 
                 r = dhcp6_address_change(link, &ip6_addr, lifetime_preferred, lifetime_valid);
                 if (r < 0)
@@ -131,7 +134,8 @@ static void dhcp6_handler(sd_dhcp6_client *client, int event, void *userdata) {
         case SD_DHCP6_CLIENT_EVENT_STOP:
         case SD_DHCP6_CLIENT_EVENT_RESEND_EXPIRE:
         case SD_DHCP6_CLIENT_EVENT_RETRANS_MAX:
-                log_link_warning(link, "DHCPv6 lease lost");
+                if (sd_dhcp6_client_get_lease(client, NULL) >= 0)
+                        log_link_warning(link, "DHCPv6 lease lost");
 
                 link->dhcp6_configured = false;
                 break;
@@ -165,83 +169,97 @@ static void dhcp6_handler(sd_dhcp6_client *client, int event, void *userdata) {
         link_check_ready(link);
 }
 
-int dhcp6_configure(Link *link, bool inf_req) {
-        int r, information_request;
+int dhcp6_request_address(Link *link, int ir) {
+        int r, inf_req;
+        bool running;
 
-        assert_return(link, -EINVAL);
+        assert(link);
+        assert(link->dhcp6_client);
+        assert(in_addr_is_link_local(AF_INET6, (const union in_addr_union*)&link->ipv6ll_address) > 0);
 
-        link->dhcp6_configured = false;
-
-        if (link->dhcp6_client) {
-                r = sd_dhcp6_client_get_information_request(link->dhcp6_client, &information_request);
-                if (r < 0) {
-                        log_link_warning_errno(link, r, "Could not get DHCPv6 Information request setting: %m");
-                        goto error;
-                }
-
-                if (information_request && !inf_req) {
-                        r = sd_dhcp6_client_stop(link->dhcp6_client);
-                        if (r < 0) {
-                                log_link_warning_errno(link, r, "Could not stop DHCPv6 while setting Managed mode: %m");
-                                goto error;
-                        }
-
-                        r = sd_dhcp6_client_set_information_request(link->dhcp6_client, false);
-                        if (r < 0) {
-                                log_link_warning_errno(link, r, "Could not unset DHCPv6 Information request: %m");
-                                goto error;
-                        }
-
-                }
-
-                r = sd_dhcp6_client_start(link->dhcp6_client);
-                if (r < 0 && r != -EALREADY) {
-                        log_link_warning_errno(link, r, "Could not restart DHCPv6: %m");
-                        goto error;
-                }
-
-                if (r == -EALREADY)
-                        link->dhcp6_configured = true;
-
+        r = sd_dhcp6_client_is_running(link->dhcp6_client);
+        if (r < 0)
                 return r;
+        else
+                running = !!r;
+
+        if (running) {
+                r = sd_dhcp6_client_get_information_request(link->dhcp6_client, &inf_req);
+                if (r < 0)
+                        return r;
+
+                if (inf_req == ir)
+                        return 0;
+
+                r = sd_dhcp6_client_stop(link->dhcp6_client);
+                if (r < 0)
+                        return r;
+        } else {
+                r = sd_dhcp6_client_set_local_address(link->dhcp6_client, &link->ipv6ll_address);
+                if (r < 0)
+                        return r;
         }
 
-        r = sd_dhcp6_client_new(&link->dhcp6_client);
+        r = sd_dhcp6_client_set_information_request(link->dhcp6_client, ir);
+        if (r < 0)
+                return r;
+
+        r = sd_dhcp6_client_start(link->dhcp6_client);
+        if (r < 0)
+                return r;
+
+        return 0;
+}
+
+int dhcp6_configure(Link *link) {
+        sd_dhcp6_client *client = NULL;
+        int r;
+        const DUID *duid;
+
+        assert(link);
+
+        if (link->dhcp6_client)
+                return 0;
+
+        r = sd_dhcp6_client_new(&client);
+        if (r < 0)
+                return r;
+
+        r = sd_dhcp6_client_attach_event(client, NULL, 0);
         if (r < 0)
                 goto error;
 
-        r = sd_dhcp6_client_attach_event(link->dhcp6_client, NULL, 0);
-        if (r < 0)
-                goto error;
-
-        r = sd_dhcp6_client_set_mac(link->dhcp6_client,
+        r = sd_dhcp6_client_set_mac(client,
                                     (const uint8_t *) &link->mac,
                                     sizeof (link->mac), ARPHRD_ETHER);
         if (r < 0)
                 goto error;
 
-        r = sd_dhcp6_client_set_index(link->dhcp6_client, link->ifindex);
+        r = sd_dhcp6_client_set_iaid(client, link->network->iaid);
         if (r < 0)
                 goto error;
 
-        r = sd_dhcp6_client_set_callback(link->dhcp6_client, dhcp6_handler,
-                                         link);
+        duid = link_duid(link);
+        r = sd_dhcp6_client_set_duid(client,
+                                     duid->type,
+                                     duid->raw_data_len > 0 ? duid->raw_data : NULL,
+                                     duid->raw_data_len);
         if (r < 0)
                 goto error;
 
-        if (inf_req) {
-                r = sd_dhcp6_client_set_information_request(link->dhcp6_client, true);
-                if (r < 0)
-                        goto error;
-        }
-
-        r = sd_dhcp6_client_start(link->dhcp6_client);
+        r = sd_dhcp6_client_set_ifindex(client, link->ifindex);
         if (r < 0)
                 goto error;
 
-        return r;
+        r = sd_dhcp6_client_set_callback(client, dhcp6_handler, link);
+        if (r < 0)
+                goto error;
 
- error:
-        link->dhcp6_client = sd_dhcp6_client_unref(link->dhcp6_client);
+        link->dhcp6_client = client;
+
+        return 0;
+
+error:
+        sd_dhcp6_client_unref(client);
         return r;
 }

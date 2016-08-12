@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,8 +17,8 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
  ***/
 
-#include <resolv.h>
 #include <netinet/in.h>
+#include <resolv.h>
 
 #include "fd-util.h"
 #include "resolved-llmnr.h"
@@ -47,7 +45,7 @@ int manager_llmnr_start(Manager *m) {
 
         assert(m);
 
-        if (m->llmnr_support == SUPPORT_NO)
+        if (m->llmnr_support == RESOLVE_SUPPORT_NO)
                 return 0;
 
         r = manager_llmnr_ipv4_udp_fd(m);
@@ -80,7 +78,7 @@ int manager_llmnr_start(Manager *m) {
 
 eaddrinuse:
         log_warning("There appears to be another LLMNR responder running. Turning off LLMNR support.");
-        m->llmnr_support = SUPPORT_NO;
+        m->llmnr_support = RESOLVE_SUPPORT_NO;
         manager_llmnr_stop(m);
 
         return 0;
@@ -93,18 +91,19 @@ static int on_llmnr_packet(sd_event_source *s, int fd, uint32_t revents, void *u
         DnsScope *scope;
         int r;
 
+        assert(s);
+        assert(fd >= 0);
+        assert(m);
+
         r = manager_recv(m, fd, DNS_PROTOCOL_LLMNR, &p);
         if (r <= 0)
                 return r;
 
         scope = manager_find_scope(m, p);
-        if (!scope) {
+        if (!scope)
                 log_warning("Got LLMNR UDP packet on unknown scope. Ignoring.");
-                return 0;
-        }
-
-        if (dns_packet_validate_reply(p) > 0) {
-                log_debug("Got LLMNR reply packet for id %u", DNS_PACKET_ID(p));
+        else if (dns_packet_validate_reply(p) > 0) {
+                log_debug("Got LLMNR UDP reply packet for id %u", DNS_PACKET_ID(p));
 
                 dns_scope_check_conflicts(scope, p);
 
@@ -113,11 +112,11 @@ static int on_llmnr_packet(sd_event_source *s, int fd, uint32_t revents, void *u
                         dns_transaction_process_reply(t, p);
 
         } else if (dns_packet_validate_query(p) > 0)  {
-                log_debug("Got LLMNR query packet for id %u", DNS_PACKET_ID(p));
+                log_debug("Got LLMNR UDP query packet for id %u", DNS_PACKET_ID(p));
 
                 dns_scope_process_query(scope, NULL, p);
         } else
-                log_debug("Invalid LLMNR UDP packet.");
+                log_debug("Invalid LLMNR UDP packet, ignoring.");
 
         return 0;
 }
@@ -193,6 +192,8 @@ int manager_llmnr_ipv4_udp_fd(Manager *m) {
         if (r < 0)
                 goto fail;
 
+        (void) sd_event_source_set_description(m->llmnr_ipv4_udp_event_source, "llmnr-ipv4-udp");
+
         return m->llmnr_ipv4_udp_fd;
 
 fail:
@@ -267,10 +268,10 @@ int manager_llmnr_ipv6_udp_fd(Manager *m) {
         }
 
         r = sd_event_add_io(m->event, &m->llmnr_ipv6_udp_event_source, m->llmnr_ipv6_udp_fd, EPOLLIN, on_llmnr_packet, m);
-        if (r < 0)  {
-                r = -errno;
+        if (r < 0)
                 goto fail;
-        }
+
+        (void) sd_event_source_set_description(m->llmnr_ipv6_udp_event_source, "llmnr-ipv6-udp");
 
         return m->llmnr_ipv6_udp_fd;
 
@@ -283,25 +284,19 @@ static int on_llmnr_stream_packet(DnsStream *s) {
         DnsScope *scope;
 
         assert(s);
+        assert(s->read_packet);
 
         scope = manager_find_scope(s->manager, s->read_packet);
-        if (!scope) {
-                log_warning("Got LLMNR TCP packet on unknown scope. Ignroing.");
-                return 0;
-        }
-
-        if (dns_packet_validate_query(s->read_packet) > 0) {
-                log_debug("Got query packet for id %u", DNS_PACKET_ID(s->read_packet));
+        if (!scope)
+                log_warning("Got LLMNR TCP packet on unknown scope. Ignoring.");
+        else if (dns_packet_validate_query(s->read_packet) > 0) {
+                log_debug("Got LLMNR TCP query packet for id %u", DNS_PACKET_ID(s->read_packet));
 
                 dns_scope_process_query(scope, s, s->read_packet);
-
-                /* If no reply packet was set, we free the stream */
-                if (s->write_packet)
-                        return 0;
         } else
-                log_debug("Invalid LLMNR TCP packet.");
+                log_debug("Invalid LLMNR TCP packet, ignoring.");
 
-        dns_stream_free(s);
+        dns_stream_unref(s);
         return 0;
 }
 
@@ -393,6 +388,8 @@ int manager_llmnr_ipv4_tcp_fd(Manager *m) {
         if (r < 0)
                 goto fail;
 
+        (void) sd_event_source_set_description(m->llmnr_ipv4_tcp_event_source, "llmnr-ipv4-tcp");
+
         return m->llmnr_ipv4_tcp_fd;
 
 fail:
@@ -461,10 +458,10 @@ int manager_llmnr_ipv6_tcp_fd(Manager *m) {
         }
 
         r = sd_event_add_io(m->event, &m->llmnr_ipv6_tcp_event_source, m->llmnr_ipv6_tcp_fd, EPOLLIN, on_llmnr_stream, m);
-        if (r < 0)  {
-                r = -errno;
+        if (r < 0)
                 goto fail;
-        }
+
+        (void) sd_event_source_set_description(m->llmnr_ipv6_tcp_event_source, "llmnr-ipv6-tcp");
 
         return m->llmnr_ipv6_tcp_fd;
 

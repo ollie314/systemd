@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -29,11 +27,12 @@
 
 #include "sd-id128.h"
 
-#include "sparse-endian.h"
+#include "hashmap.h"
 #include "journal-def.h"
 #include "macro.h"
 #include "mmap-cache.h"
-#include "hashmap.h"
+#include "sd-event.h"
+#include "sparse-endian.h"
 
 typedef struct JournalMetrics {
         /* For all these: -1 means "pick automatically", and 0 means "no limit enforced" */
@@ -64,6 +63,16 @@ typedef enum LocationType {
         LOCATION_SEEK
 } LocationType;
 
+typedef enum OfflineState {
+        OFFLINE_JOINED,
+        OFFLINE_SYNCING,
+        OFFLINE_OFFLINING,
+        OFFLINE_CANCEL,
+        OFFLINE_AGAIN_FROM_SYNCING,
+        OFFLINE_AGAIN_FROM_OFFLINING,
+        OFFLINE_DONE
+} OfflineState;
+
 typedef struct JournalFile {
         int fd;
 
@@ -76,6 +85,8 @@ typedef struct JournalFile {
         bool compress_lz4:1;
         bool seal:1;
         bool defrag_on_close:1;
+        bool close_fd:1;
+        bool archive:1;
 
         bool tail_entry_monotonic_valid:1;
 
@@ -101,7 +112,13 @@ typedef struct JournalFile {
         JournalMetrics metrics;
         MMapCache *mmap;
 
+        sd_event_source *post_change_timer;
+        usec_t post_change_timer_period;
+
         OrderedHashmap *chain_cache;
+
+        pthread_t offline_thread;
+        volatile OfflineState offline_state;
 
 #if defined(HAVE_XZ) || defined(HAVE_LZ4)
         void *compress_buffer;
@@ -127,6 +144,7 @@ typedef struct JournalFile {
 } JournalFile;
 
 int journal_file_open(
+                int fd,
                 const char *fname,
                 int flags,
                 mode_t mode,
@@ -134,11 +152,14 @@ int journal_file_open(
                 bool seal,
                 JournalMetrics *metrics,
                 MMapCache *mmap_cache,
+                Set *deferred_closes,
                 JournalFile *template,
                 JournalFile **ret);
 
-int journal_file_set_offline(JournalFile *f);
+int journal_file_set_offline(JournalFile *f, bool wait);
+bool journal_file_is_offlining(JournalFile *f);
 JournalFile* journal_file_close(JournalFile *j);
+void journal_file_close_set(Set *s);
 
 int journal_file_open_reliably(
                 const char *fname,
@@ -148,6 +169,7 @@ int journal_file_open_reliably(
                 bool seal,
                 JournalMetrics *metrics,
                 MMapCache *mmap_cache,
+                Set *deferred_closes,
                 JournalFile *template,
                 JournalFile **ret);
 
@@ -221,9 +243,10 @@ int journal_file_copy_entry(JournalFile *from, JournalFile *to, Object *o, uint6
 void journal_file_dump(JournalFile *f);
 void journal_file_print_header(JournalFile *f);
 
-int journal_file_rotate(JournalFile **f, bool compress, bool seal);
+int journal_file_rotate(JournalFile **f, bool compress, bool seal, Set *deferred_closes);
 
 void journal_file_post_change(JournalFile *f);
+int journal_file_enable_post_change_timer(JournalFile *f, sd_event *e, usec_t t);
 
 void journal_reset_metrics(JournalMetrics *m);
 void journal_default_metrics(JournalMetrics *m, int fd);

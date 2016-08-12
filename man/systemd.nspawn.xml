@@ -73,11 +73,11 @@
     to specific containers. The syntax of these files is inspired by
     <filename>.desktop</filename> files following the <ulink
     url="http://standards.freedesktop.org/desktop-entry-spec/latest/">XDG
-    Desktop Entry Specification</ulink>, which are in turn inspired by
+    Desktop Entry Specification</ulink>, which in turn are inspired by
     Microsoft Windows <filename>.ini</filename> files.</para>
 
     <para>Boolean arguments used in these settings files can be
-    written in various formats. For positive settings the strings
+    written in various formats. For positive settings, the strings
     <option>1</option>, <option>yes</option>, <option>true</option>
     and <option>on</option> are equivalent. For negative settings, the
     strings <option>0</option>, <option>no</option>,
@@ -102,27 +102,27 @@
     directory or image file name. This file is first searched in
     <filename>/etc/systemd/nspawn/</filename> and
     <filename>/run/systemd/nspawn/</filename>. If found in these
-    directories its settings are read and all of them take full effect
+    directories, its settings are read and all of them take full effect
     (but are possibly overridden by corresponding command line
-    arguments). If not found the file will then be searched next to
+    arguments). If not found, the file will then be searched next to
     the image file or in the immediate parent of the root directory of
-    the container. If the file is found there only a subset of the
+    the container. If the file is found there, only a subset of the
     settings will take effect however. All settings that possibly
     elevate privileges or grant additional access to resources of the
     host (such as files or directories) are ignored. To which options
     this applies is documented below.</para>
 
-    <para>Persistent settings file created and maintained by the
+    <para>Persistent settings files created and maintained by the
     administrator (and thus trusted) should be placed in
     <filename>/etc/systemd/nspawn/</filename>, while automatically
     downloaded (and thus potentially untrusted) settings files are
     placed in <filename>/var/lib/machines/</filename> instead (next to
     the container images), where their security impact is limited. In
     order to add privileged settings to <filename>.nspawn</filename>
-    files acquired from the image vendor it is recommended to copy the
+    files acquired from the image vendor, it is recommended to copy the
     settings files into <filename>/etc/systemd/nspawn/</filename> and
     edit them there, so that the privileged options become
-    available. The precise algorithm how the files are searched and
+    available. The precise algorithm for how the files are searched and
     interpreted may be configured with
     <command>systemd-nspawn</command>'s <option>--settings=</option>
     switch, see
@@ -141,21 +141,28 @@
       <varlistentry>
         <term><varname>Boot=</varname></term>
 
-        <listitem><para>Takes a boolean argument, defaults to off. If
-        enabled <command>systemd-nspawn</command> will automatically
-        search for an <filename>init</filename> executable and invoke
-        it. In this case the specified parameters using
-        <varname>Parameters=</varname> are passed as additional
-        arguments to the <filename>init</filename> process. This
-        setting corresponds to the <option>--boot</option> switch on
-        the <command>systemd-nspawn</command> command
-        line. </para></listitem>
+        <listitem><para>Takes a boolean argument, which defaults to off. If enabled, <command>systemd-nspawn</command>
+        will automatically search for an <filename>init</filename> executable and invoke it. In this case, the
+        specified parameters using <varname>Parameters=</varname> are passed as additional arguments to the
+        <filename>init</filename> process. This setting corresponds to the <option>--boot</option> switch on the
+        <command>systemd-nspawn</command> command line. This option may not be combined with
+        <varname>ProcessTwo=yes</varname>. This option is the default if the
+        <filename>systemd-nspawn@.service</filename> template unit file is used.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>ProcessTwo=</varname></term>
+
+        <listitem><para>Takes a boolean argument, which defaults to off. If enabled, the specified program is run as
+        PID 2. A stub init process is run as PID 1. This setting corresponds to the <option>--as-pid2</option> switch
+        on the <command>systemd-nspawn</command> command line. This option may not be combined with
+        <varname>Boot=yes</varname>.</para></listitem>
       </varlistentry>
 
       <varlistentry>
         <term><varname>Parameters=</varname></term>
 
-        <listitem><para>Takes a space separated list of
+        <listitem><para>Takes a space-separated list of
         arguments. This is either a command line, beginning with the
         binary name to execute, or – if <varname>Boot=</varname> is
         enabled – the list of arguments to pass to the init
@@ -187,12 +194,20 @@
       </varlistentry>
 
       <varlistentry>
+        <term><varname>WorkingDirectory=</varname></term>
+
+        <listitem><para>Selects the working directory for the process invoked in the container. Expects an absolute
+        path in the container's file system namespace. This corresponds to the <option>--chdir=</option> command line
+        switch.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
         <term><varname>Capability=</varname></term>
         <term><varname>DropCapability=</varname></term>
 
-        <listitem><para>Takes a space separated list of Linux process
+        <listitem><para>Takes a space-separated list of Linux process
         capabilities (see
-        <citerefentry><refentrytitle>capabilities</refentrytitle><manvolnum>7</manvolnum></citerefentry>
+        <citerefentry project='man-pages'><refentrytitle>capabilities</refentrytitle><manvolnum>7</manvolnum></citerefentry>
         for details). The <varname>Capability=</varname> setting
         specifies additional capabilities to pass on top of the
         default set of capabilities. The
@@ -205,8 +220,20 @@
         <filename>.nspawn</filename> files in
         <filename>/etc/systemd/nspawn/</filename> and
         <filename>/run/system/nspawn/</filename> (see above). On the
-        other hand <varname>DropCapability=</varname> takes effect in
+        other hand, <varname>DropCapability=</varname> takes effect in
         all cases.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>KillSignal=</varname></term>
+
+        <listitem><para>Specify the process signal to send to the
+        container's PID 1 when nspawn itself receives SIGTERM, in
+        order to trigger an orderly shutdown of the container.
+        Defaults to SIGRTMIN+3 if <option>Boot=</option> is used
+        (on systemd-compatible init systems SIGRTMIN+3 triggers an
+        orderly shutdown). For a list of valid signals, see
+        <citerefentry project='man-pages'><refentrytitle>signal</refentrytitle><manvolnum>7</manvolnum></citerefentry>.</para></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -220,10 +247,28 @@
       <varlistentry>
         <term><varname>MachineID=</varname></term>
 
-        <listitem><para>Configures the 128bit machine ID (UUID) to pass to
+        <listitem><para>Configures the 128-bit machine ID (UUID) to pass to
         the container. This is equivalent to the
         <option>--uuid=</option> command line switch. This option is
         privileged (see above). </para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>PrivateUsers=</varname></term>
+
+        <listitem><para>Configures support for usernamespacing. This is equivalent to the
+        <option>--private-users=</option> command line switch, and takes the same options. This option is privileged
+        (see above). This option is the default if the <filename>systemd-nspawn@.service</filename> template unit file
+        is used.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>NotifyReady=</varname></term>
+
+        <listitem><para>Configures support for notifications from the container's init process.
+        This is equivalent to use <option>--notify-ready=</option> command line switch,
+        and takes the same options. See <citerefentry><refentrytitle>systemd-nspawn</refentrytitle><manvolnum>1</manvolnum></citerefentry>
+        for details about the specific options supported.</para></listitem>
       </varlistentry>
     </variablelist>
   </refsect1>
@@ -240,8 +285,8 @@
       <varlistentry>
         <term><varname>ReadOnly=</varname></term>
 
-        <listitem><para>Takes a boolean argument, defaults to off. If
-        specified the container will be run with a read-only file
+        <listitem><para>Takes a boolean argument, which defaults to off. If
+        specified, the container will be run with a read-only file
         system. This setting corresponds to the
         <option>--read-only</option> command line
         switch.</para></listitem>
@@ -288,6 +333,16 @@
         for details about the specific options supported. This setting
         is privileged (see above).</para></listitem>
       </varlistentry>
+
+      <varlistentry>
+        <term><varname>PrivateUsersChown=</varname></term>
+
+        <listitem><para>Configures whether the ownership of the files and directories in the container tree shall be
+        adjusted to the UID/GID range used, if necessary and user namespacing is enabled. This is equivalent to the
+        <option>--private-users-chown</option> command line switch. This option is privileged (see
+        above). </para></listitem>
+      </varlistentry>
+
     </variablelist>
   </refsect1>
 
@@ -303,8 +358,8 @@
       <varlistentry>
         <term><varname>Private=</varname></term>
 
-        <listitem><para>Takes a boolean argument, defaults to off. If
-        enabled the container will run in its own network namespace
+        <listitem><para>Takes a boolean argument, which defaults to off. If
+        enabled, the container will run in its own network namespace
         and not share network interfaces and configuration with the
         host. This setting corresponds to the
         <option>--private-network</option> command line
@@ -314,19 +369,34 @@
       <varlistentry>
         <term><varname>VirtualEthernet=</varname></term>
 
-        <listitem><para>Takes a boolean argument. Configures whether
-        to create a virtual ethernet connection
-        (<literal>veth</literal>) between host and the container. This
-        setting implies <varname>Private=yes</varname>. This setting
-        corresponds to the <option>--network-veth</option> command
-        line switch. This option is privileged (see
-        above).</para></listitem>
+        <listitem><para>Takes a boolean argument. Configures whether to create a virtual Ethernet connection
+        (<literal>veth</literal>) between host and the container. This setting implies
+        <varname>Private=yes</varname>. This setting corresponds to the <option>--network-veth</option> command line
+        switch. This option is privileged (see above). This option is the default if the
+        <filename>systemd-nspawn@.service</filename> template unit file is used.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>VirtualEthernetExtra=</varname></term>
+
+        <listitem><para>Takes a colon-separated pair of interface
+        names. Configures an additional virtual Ethernet connection
+        (<literal>veth</literal>) between host and the container. The
+        first specified name is the interface name on the host, the
+        second the interface name in the container. The latter may be
+        omitted in which case it is set to the same name as the host
+        side interface. This setting implies
+        <varname>Private=yes</varname>. This setting corresponds to
+        the <option>--network-veth-extra=</option> command line
+        switch, and maybe be used multiple times. It is independent of
+        <varname>VirtualEthernet=</varname>. This option is privileged
+        (see above).</para></listitem>
       </varlistentry>
 
       <varlistentry>
         <term><varname>Interface=</varname></term>
 
-        <listitem><para>Takes a space separated list of interfaces to
+        <listitem><para>Takes a space-separated list of interfaces to
         add to the container. This option corresponds to the
         <option>--network-interface=</option> command line switch and
         implies <varname>Private=yes</varname>. This option is
@@ -337,7 +407,7 @@
         <term><varname>MACVLAN=</varname></term>
         <term><varname>IPVLAN=</varname></term>
 
-        <listitem><para>Takes a space separated list of interfaces to
+        <listitem><para>Takes a space-separated list of interfaces to
         add MACLVAN or IPVLAN interfaces to, which are then added to
         the container. These options correspond to the
         <option>--network-macvlan=</option> and
@@ -356,6 +426,16 @@
         the specified bridge interface. This option corresponds to the
         <option>--network-bridge=</option> command line switch. This
         option is privileged (see above).</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>Zone=</varname></term>
+
+        <listitem><para>Takes a network zone name. This setting implies <varname>VirtualEthernet=yes</varname> and
+        <varname>Private=yes</varname> and has the effect that the host side of the created virtual Ethernet link is
+        connected to an automatically managed bridge interface named after the passed argument, prefixed with
+        <literal>vz-</literal>. This option corresponds to the <option>--network-zone=</option> command line
+        switch. This option is privileged (see above).</para></listitem>
       </varlistentry>
 
       <varlistentry>

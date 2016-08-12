@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -26,9 +24,12 @@
 
 #include "sd-event.h"
 
+typedef struct Server Server;
+
 #include "hashmap.h"
 #include "journal-file.h"
 #include "journald-rate-limit.h"
+#include "journald-stream.h"
 #include "list.h"
 
 typedef enum Storage {
@@ -42,21 +43,20 @@ typedef enum Storage {
 
 typedef enum SplitMode {
         SPLIT_UID,
-        SPLIT_LOGIN,
+        SPLIT_LOGIN, /* deprecated */
         SPLIT_NONE,
         _SPLIT_MAX,
         _SPLIT_INVALID = -1
 } SplitMode;
 
-typedef struct StdoutStream StdoutStream;
-
-typedef struct Server {
+struct Server {
         int syslog_fd;
         int native_fd;
         int stdout_fd;
         int dev_kmsg_fd;
         int audit_fd;
         int hostname_fd;
+        int notify_fd;
 
         sd_event *event;
 
@@ -70,7 +70,10 @@ typedef struct Server {
         sd_event_source *sigusr2_event_source;
         sd_event_source *sigterm_event_source;
         sd_event_source *sigint_event_source;
+        sd_event_source *sigrtmin1_event_source;
         sd_event_source *hostname_event_source;
+        sd_event_source *notify_event_source;
+        sd_event_source *watchdog_event_source;
 
         JournalFile *runtime_journal;
         JournalFile *system_journal;
@@ -111,6 +114,7 @@ typedef struct Server {
         usec_t oldest_file_usec;
 
         LIST_HEAD(StdoutStream, stdout_streams);
+        LIST_HEAD(StdoutStream, stdout_streams_notify_queue);
         unsigned n_stdout_streams;
 
         char *tty_path;
@@ -126,13 +130,16 @@ typedef struct Server {
 
         MMapCache *mmap;
 
-        bool dev_kmsg_readable;
-
-        uint64_t *kernel_seqnum;
+        Set *deferred_closes;
 
         struct udev *udev;
 
-        bool sync_scheduled;
+        uint64_t *kernel_seqnum;
+        bool dev_kmsg_readable:1;
+
+        bool send_watchdog:1;
+        bool sent_notify_ready:1;
+        bool sync_scheduled:1;
 
         char machine_id_field[sizeof("_MACHINE_ID=") + 32];
         char boot_id_field[sizeof("_BOOT_ID=") + 32];
@@ -140,7 +147,9 @@ typedef struct Server {
 
         /* Cached cgroup root, so that we don't have to query that all the time */
         char *cgroup_root;
-} Server;
+
+        usec_t watchdog_usec;
+};
 
 #define SERVER_MACHINE_ID(s) ((s)->machine_id_field + strlen("_MACHINE_ID="))
 
@@ -148,9 +157,10 @@ typedef struct Server {
 #define N_IOVEC_KERNEL_FIELDS 64
 #define N_IOVEC_UDEV_FIELDS 32
 #define N_IOVEC_OBJECT_FIELDS 12
+#define N_IOVEC_PAYLOAD_FIELDS 15
 
 void server_dispatch_message(Server *s, struct iovec *iovec, unsigned n, unsigned m, const struct ucred *ucred, const struct timeval *tv, const char *label, size_t label_len, const char *unit_id, int priority, pid_t object_pid);
-void server_driver_message(Server *s, sd_id128_t message_id, const char *format, ...) _printf_(3,4);
+void server_driver_message(Server *s, sd_id128_t message_id, const char *format, ...) _printf_(3,0) _sentinel_;
 
 /* gperf lookup function */
 const struct ConfigPerfItem* journald_gperf_lookup(const char *key, unsigned length);
@@ -165,7 +175,6 @@ int config_parse_split_mode(const char *unit, const char *filename, unsigned lin
 const char *split_mode_to_string(SplitMode s) _const_;
 SplitMode split_mode_from_string(const char *s) _pure_;
 
-void server_fix_perms(Server *s, JournalFile *f, uid_t uid);
 int server_init(Server *s);
 void server_done(Server *s);
 void server_sync(Server *s);

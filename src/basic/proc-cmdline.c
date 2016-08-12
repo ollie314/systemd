@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,6 +17,10 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include <stdbool.h>
+#include <stddef.h>
+#include <string.h>
+
 #include "alloc-util.h"
 #include "extract-word.h"
 #include "fileio.h"
@@ -26,6 +28,7 @@
 #include "parse-util.h"
 #include "proc-cmdline.h"
 #include "process-util.h"
+#include "special.h"
 #include "string-util.h"
 #include "util.h"
 #include "virt.h"
@@ -141,5 +144,45 @@ int shall_restore_state(void) {
         if (r == 0)
                 return true;
 
-        return parse_boolean(value) != 0;
+        return parse_boolean(value);
+}
+
+static const char * const rlmap[] = {
+        "emergency", SPECIAL_EMERGENCY_TARGET,
+        "-b",        SPECIAL_EMERGENCY_TARGET,
+        "rescue",    SPECIAL_RESCUE_TARGET,
+        "single",    SPECIAL_RESCUE_TARGET,
+        "-s",        SPECIAL_RESCUE_TARGET,
+        "s",         SPECIAL_RESCUE_TARGET,
+        "S",         SPECIAL_RESCUE_TARGET,
+        "1",         SPECIAL_RESCUE_TARGET,
+        "2",         SPECIAL_MULTI_USER_TARGET,
+        "3",         SPECIAL_MULTI_USER_TARGET,
+        "4",         SPECIAL_MULTI_USER_TARGET,
+        "5",         SPECIAL_GRAPHICAL_TARGET,
+        NULL
+};
+
+static const char * const rlmap_initrd[] = {
+        "emergency", SPECIAL_EMERGENCY_TARGET,
+        "rescue",    SPECIAL_RESCUE_TARGET,
+        NULL
+};
+
+const char* runlevel_to_target(const char *word) {
+        size_t i;
+        const char * const *rlmap_ptr = in_initrd() ? rlmap_initrd
+                                                    : rlmap;
+
+        if (!word)
+                return NULL;
+
+        if (in_initrd() && (word = startswith(word, "rd.")) == NULL)
+                return NULL;
+
+        for (i = 0; rlmap_ptr[i] != NULL; i += 2)
+                if (streq(word, rlmap_ptr[i]))
+                        return rlmap_ptr[i+1];
+
+        return NULL;
 }

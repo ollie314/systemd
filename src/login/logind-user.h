@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -39,16 +37,13 @@ typedef enum UserState {
 
 struct User {
         Manager *manager;
-
         uid_t uid;
         gid_t gid;
         char *name;
-
         char *state_file;
         char *runtime_path;
-
-        char *service;
         char *slice;
+        char *service;
 
         char *service_job;
         char *slice_job;
@@ -65,8 +60,11 @@ struct User {
         LIST_FIELDS(User, gc_queue);
 };
 
-User* user_new(Manager *m, uid_t uid, gid_t gid, const char *name);
-void user_free(User *u);
+int user_new(User **out, Manager *m, uid_t uid, gid_t gid, const char *name);
+User *user_free(User *u);
+
+DEFINE_TRIVIAL_CLEANUP_FUNC(User *, user_free);
+
 bool user_check_gc(User *u, bool drop_not_started);
 void user_add_to_gc_queue(User *u);
 int user_start(User *u);

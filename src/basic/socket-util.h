@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -21,9 +19,12 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <sys/socket.h>
-#include <netinet/in.h>
 #include <netinet/ether.h>
+#include <netinet/in.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 #include <sys/un.h>
 #include <linux/netlink.h>
 #include <linux/if_packet.h>
@@ -86,7 +87,7 @@ int socket_address_listen(
                 mode_t directory_mode,
                 mode_t socket_mode,
                 const char *label);
-int make_socket_fd(int log_level, const char* address, int flags);
+int make_socket_fd(int log_level, const char* address, int type, int flags);
 
 bool socket_address_is(const SocketAddress *a, const char *s, int type);
 bool socket_address_is_netlink(const SocketAddress *a, const char *s);
@@ -102,7 +103,7 @@ bool socket_ipv6_is_supported(void);
 int sockaddr_port(const struct sockaddr *_sa) _pure_;
 
 int sockaddr_pretty(const struct sockaddr *_sa, socklen_t salen, bool translate_ipv6, bool include_port, char **ret);
-int getpeername_pretty(int fd, char **ret);
+int getpeername_pretty(int fd, bool include_port, char **ret);
 int getsockname_pretty(int fd, char **ret);
 
 int socknameinfo_pretty(union sockaddr_union *sa, socklen_t salen, char **_ret);
@@ -122,11 +123,34 @@ int fd_inc_rcvbuf(int fd, size_t n);
 int ip_tos_to_string_alloc(int i, char **s);
 int ip_tos_from_string(const char *s);
 
+bool ifname_valid(const char *p);
+
 int getpeercred(int fd, struct ucred *ucred);
 int getpeersec(int fd, char **ret);
 
-int send_one_fd(int transport_fd, int fd, int flags);
+int send_one_fd_sa(int transport_fd,
+                   int fd,
+                   const struct sockaddr *sa, socklen_t len,
+                   int flags);
+#define send_one_fd(transport_fd, fd, flags) send_one_fd_sa(transport_fd, fd, NULL, 0, flags)
 int receive_one_fd(int transport_fd, int flags);
+
+ssize_t next_datagram_size_fd(int fd);
+
+int flush_accept(int fd);
 
 #define CMSG_FOREACH(cmsg, mh)                                          \
         for ((cmsg) = CMSG_FIRSTHDR(mh); (cmsg); (cmsg) = CMSG_NXTHDR((mh), (cmsg)))
+
+struct cmsghdr* cmsg_find(struct msghdr *mh, int level, int type, socklen_t length);
+
+/* Covers only file system and abstract AF_UNIX socket addresses, but not unnamed socket addresses. */
+#define SOCKADDR_UN_LEN(sa)                                             \
+        ({                                                              \
+                const struct sockaddr_un *_sa = &(sa);                  \
+                assert(_sa->sun_family == AF_UNIX);                     \
+                offsetof(struct sockaddr_un, sun_path) +                \
+                        (_sa->sun_path[0] == 0 ?                        \
+                         1 + strnlen(_sa->sun_path+1, sizeof(_sa->sun_path)-1) : \
+                         strnlen(_sa->sun_path, sizeof(_sa->sun_path))); \
+        })

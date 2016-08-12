@@ -4,9 +4,12 @@
 # installed job.
 
 systemctl start --no-block hello-after-sleep.target
-# sleep is now running, hello/start is waiting. Verify that:
+
 systemctl list-jobs > /root/list-jobs.txt
-grep 'sleep\.service.*running' /root/list-jobs.txt || exit 1
+while ! grep 'sleep\.service.*running' /root/list-jobs.txt; do
+    systemctl list-jobs > /root/list-jobs.txt
+done
+
 grep 'hello\.service.*waiting' /root/list-jobs.txt || exit 1
 
 # This is supposed to finish quickly, not wait for sleep to finish.
@@ -23,7 +26,7 @@ grep 'sleep\.service.*running' /root/list-jobs.txt || exit 1
 grep 'hello\.service' /root/list-jobs.txt && exit 1
 systemctl stop sleep.service hello-after-sleep.target || exit 1
 
-# Test for a crash when enqueueing a JOB_NOP when other job already exists
+# Test for a crash when enqueuing a JOB_NOP when other job already exists
 systemctl start --no-block hello-after-sleep.target || exit 1
 # hello.service should still be waiting, so these try-restarts will collapse
 # into NOPs.
@@ -47,4 +50,3 @@ systemctl stop --job-mode=replace-irreversibly unstoppable.service || exit 1
 systemctl start unstoppable.service || exit 1
 
 touch /testok
-exit 0

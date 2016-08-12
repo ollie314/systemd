@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -87,14 +85,6 @@ static enum {
         (SHOW_MASKED | SHOW_EQUIVALENT | SHOW_REDIRECTED | SHOW_OVERRIDDEN | SHOW_EXTENDED)
 } arg_flags = 0;
 
-static void pager_open_if_enabled(void) {
-
-        if (arg_no_pager)
-                return;
-
-        pager_open(false);
-}
-
 static int equivalent(const char *a, const char *b) {
         _cleanup_free_ char *x = NULL, *y = NULL;
 
@@ -115,7 +105,7 @@ static int notify_override_masked(const char *top, const char *bottom) {
 
         printf("%s%s%s     %s %s %s\n",
                ansi_highlight_red(), "[MASKED]", ansi_normal(),
-               top, draw_special_char(DRAW_ARROW), bottom);
+               top, special_glyph(ARROW), bottom);
         return 1;
 }
 
@@ -125,7 +115,7 @@ static int notify_override_equivalent(const char *top, const char *bottom) {
 
         printf("%s%s%s %s %s %s\n",
                ansi_highlight_green(), "[EQUIVALENT]", ansi_normal(),
-               top, draw_special_char(DRAW_ARROW), bottom);
+               top, special_glyph(ARROW), bottom);
         return 1;
 }
 
@@ -135,7 +125,7 @@ static int notify_override_redirected(const char *top, const char *bottom) {
 
         printf("%s%s%s %s %s %s\n",
                ansi_highlight(), "[REDIRECTED]", ansi_normal(),
-               top, draw_special_char(DRAW_ARROW), bottom);
+               top, special_glyph(ARROW), bottom);
         return 1;
 }
 
@@ -145,7 +135,7 @@ static int notify_override_overridden(const char *top, const char *bottom) {
 
         printf("%s%s%s %s %s %s\n",
                ansi_highlight(), "[OVERRIDDEN]", ansi_normal(),
-               top, draw_special_char(DRAW_ARROW), bottom);
+               top, special_glyph(ARROW), bottom);
         return 1;
 }
 
@@ -155,7 +145,7 @@ static int notify_override_extended(const char *top, const char *bottom) {
 
         printf("%s%s%s   %s %s %s\n",
                ansi_highlight(), "[EXTENDED]", ansi_normal(),
-               top, draw_special_char(DRAW_ARROW), bottom);
+               top, special_glyph(ARROW), bottom);
         return 1;
 }
 
@@ -257,7 +247,7 @@ static int enumerate_dir_d(Hashmap *top, Hashmap *bottom, Hashmap *drops, const 
                         return -ENOMEM;
                 d = p + strlen(toppath) + 1;
 
-                log_debug("Adding at top: %s %s %s", d, draw_special_char(DRAW_ARROW), p);
+                log_debug("Adding at top: %s %s %s", d, special_glyph(ARROW), p);
                 k = hashmap_put(top, d, p);
                 if (k >= 0) {
                         p = strdup(p);
@@ -269,7 +259,7 @@ static int enumerate_dir_d(Hashmap *top, Hashmap *bottom, Hashmap *drops, const 
                         return k;
                 }
 
-                log_debug("Adding at bottom: %s %s %s", d, draw_special_char(DRAW_ARROW), p);
+                log_debug("Adding at bottom: %s %s %s", d, special_glyph(ARROW), p);
                 free(hashmap_remove(bottom, d));
                 k = hashmap_put(bottom, d, p);
                 if (k < 0) {
@@ -293,7 +283,7 @@ static int enumerate_dir_d(Hashmap *top, Hashmap *bottom, Hashmap *drops, const 
                         return -ENOMEM;
 
                 log_debug("Adding to drops: %s %s %s %s %s",
-                          unit, draw_special_char(DRAW_ARROW), basename(p), draw_special_char(DRAW_ARROW), p);
+                          unit, special_glyph(ARROW), basename(p), special_glyph(ARROW), p);
                 k = hashmap_put(h, basename(p), p);
                 if (k < 0) {
                         free(p);
@@ -319,8 +309,7 @@ static int enumerate_dir(Hashmap *top, Hashmap *bottom, Hashmap *drops, const ch
                 if (errno == ENOENT)
                         return 0;
 
-                log_error_errno(errno, "Failed to open %s: %m", path);
-                return -errno;
+                return log_error_errno(errno, "Failed to open %s: %m", path);
         }
 
         for (;;) {
@@ -345,7 +334,7 @@ static int enumerate_dir(Hashmap *top, Hashmap *bottom, Hashmap *drops, const ch
                 if (!p)
                         return -ENOMEM;
 
-                log_debug("Adding at top: %s %s %s", basename(p), draw_special_char(DRAW_ARROW), p);
+                log_debug("Adding at top: %s %s %s", basename(p), special_glyph(ARROW), p);
                 k = hashmap_put(top, basename(p), p);
                 if (k >= 0) {
                         p = strdup(p);
@@ -356,7 +345,7 @@ static int enumerate_dir(Hashmap *top, Hashmap *bottom, Hashmap *drops, const ch
                         return k;
                 }
 
-                log_debug("Adding at bottom: %s %s %s", basename(p), draw_special_char(DRAW_ARROW), p);
+                log_debug("Adding at bottom: %s %s %s", basename(p), special_glyph(ARROW), p);
                 free(hashmap_remove(bottom, basename(p)));
                 k = hashmap_put(bottom, basename(p), p);
                 if (k < 0) {
@@ -431,18 +420,16 @@ static int process_suffix(const char *suffix, const char *onlyprefix) {
         }
 
 finish:
-        if (top)
-                hashmap_free_free(top);
-        if (bottom)
-                hashmap_free_free(bottom);
-        if (drops) {
-                HASHMAP_FOREACH_KEY(h, key, drops, i){
-                        hashmap_free_free(hashmap_remove(drops, key));
-                        hashmap_remove(drops, key);
-                        free(key);
-                }
-                hashmap_free(drops);
+        hashmap_free_free(top);
+        hashmap_free_free(bottom);
+
+        HASHMAP_FOREACH_KEY(h, key, drops, i) {
+                hashmap_free_free(hashmap_remove(drops, key));
+                hashmap_remove(drops, key);
+                free(key);
         }
+        hashmap_free(drops);
+
         return r < 0 ? r : n_found;
 }
 
@@ -454,9 +441,10 @@ static int process_suffixes(const char *onlyprefix) {
                 r = process_suffix(n, onlyprefix);
                 if (r < 0)
                         return r;
-                else
-                        n_found += r;
+
+                n_found += r;
         }
+
         return n_found;
 }
 
@@ -470,7 +458,9 @@ static int process_suffix_chop(const char *arg) {
 
         /* Strip prefix from the suffix */
         NULSTR_FOREACH(p, prefixes) {
-                const char *suffix = startswith(arg, p);
+                const char *suffix;
+
+                suffix = startswith(arg, p);
                 if (suffix) {
                         suffix += strspn(suffix, "/");
                         if (*suffix)
@@ -578,10 +568,9 @@ static int parse_argv(int argc, char *argv[]) {
                                 if (b < 0) {
                                         log_error("Failed to parse diff boolean.");
                                         return -EINVAL;
-                                } else if (b)
-                                        arg_diff = 1;
-                                else
-                                        arg_diff = 0;
+                                }
+
+                                arg_diff = b;
                         }
                         break;
 
@@ -596,8 +585,7 @@ static int parse_argv(int argc, char *argv[]) {
 }
 
 int main(int argc, char *argv[]) {
-        int r = 0, k;
-        int n_found = 0;
+        int r, k, n_found = 0;
 
         log_parse_environment();
         log_open();
@@ -614,13 +602,14 @@ int main(int argc, char *argv[]) {
         else if (arg_diff)
                 arg_flags |= SHOW_OVERRIDDEN;
 
-        pager_open_if_enabled();
+        pager_open(arg_no_pager, false);
 
         if (optind < argc) {
                 int i;
 
                 for (i = optind; i < argc; i++) {
                         path_kill_slashes(argv[i]);
+
                         k = process_suffix_chop(argv[i]);
                         if (k < 0)
                                 r = k;
@@ -637,8 +626,7 @@ int main(int argc, char *argv[]) {
         }
 
         if (r >= 0)
-                printf("%s%i overridden configuration files found.\n",
-                       n_found ? "\n" : "", n_found);
+                printf("%s%i overridden configuration files found.\n", n_found ? "\n" : "", n_found);
 
 finish:
         pager_close();

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -20,9 +18,9 @@
 ***/
 
 #include "alloc-util.h"
-#include "networkd.h"
-#include "network-internal.h"
 #include "dhcp-lease-internal.h"
+#include "network-internal.h"
+#include "networkd.h"
 
 static void test_deserialize_in_addr(void) {
         _cleanup_free_ struct in_addr *addresses = NULL;

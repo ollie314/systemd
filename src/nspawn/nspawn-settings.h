@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -24,29 +22,47 @@
 #include <stdio.h>
 
 #include "macro.h"
-
-#include "nspawn-mount.h"
 #include "nspawn-expose-ports.h"
+#include "nspawn-mount.h"
+
+typedef enum StartMode {
+        START_PID1, /* Run parameters as command line as process 1 */
+        START_PID2, /* Use stub init process as PID 1, run parameters as command line as process 2 */
+        START_BOOT, /* Search for init system, pass arguments as parameters */
+        _START_MODE_MAX,
+        _START_MODE_INVALID = -1
+} StartMode;
+
+typedef enum UserNamespaceMode {
+        USER_NAMESPACE_NO,
+        USER_NAMESPACE_FIXED,
+        USER_NAMESPACE_PICK,
+        _USER_NAMESPACE_MODE_MAX,
+        _USER_NAMESPACE_MODE_INVALID = -1,
+} UserNamespaceMode;
 
 typedef enum SettingsMask {
-        SETTING_BOOT          = 1 << 0,
-        SETTING_ENVIRONMENT   = 1 << 1,
-        SETTING_USER          = 1 << 2,
-        SETTING_CAPABILITY    = 1 << 3,
-        SETTING_KILL_SIGNAL   = 1 << 4,
-        SETTING_PERSONALITY   = 1 << 5,
-        SETTING_MACHINE_ID    = 1 << 6,
-        SETTING_NETWORK       = 1 << 7,
-        SETTING_EXPOSE_PORTS  = 1 << 8,
-        SETTING_READ_ONLY     = 1 << 9,
-        SETTING_VOLATILE_MODE = 1 << 10,
-        SETTING_CUSTOM_MOUNTS = 1 << 11,
-        _SETTINGS_MASK_ALL    = (1 << 12) -1
+        SETTING_START_MODE        = 1 << 0,
+        SETTING_ENVIRONMENT       = 1 << 1,
+        SETTING_USER              = 1 << 2,
+        SETTING_CAPABILITY        = 1 << 3,
+        SETTING_KILL_SIGNAL       = 1 << 4,
+        SETTING_PERSONALITY       = 1 << 5,
+        SETTING_MACHINE_ID        = 1 << 6,
+        SETTING_NETWORK           = 1 << 7,
+        SETTING_EXPOSE_PORTS      = 1 << 8,
+        SETTING_READ_ONLY         = 1 << 9,
+        SETTING_VOLATILE_MODE     = 1 << 10,
+        SETTING_CUSTOM_MOUNTS     = 1 << 11,
+        SETTING_WORKING_DIRECTORY = 1 << 12,
+        SETTING_USERNS            = 1 << 13,
+        SETTING_NOTIFY_READY      = 1 << 14,
+        _SETTINGS_MASK_ALL        = (1 << 15) -1
 } SettingsMask;
 
 typedef struct Settings {
         /* [Run] */
-        int boot;
+        StartMode start_mode;
         char **parameters;
         char **environment;
         char *user;
@@ -55,20 +71,27 @@ typedef struct Settings {
         int kill_signal;
         unsigned long personality;
         sd_id128_t machine_id;
+        char *working_directory;
+        UserNamespaceMode userns_mode;
+        uid_t uid_shift, uid_range;
+        bool notify_ready;
 
         /* [Image] */
         int read_only;
         VolatileMode volatile_mode;
         CustomMount *custom_mounts;
         unsigned n_custom_mounts;
+        int userns_chown;
 
         /* [Network] */
         int private_network;
         int network_veth;
         char *network_bridge;
+        char *network_zone;
         char **network_interfaces;
         char **network_macvlan;
         char **network_ipvlan;
+        char **network_veth_extra;
         ExposePort *expose_ports;
 } Settings;
 
@@ -88,3 +111,8 @@ int config_parse_expose_port(const char *unit, const char *filename, unsigned li
 int config_parse_volatile_mode(const char *unit, const char *filename, unsigned line, const char *section, unsigned section_line, const char *lvalue, int ltype, const char *rvalue, void *data, void *userdata);
 int config_parse_bind(const char *unit, const char *filename, unsigned line, const char *section, unsigned section_line, const char *lvalue, int ltype, const char *rvalue, void *data, void *userdata);
 int config_parse_tmpfs(const char *unit, const char *filename, unsigned line, const char *section, unsigned section_line, const char *lvalue, int ltype, const char *rvalue, void *data, void *userdata);
+int config_parse_veth_extra(const char *unit, const char *filename, unsigned line, const char *section, unsigned section_line, const char *lvalue, int ltype, const char *rvalue, void *data, void *userdata);
+int config_parse_network_zone(const char *unit, const char *filename, unsigned line, const char *section, unsigned section_line, const char *lvalue, int ltype, const char *rvalue, void *data, void *userdata);
+int config_parse_boot(const char *unit, const char *filename, unsigned line, const char *section, unsigned section_line, const char *lvalue, int ltype, const char *rvalue, void *data, void *userdata);
+int config_parse_pid2(const char *unit, const char *filename, unsigned line, const char *section, unsigned section_line, const char *lvalue, int ltype, const char *rvalue, void *data, void *userdata);
+int config_parse_private_users(const char *unit, const char *filename, unsigned line, const char *section, unsigned section_line, const char *lvalue, int ltype, const char *rvalue, void *data, void *userdata);

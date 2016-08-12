@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -25,8 +23,8 @@ typedef struct Session Session;
 typedef enum KillWho KillWho;
 
 #include "list.h"
-#include "logind-user.h"
 #include "login-util.h"
+#include "logind-user.h"
 
 typedef enum SessionState {
         SESSION_OPENING,  /* Session scope is being created */
@@ -107,6 +105,8 @@ struct Session {
         bool idle_hint;
         dual_timestamp idle_hint_timestamp;
 
+        bool locked_hint;
+
         bool in_gc_queue:1;
         bool started:1;
         bool stopping:1;
@@ -134,6 +134,8 @@ int session_activate(Session *s);
 bool session_is_active(Session *s);
 int session_get_idle_hint(Session *s, dual_timestamp *t);
 void session_set_idle_hint(Session *s, bool b);
+int session_get_locked_hint(Session *s);
+void session_set_locked_hint(Session *s, bool b);
 int session_create_fifo(Session *s);
 int session_start(Session *s);
 int session_stop(Session *s, bool force);

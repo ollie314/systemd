@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -71,6 +69,11 @@ void manager_free(Manager *m) {
         Image *i;
 
         assert(m);
+
+        while (m->operations)
+                operation_free(m->operations);
+
+        assert(m->n_operations == 0);
 
         while ((machine = hashmap_first(m->machines)))
                 machine_free(machine);
@@ -150,8 +153,7 @@ int manager_enumerate_machines(Manager *m) {
                 if (errno == ENOENT)
                         return 0;
 
-                log_error_errno(errno, "Failed to open /run/systemd/machines: %m");
-                return -errno;
+                return log_error_errno(errno, "Failed to open /run/systemd/machines: %m");
         }
 
         FOREACH_DIRENT(de, d, return -errno) {
@@ -185,7 +187,7 @@ int manager_enumerate_machines(Manager *m) {
 }
 
 static int manager_connect_bus(Manager *m) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
         assert(m);
@@ -301,7 +303,7 @@ void manager_gc(Manager *m, bool drop_not_started) {
                     machine_get_state(machine) != MACHINE_CLOSING)
                         machine_stop(machine);
 
-                /* Now, the stop stop probably made this referenced
+                /* Now, the stop probably made this referenced
                  * again, but if it didn't, then it's time to let it
                  * go entirely. */
                 if (!machine_check_gc(machine, drop_not_started)) {
@@ -338,6 +340,9 @@ int manager_startup(Manager *m) {
 
 static bool check_idle(void *userdata) {
         Manager *m = userdata;
+
+        if (m->operations)
+                return false;
 
         manager_gc(m, true);
 

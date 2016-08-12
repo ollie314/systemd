@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -158,8 +156,10 @@ static void dev_kmsg_record(Server *s, const char *p, size_t l) {
 
                 /* Did we lose any? */
                 if (serial > *s->kernel_seqnum)
-                        server_driver_message(s, SD_MESSAGE_JOURNAL_MISSED, "Missed %"PRIu64" kernel messages",
-                                              serial - *s->kernel_seqnum);
+                        server_driver_message(s, SD_MESSAGE_JOURNAL_MISSED,
+                                              LOG_MESSAGE("Missed %"PRIu64" kernel messages",
+                                                          serial - *s->kernel_seqnum),
+                                              NULL);
 
                 /* Make sure we never read this one again. Note that
                  * we always store the next message serial we expect
@@ -201,7 +201,7 @@ static void dev_kmsg_record(Server *s, const char *p, size_t l) {
                 if (*k != ' ')
                         break;
 
-                k ++, l --;
+                k++, l--;
 
                 e = memchr(k, '\n', l);
                 if (!e)
@@ -347,8 +347,7 @@ static int server_read_dev_kmsg(Server *s) {
                 if (errno == EAGAIN || errno == EINTR || errno == EPIPE)
                         return 0;
 
-                log_error_errno(errno, "Failed to read from kernel: %m");
-                return -errno;
+                return log_error_errno(errno, "Failed to read from kernel: %m");
         }
 
         dev_kmsg_record(s, buffer, l);
@@ -442,6 +441,7 @@ fail:
 int server_open_kernel_seqnum(Server *s) {
         _cleanup_close_ int fd;
         uint64_t *p;
+        int r;
 
         assert(s);
 
@@ -455,8 +455,9 @@ int server_open_kernel_seqnum(Server *s) {
                 return 0;
         }
 
-        if (posix_fallocate(fd, 0, sizeof(uint64_t)) < 0) {
-                log_error_errno(errno, "Failed to allocate sequential number file, ignoring: %m");
+        r = posix_fallocate(fd, 0, sizeof(uint64_t));
+        if (r != 0) {
+                log_error_errno(r, "Failed to allocate sequential number file, ignoring: %m");
                 return 0;
         }
 

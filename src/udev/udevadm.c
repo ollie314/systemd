@@ -1,4 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
 /*
  * Copyright (C) 2007-2012 Kay Sievers <kay@vrfy.org>
  *
@@ -94,7 +93,7 @@ int main(int argc, char *argv[]) {
 
         log_parse_environment();
         log_open();
-        mac_selinux_init("/dev");
+        mac_selinux_init();
 
         while ((c = getopt_long(argc, argv, "+dhV", options, NULL)) >= 0)
                 switch (c) {

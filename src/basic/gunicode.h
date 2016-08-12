@@ -1,13 +1,13 @@
+#pragma once
+
 /* gunicode.h - Unicode manipulation functions
  *
  *  Copyright (C) 1999, 2000 Tom Tromey
  *  Copyright 2000, 2005 Red Hat, Inc.
  */
 
-#pragma once
-
-#include <stdint.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdlib.h>
 
 char *utf8_prev_char (const char *p);

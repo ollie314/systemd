@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -35,7 +33,6 @@
 #include "bus-error.h"
 #include "bus-util.h"
 #include "escape.h"
-#include "fd-util.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "formats-util.h"
@@ -449,17 +446,10 @@ int session_load(Session *s) {
                 safe_close(fd);
         }
 
-        if (realtime) {
-                unsigned long long l;
-                if (sscanf(realtime, "%llu", &l) > 0)
-                        s->timestamp.realtime = l;
-        }
-
-        if (monotonic) {
-                unsigned long long l;
-                if (sscanf(monotonic, "%llu", &l) > 0)
-                        s->timestamp.monotonic = l;
-        }
+        if (realtime)
+                timestamp_deserialize(realtime, &s->timestamp.realtime);
+        if (monotonic)
+                timestamp_deserialize(monotonic, &s->timestamp.monotonic);
 
         if (controller) {
                 if (bus_name_has_owner(s->manager->bus, controller, NULL) > 0)
@@ -513,25 +503,31 @@ static int session_start_scope(Session *s) {
 
         assert(s);
         assert(s->user);
-        assert(s->user->slice);
 
         if (!s->scope) {
-                _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
-                _cleanup_free_ char *description = NULL;
+                _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
                 char *scope, *job = NULL;
-
-                description = strjoin("Session ", s->id, " of user ", s->user->name, NULL);
-                if (!description)
-                        return log_oom();
+                const char *description;
 
                 scope = strjoin("session-", s->id, ".scope", NULL);
                 if (!scope)
                         return log_oom();
 
-                r = manager_start_scope(s->manager, scope, s->leader, s->user->slice, description, "systemd-logind.service", "systemd-user-sessions.service", &error, &job);
+                description = strjoina("Session ", s->id, " of user ", s->user->name);
+
+                r = manager_start_scope(
+                                s->manager,
+                                scope,
+                                s->leader,
+                                s->user->slice,
+                                description,
+                                "systemd-logind.service",
+                                "systemd-user-sessions.service",
+                                (uint64_t) -1, /* disable TasksMax= for the scope, rely on the slice setting for it */
+                                &error,
+                                &job);
                 if (r < 0) {
-                        log_error("Failed to start session scope %s: %s %s",
-                                  scope, bus_error_message(&error, r), error.name);
+                        log_error_errno(r, "Failed to start session scope %s: %s", scope, bus_error_message(&error, r));
                         free(scope);
                         return r;
                 } else {
@@ -543,7 +539,7 @@ static int session_start_scope(Session *s) {
         }
 
         if (s->scope)
-                hashmap_put(s->manager->session_units, s->scope, s);
+                (void) hashmap_put(s->manager->session_units, s->scope, s);
 
         return 0;
 }
@@ -606,8 +602,7 @@ int session_start(Session *s) {
 }
 
 static int session_stop_scope(Session *s, bool force) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
-        char *job = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
         assert(s);
@@ -615,22 +610,25 @@ static int session_stop_scope(Session *s, bool force) {
         if (!s->scope)
                 return 0;
 
+        /* Let's always abandon the scope first. This tells systemd that we are not interested anymore, and everything
+         * that is left in in the scope is "left-over". Informing systemd about this has the benefit that it will log
+         * when killing any processes left after this point. */
+        r = manager_abandon_scope(s->manager, s->scope, &error);
+        if (r < 0)
+                log_warning_errno(r, "Failed to abandon session scope, ignoring: %s", bus_error_message(&error, r));
+
+        /* Optionally, let's kill everything that's left now. */
         if (force || manager_shall_kill(s->manager, s->user->name)) {
+                char *job = NULL;
+
                 r = manager_stop_unit(s->manager, s->scope, &error, &job);
-                if (r < 0) {
-                        log_error("Failed to stop session scope: %s", bus_error_message(&error, r));
-                        return r;
-                }
+                if (r < 0)
+                        return log_error_errno(r, "Failed to stop session scope: %s", bus_error_message(&error, r));
 
                 free(s->scope_job);
                 s->scope_job = job;
-        } else {
-                r = manager_abandon_scope(s->manager, s->scope, &error);
-                if (r < 0) {
-                        log_error("Failed to abandon session scope: %s", bus_error_message(&error, r));
-                        return r;
-                }
-        }
+        } else
+                s->scope_job = mfree(s->scope_job);
 
         return 0;
 }
@@ -801,7 +799,7 @@ int session_get_idle_hint(Session *s, dual_timestamp *t) {
 
         /* Graphical sessions should really implement a real
          * idle hint logic */
-        if (s->display)
+        if (SESSION_TYPE_IS_GRAPHICAL(s->type))
                 goto dont_know;
 
         /* For sessions with an explicitly configured tty, let's check
@@ -856,6 +854,23 @@ void session_set_idle_hint(Session *s, bool b) {
         manager_send_changed(s->manager, "IdleHint", "IdleSinceHint", "IdleSinceHintMonotonic", NULL);
 }
 
+int session_get_locked_hint(Session *s) {
+        assert(s);
+
+        return s->locked_hint;
+}
+
+void session_set_locked_hint(Session *s, bool b) {
+        assert(s);
+
+        if (s->locked_hint == b)
+                return;
+
+        s->locked_hint = b;
+
+        session_send_changed(s, "LockedHint", NULL);
+}
+
 static int session_dispatch_fifo(sd_event_source *es, int fd, uint32_t revents, void *userdata) {
         Session *s = userdata;
 
@@ -901,7 +916,9 @@ int session_create_fifo(Session *s) {
                 if (r < 0)
                         return r;
 
-                r = sd_event_source_set_priority(s->fifo_event_source, SD_EVENT_PRIORITY_IDLE);
+                /* Let's make sure we noticed dead sessions before we process new bus requests (which might create new
+                 * sessions). */
+                r = sd_event_source_set_priority(s->fifo_event_source, SD_EVENT_PRIORITY_NORMAL-10);
                 if (r < 0)
                         return r;
         }
@@ -996,7 +1013,7 @@ static int session_open_vt(Session *s) {
         sprintf(path, "/dev/tty%u", s->vtnr);
         s->vtfd = open_terminal(path, O_RDWR | O_CLOEXEC | O_NONBLOCK | O_NOCTTY);
         if (s->vtfd < 0)
-                return log_error_errno(errno, "cannot open VT %s of session %s: %m", path, s->id);
+                return log_error_errno(s->vtfd, "cannot open VT %s of session %s: %m", path, s->id);
 
         return s->vtfd;
 }

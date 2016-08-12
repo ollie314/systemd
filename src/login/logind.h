@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -134,6 +132,9 @@ struct Manager {
         sd_event_source *lid_switch_ignore_event_source;
 
         size_t runtime_dir_size;
+        uint64_t user_tasks_max;
+        uint64_t sessions_max;
+        uint64_t inhibitors_max;
 };
 
 int manager_add_device(Manager *m, const char *sysfs, bool master, Device **_device);
@@ -171,7 +172,8 @@ int bus_manager_shutdown_or_sleep_now_or_later(Manager *m, const char *unit_name
 
 int manager_send_changed(Manager *manager, const char *property, ...) _sentinel_;
 
-int manager_start_scope(Manager *manager, const char *scope, pid_t pid, const char *slice, const char *description, const char *after, const char *after2, sd_bus_error *error, char **job);
+int manager_start_slice(Manager *manager, const char *slice, const char *description, const char *after, const char *after2, uint64_t tasks_max, sd_bus_error *error, char **job);
+int manager_start_scope(Manager *manager, const char *scope, pid_t pid, const char *slice, const char *description, const char *after, const char *after2, uint64_t tasks_max, sd_bus_error *error, char **job);
 int manager_start_unit(Manager *manager, const char *unit, sd_bus_error *error, char **job);
 int manager_stop_unit(Manager *manager, const char *unit, sd_bus_error *error, char **job);
 int manager_abandon_scope(Manager *manager, const char *scope, sd_bus_error *error);
@@ -185,6 +187,7 @@ const struct ConfigPerfItem* logind_gperf_lookup(const char *key, unsigned lengt
 int manager_set_lid_switch_ignore(Manager *m, usec_t until);
 
 int config_parse_tmpfs_size(const char *unit, const char *filename, unsigned line, const char *section, unsigned section_line, const char *lvalue, int ltype, const char *rvalue, void *data, void *userdata);
+int config_parse_user_tasks_max(const char *unit, const char *filename, unsigned line, const char *section, unsigned section_line, const char *lvalue, int ltype, const char *rvalue, void *data, void *userdata);
 
 int manager_get_session_from_creds(Manager *m, sd_bus_message *message, const char *name, sd_bus_error *error, Session **ret);
 int manager_get_user_from_creds(Manager *m, sd_bus_message *message, uid_t uid, sd_bus_error *error, User **ret);

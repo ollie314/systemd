@@ -179,7 +179,7 @@
       <varlistentry>
         <term><constant>-ENODATA</constant></term>
 
-        <listitem><para>Given field is not specified for the described
+        <listitem><para>The given field is not specified for the described
         user.</para>
         </listitem>
       </varlistentry>
@@ -195,7 +195,7 @@
         <term><constant>-EINVAL</constant></term>
 
         <listitem><para>An input parameter was invalid (out of range,
-        or NULL, where that's not accepted). This is also returned if
+        or NULL, where that is not accepted). This is also returned if
         the passed user ID is 0xFFFF or 0xFFFFFFFF, which are
         undefined on Linux.</para></listitem>
       </varlistentry>
@@ -215,19 +215,6 @@
     and can be compiled and linked to using the
     <constant>libsystemd</constant> <citerefentry project='die-net'><refentrytitle>pkg-config</refentrytitle><manvolnum>1</manvolnum></citerefentry>
     entry.</para>
-  </refsect1>
-
-  <refsect1>
-    <title>History</title>
-
-    <para><function>sd_uid_get_state()</function>,
-    <function>sd_uid_is_on_seat()</function>,
-    <function>sd_uid_get_sessions()</function>, and
-    <function>sd_uid_get_seats()</function> functions were added in
-    systemd-31.</para>
-
-    <para><function>sd_uid_get_display()</function> was added in
-    systemd-213.</para>
   </refsect1>
 
   <refsect1>

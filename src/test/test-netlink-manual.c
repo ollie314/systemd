@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -70,10 +68,10 @@ static int test_tunnel_configure(sd_netlink *rtnl) {
 
         /* skip test if module cannot be loaded */
         r = load_module("ipip");
-        if(r < 0)
+        if (r < 0)
                 return EXIT_TEST_SKIP;
 
-        if(getuid() != 0)
+        if (getuid() != 0)
                 return EXIT_TEST_SKIP;
 
         /* IPIP tunnel */
@@ -101,7 +99,7 @@ static int test_tunnel_configure(sd_netlink *rtnl) {
         assert_se((m = sd_netlink_message_unref(m)) == NULL);
 
         r = load_module("sit");
-        if(r < 0)
+        if (r < 0)
                 return EXIT_TEST_SKIP;
 
         /* sit */

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -32,8 +30,6 @@
 #include "util.h"
 
 bool manager_ignore_link(Manager *m, Link *link) {
-        char **ignore;
-
         assert(m);
         assert(link);
 
@@ -46,11 +42,7 @@ bool manager_ignore_link(Manager *m, Link *link) {
                 return true;
 
         /* ignore interfaces we explicitly are asked to ignore */
-        STRV_FOREACH(ignore, m->ignore)
-                if (fnmatch(*ignore, link->ifname, 0) == 0)
-                        return true;
-
-        return false;
+        return strv_fnmatch(m->ignore, link->ifname, 0);
 }
 
 bool manager_all_configured(Manager *m) {
@@ -175,7 +167,7 @@ static int on_rtnl_event(sd_netlink *rtnl, sd_netlink_message *mm, void *userdat
 }
 
 static int manager_rtnl_listen(Manager *m) {
-        _cleanup_netlink_message_unref_ sd_netlink_message *req = NULL, *reply = NULL;
+        _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *req = NULL, *reply = NULL;
         sd_netlink_message *i;
         int r;
 

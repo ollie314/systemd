@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -22,6 +20,7 @@
 #include <stddef.h>
 #include <sys/epoll.h>
 #include <sys/mman.h>
+#include <sys/statvfs.h>
 #include <unistd.h>
 
 #include "alloc-util.h"
@@ -207,7 +206,7 @@ void server_process_native_message(
                                            allow_object_pid(ucred)) {
                                         char buf[DECIMAL_STR_MAX(pid_t)];
                                         memcpy(buf, p + strlen("OBJECT_PID="), l - strlen("OBJECT_PID="));
-                                        char_array_0(buf);
+                                        buf[l-strlen("OBJECT_PID=")] = '\0';
 
                                         /* ignore error */
                                         parse_pid(buf, &object_pid);
@@ -344,7 +343,7 @@ void server_process_native_file(
 
                 r = readlink_malloc(sl, &k);
                 if (r < 0) {
-                        log_error_errno(errno, "readlink(%s) failed: %m", sl);
+                        log_error_errno(r, "readlink(%s) failed: %m", sl);
                         return;
                 }
 
@@ -399,7 +398,36 @@ void server_process_native_file(
                 assert_se(munmap(p, ps) >= 0);
         } else {
                 _cleanup_free_ void *p = NULL;
+                struct statvfs vfs;
                 ssize_t n;
+
+                if (fstatvfs(fd, &vfs) < 0) {
+                        log_error_errno(errno, "Failed to stat file system of passed file, ignoring: %m");
+                        return;
+                }
+
+                /* Refuse operating on file systems that have
+                 * mandatory locking enabled, see:
+                 *
+                 * https://github.com/systemd/systemd/issues/1822
+                 */
+                if (vfs.f_flag & ST_MANDLOCK) {
+                        log_error("Received file descriptor from file system with mandatory locking enable, refusing.");
+                        return;
+                }
+
+                /* Make the fd non-blocking. On regular files this has
+                 * the effect of bypassing mandatory locking. Of
+                 * course, this should normally not be necessary given
+                 * the check above, but let's better be safe than
+                 * sorry, after all NFS is pretty confusing regarding
+                 * file system flags, and we better don't trust it,
+                 * and so is SMB. */
+                r = fd_nonblock(fd, true);
+                if (r < 0) {
+                        log_error_errno(r, "Failed to make fd non-blocking, ignoring: %m");
+                        return;
+                }
 
                 /* The file is not sealed, we can't map the file here, since
                  * clients might then truncate it and trigger a SIGBUS for
@@ -413,31 +441,31 @@ void server_process_native_file(
 
                 n = pread(fd, p, st.st_size, 0);
                 if (n < 0)
-                        log_error_errno(n, "Failed to read file, ignoring: %m");
+                        log_error_errno(errno, "Failed to read file, ignoring: %m");
                 else if (n > 0)
                         server_process_native_message(s, p, n, ucred, tv, label, label_len);
         }
 }
 
 int server_open_native_socket(Server*s) {
+
+        static const union sockaddr_union sa = {
+                .un.sun_family = AF_UNIX,
+                .un.sun_path = "/run/systemd/journal/socket",
+        };
         static const int one = 1;
         int r;
 
         assert(s);
 
         if (s->native_fd < 0) {
-                union sockaddr_union sa = {
-                        .un.sun_family = AF_UNIX,
-                        .un.sun_path = "/run/systemd/journal/socket",
-                };
-
                 s->native_fd = socket(AF_UNIX, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0);
                 if (s->native_fd < 0)
                         return log_error_errno(errno, "socket() failed: %m");
 
-                unlink(sa.un.sun_path);
+                (void) unlink(sa.un.sun_path);
 
-                r = bind(s->native_fd, &sa.sa, offsetof(union sockaddr_union, un.sun_path) + strlen(sa.un.sun_path));
+                r = bind(s->native_fd, &sa.sa, SOCKADDR_UN_LEN(sa.un));
                 if (r < 0)
                         return log_error_errno(errno, "bind(%s) failed: %m", sa.un.sun_path);
 
@@ -450,7 +478,7 @@ int server_open_native_socket(Server*s) {
                 return log_error_errno(errno, "SO_PASSCRED failed: %m");
 
 #ifdef HAVE_SELINUX
-        if (mac_selinux_use()) {
+        if (mac_selinux_have()) {
                 r = setsockopt(s->native_fd, SOL_SOCKET, SO_PASSSEC, &one, sizeof(one));
                 if (r < 0)
                         log_warning_errno(errno, "SO_PASSSEC failed: %m");
@@ -464,6 +492,10 @@ int server_open_native_socket(Server*s) {
         r = sd_event_add_io(s->event, &s->native_event_source, s->native_fd, EPOLLIN, server_process_datagram, s);
         if (r < 0)
                 return log_error_errno(r, "Failed to add native server fd to event loop: %m");
+
+        r = sd_event_source_set_priority(s->native_event_source, SD_EVENT_PRIORITY_NORMAL+5);
+        if (r < 0)
+                return log_error_errno(r, "Failed to adjust native event source priority: %m");
 
         return 0;
 }

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,10 +17,10 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <sys/types.h>
-#include <sys/ioctl.h>
 #include <fcntl.h>
 #include <pwd.h>
+#include <sys/ioctl.h>
+#include <sys/types.h>
 #include <linux/vt.h>
 
 #include "alloc-util.h"
@@ -98,15 +96,16 @@ int manager_add_session(Manager *m, const char *id, Session **_session) {
 
 int manager_add_user(Manager *m, uid_t uid, gid_t gid, const char *name, User **_user) {
         User *u;
+        int r;
 
         assert(m);
         assert(name);
 
         u = hashmap_get(m->users, UID_TO_PTR(uid));
         if (!u) {
-                u = user_new(m, uid, gid, name);
-                if (!u)
-                        return -ENOMEM;
+                r = user_new(&u, m, uid, gid, name);
+                if (r < 0)
+                        return r;
         }
 
         if (_user)
@@ -138,7 +137,7 @@ int manager_add_user_by_uid(Manager *m, uid_t uid, User **_user) {
         errno = 0;
         p = getpwuid(uid);
         if (!p)
-                return errno ? -errno : -ENOENT;
+                return errno > 0 ? -errno : -ENOENT;
 
         return manager_add_user(m, uid, p->pw_gid, p->pw_name, _user);
 }
@@ -365,16 +364,16 @@ bool manager_shall_kill(Manager *m, const char *user) {
         assert(m);
         assert(user);
 
-        if (!m->kill_user_processes)
+        if (!m->kill_exclude_users && streq(user, "root"))
                 return false;
 
         if (strv_contains(m->kill_exclude_users, user))
                 return false;
 
-        if (strv_isempty(m->kill_only_users))
-                return true;
+        if (!strv_isempty(m->kill_only_users))
+                return strv_contains(m->kill_only_users, user);
 
-        return strv_contains(m->kill_only_users, user);
+        return m->kill_user_processes;
 }
 
 static int vt_is_busy(unsigned int vtnr) {
@@ -403,7 +402,7 @@ static int vt_is_busy(unsigned int vtnr) {
 }
 
 int manager_spawn_autovt(Manager *m, unsigned int vtnr) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         char name[sizeof("autovt@tty.service") + DECIMAL_STR_MAX(unsigned int)];
         int r;
 
@@ -497,7 +496,7 @@ static int manager_count_external_displays(Manager *m) {
                         continue;
 
                 /* Ignore internal displays: the type is encoded in
-                 * the sysfs name, as the second dash seperated item
+                 * the sysfs name, as the second dash separated item
                  * (the first is the card name, the last the connector
                  * number). We implement a whitelist of external
                  * displays here, rather than a whitelist, to ensure

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -21,12 +19,12 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include "extract-word.h"
 #include "hashmap.h"
 #include "macro.h"
 
-Set *internal_set_new(const struct hash_ops *hash_ops  HASHMAP_DEBUG_PARAMS);
-#define set_new(ops) internal_set_new(ops  HASHMAP_DEBUG_SRC_ARGS)
-
+Set *internal_set_new(const struct hash_ops *hash_ops HASHMAP_DEBUG_PARAMS);
+#define set_new(ops) internal_set_new(ops HASHMAP_DEBUG_SRC_ARGS)
 
 static inline Set *set_free(Set *s) {
         internal_hashmap_free(HASHMAP_BASE(s));
@@ -44,8 +42,8 @@ static inline Set *set_copy(Set *s) {
         return (Set*) internal_hashmap_copy(HASHMAP_BASE(s));
 }
 
-int internal_set_ensure_allocated(Set **s, const struct hash_ops *hash_ops  HASHMAP_DEBUG_PARAMS);
-#define set_ensure_allocated(h, ops) internal_set_ensure_allocated(h, ops  HASHMAP_DEBUG_SRC_ARGS)
+int internal_set_ensure_allocated(Set **s, const struct hash_ops *hash_ops HASHMAP_DEBUG_PARAMS);
+#define set_ensure_allocated(h, ops) internal_set_ensure_allocated(h, ops HASHMAP_DEBUG_SRC_ARGS)
 
 int set_put(Set *s, const void *key);
 /* no set_update */
@@ -125,9 +123,13 @@ static inline char **set_get_strv(Set *s) {
 int set_consume(Set *s, void *value);
 int set_put_strdup(Set *s, const char *p);
 int set_put_strdupv(Set *s, char **l);
+int set_put_strsplit(Set *s, const char *v, const char *separators, ExtractFlags flags);
 
 #define SET_FOREACH(e, s, i) \
         for ((i) = ITERATOR_FIRST; set_iterate((s), &(i), (void**)&(e)); )
+
+#define SET_FOREACH_MOVE(e, d, s)                                       \
+        for (; ({ e = set_first(s); assert_se(!e || set_move_one(d, s, e) >= 0); e; }); )
 
 DEFINE_TRIVIAL_CLEANUP_FUNC(Set*, set_free);
 DEFINE_TRIVIAL_CLEANUP_FUNC(Set*, set_free_free);

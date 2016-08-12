@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -22,9 +20,14 @@
 #include "alloc-util.h"
 #include "cap-list.h"
 #include "conf-parser.h"
+#include "nspawn-network.h"
 #include "nspawn-settings.h"
+#include "parse-util.h"
 #include "process-util.h"
+#include "socket-util.h"
+#include "string-util.h"
 #include "strv.h"
+#include "user-util.h"
 #include "util.h"
 
 int settings_load(FILE *f, const char *path, Settings **ret) {
@@ -38,11 +41,15 @@ int settings_load(FILE *f, const char *path, Settings **ret) {
         if (!s)
                 return -ENOMEM;
 
-        s->boot = -1;
+        s->start_mode = _START_MODE_INVALID;
         s->personality = PERSONALITY_INVALID;
+        s->userns_mode = _USER_NAMESPACE_MODE_INVALID;
+        s->uid_shift = UID_INVALID;
+        s->uid_range = UID_INVALID;
 
         s->read_only = -1;
         s->volatile_mode = _VOLATILE_MODE_INVALID;
+        s->userns_chown = -1;
 
         s->private_network = -1;
         s->network_veth = -1;
@@ -59,6 +66,16 @@ int settings_load(FILE *f, const char *path, Settings **ret) {
         if (r < 0)
                 return r;
 
+        /* Make sure that if userns_mode is set, userns_chown is set to something appropriate, and vice versa. Either
+         * both fields shall be initialized or neither. */
+        if (s->userns_mode == USER_NAMESPACE_PICK)
+                s->userns_chown = true;
+        else if (s->userns_mode != _USER_NAMESPACE_MODE_INVALID && s->userns_chown < 0)
+                s->userns_chown = false;
+
+        if (s->userns_chown >= 0 && s->userns_mode == _USER_NAMESPACE_MODE_INVALID)
+                s->userns_mode = USER_NAMESPACE_NO;
+
         *ret = s;
         s = NULL;
 
@@ -73,11 +90,14 @@ Settings* settings_free(Settings *s) {
         strv_free(s->parameters);
         strv_free(s->environment);
         free(s->user);
+        free(s->working_directory);
 
         strv_free(s->network_interfaces);
         strv_free(s->network_macvlan);
         strv_free(s->network_ipvlan);
+        strv_free(s->network_veth_extra);
         free(s->network_bridge);
+        free(s->network_zone);
         expose_port_free_all(s->expose_ports);
 
         custom_mount_free_all(s->custom_mounts, s->n_custom_mounts);
@@ -93,9 +113,11 @@ bool settings_private_network(Settings *s) {
                 s->private_network > 0 ||
                 s->network_veth > 0 ||
                 s->network_bridge ||
+                s->network_zone ||
                 s->network_interfaces ||
                 s->network_macvlan ||
-                s->network_ipvlan;
+                s->network_ipvlan ||
+                s->network_veth_extra;
 }
 
 bool settings_network_veth(Settings *s) {
@@ -103,7 +125,8 @@ bool settings_network_veth(Settings *s) {
 
         return
                 s->network_veth > 0 ||
-                s->network_bridge;
+                s->network_bridge ||
+                s->network_zone;
 }
 
 DEFINE_CONFIG_PARSE_ENUM(config_parse_volatile_mode, volatile_mode, VolatileMode, "Failed to parse volatile mode");
@@ -269,15 +292,225 @@ int config_parse_tmpfs(
                 return 0;
         }
 
-        if (settings->network_bridge)
-                settings->network_veth = true;
+        return 0;
+}
 
-        if (settings->network_interfaces ||
-            settings->network_macvlan ||
-            settings->network_ipvlan ||
-            settings->network_bridge ||
-            settings->network_veth)
-                settings->private_network = true;
+int config_parse_veth_extra(
+                const char *unit,
+                const char *filename,
+                unsigned line,
+                const char *section,
+                unsigned section_line,
+                const char *lvalue,
+                int ltype,
+                const char *rvalue,
+                void *data,
+                void *userdata) {
+
+        Settings *settings = data;
+        int r;
+
+        assert(filename);
+        assert(lvalue);
+        assert(rvalue);
+
+        r = veth_extra_parse(&settings->network_veth_extra, rvalue);
+        if (r < 0) {
+                log_syntax(unit, LOG_ERR, filename, line, r, "Invalid extra virtual Ethernet link specification %s: %m", rvalue);
+                return 0;
+        }
+
+        return 0;
+}
+
+int config_parse_network_zone(
+                const char *unit,
+                const char *filename,
+                unsigned line,
+                const char *section,
+                unsigned section_line,
+                const char *lvalue,
+                int ltype,
+                const char *rvalue,
+                void *data,
+                void *userdata) {
+
+        Settings *settings = data;
+        _cleanup_free_ char *j = NULL;
+
+        assert(filename);
+        assert(lvalue);
+        assert(rvalue);
+
+        j = strappend("vz-", rvalue);
+        if (!ifname_valid(j)) {
+                log_syntax(unit, LOG_ERR, filename, line, 0, "Invalid network zone name %s, ignoring: %m", rvalue);
+                return 0;
+        }
+
+        free(settings->network_zone);
+        settings->network_zone = j;
+        j = NULL;
+
+        return 0;
+}
+
+int config_parse_boot(
+                const char *unit,
+                const char *filename,
+                unsigned line,
+                const char *section,
+                unsigned section_line,
+                const char *lvalue,
+                int ltype,
+                const char *rvalue,
+                void *data,
+                void *userdata) {
+
+        Settings *settings = data;
+        int r;
+
+        assert(filename);
+        assert(lvalue);
+        assert(rvalue);
+
+        r = parse_boolean(rvalue);
+        if (r < 0) {
+                log_syntax(unit, LOG_ERR, filename, line, r, "Failed to parse Boot= parameter %s, ignoring: %m", rvalue);
+                return 0;
+        }
+
+        if (r > 0) {
+                if (settings->start_mode == START_PID2)
+                        goto conflict;
+
+                settings->start_mode = START_BOOT;
+        } else {
+                if (settings->start_mode == START_BOOT)
+                        goto conflict;
+
+                if (settings->start_mode < 0)
+                        settings->start_mode = START_PID1;
+        }
+
+        return 0;
+
+conflict:
+        log_syntax(unit, LOG_ERR, filename, line, r, "Conflicting Boot= or ProcessTwo= setting found. Ignoring.");
+        return 0;
+}
+
+int config_parse_pid2(
+                const char *unit,
+                const char *filename,
+                unsigned line,
+                const char *section,
+                unsigned section_line,
+                const char *lvalue,
+                int ltype,
+                const char *rvalue,
+                void *data,
+                void *userdata) {
+
+        Settings *settings = data;
+        int r;
+
+        assert(filename);
+        assert(lvalue);
+        assert(rvalue);
+
+        r = parse_boolean(rvalue);
+        if (r < 0) {
+                log_syntax(unit, LOG_ERR, filename, line, r, "Failed to parse ProcessTwo= parameter %s, ignoring: %m", rvalue);
+                return 0;
+        }
+
+        if (r > 0) {
+                if (settings->start_mode == START_BOOT)
+                        goto conflict;
+
+                settings->start_mode = START_PID2;
+        } else {
+                if (settings->start_mode == START_PID2)
+                        goto conflict;
+
+                if (settings->start_mode < 0)
+                        settings->start_mode = START_PID1;
+        }
+
+        return 0;
+
+conflict:
+        log_syntax(unit, LOG_ERR, filename, line, r, "Conflicting Boot= or ProcessTwo= setting found. Ignoring.");
+        return 0;
+}
+
+int config_parse_private_users(
+                const char *unit,
+                const char *filename,
+                unsigned line,
+                const char *section,
+                unsigned section_line,
+                const char *lvalue,
+                int ltype,
+                const char *rvalue,
+                void *data,
+                void *userdata) {
+
+        Settings *settings = data;
+        int r;
+
+        assert(filename);
+        assert(lvalue);
+        assert(rvalue);
+
+        r = parse_boolean(rvalue);
+        if (r == 0) {
+                /* no: User namespacing off */
+                settings->userns_mode = USER_NAMESPACE_NO;
+                settings->uid_shift = UID_INVALID;
+                settings->uid_range = UINT32_C(0x10000);
+        } else if (r > 0) {
+                /* yes: User namespacing on, UID range is read from root dir */
+                settings->userns_mode = USER_NAMESPACE_FIXED;
+                settings->uid_shift = UID_INVALID;
+                settings->uid_range = UINT32_C(0x10000);
+        } else if (streq(rvalue, "pick")) {
+                /* pick: User namespacing on, UID range is picked randomly */
+                settings->userns_mode = USER_NAMESPACE_PICK;
+                settings->uid_shift = UID_INVALID;
+                settings->uid_range = UINT32_C(0x10000);
+        } else {
+                const char *range, *shift;
+                uid_t sh, rn;
+
+                /* anything else: User namespacing on, UID range is explicitly configured */
+
+                range = strchr(rvalue, ':');
+                if (range) {
+                        shift = strndupa(rvalue, range - rvalue);
+                        range++;
+
+                        r = safe_atou32(range, &rn);
+                        if (r < 0 || rn <= 0) {
+                                log_syntax(unit, LOG_ERR, filename, line, r, "UID/GID range invalid, ignoring: %s", range);
+                                return 0;
+                        }
+                } else {
+                        shift = rvalue;
+                        rn = UINT32_C(0x10000);
+                }
+
+                r = parse_uid(shift, &sh);
+                if (r < 0) {
+                        log_syntax(unit, LOG_ERR, filename, line, r, "UID/GID shift invalid, ignoring: %s", range);
+                        return 0;
+                }
+
+                settings->userns_mode = USER_NAMESPACE_FIXED;
+                settings->uid_shift = sh;
+                settings->uid_range = rn;
+        }
 
         return 0;
 }

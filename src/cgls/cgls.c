@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -123,15 +121,17 @@ static int parse_argv(int argc, char *argv[]) {
 }
 
 static int get_cgroup_root(char **ret) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_bus_flush_close_unref_ sd_bus *bus = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         _cleanup_free_ char *unit = NULL, *path = NULL;
         const char *m;
         int r;
 
         if (!arg_machine) {
                 r = cg_get_root_path(ret);
-                if (r < 0)
+                if (r == -ENOMEDIUM)
+                        return log_error_errno(r, "Failed to get root control group path: No cgroup filesystem mounted on /sys/fs/cgroup");
+                else if (r < 0)
                         return log_error_errno(r, "Failed to get root control group path: %m");
 
                 return 0;
@@ -165,8 +165,10 @@ static int get_cgroup_root(char **ret) {
 }
 
 static void show_cg_info(const char *controller, const char *path) {
-        if (cg_unified() <= 0)
+
+        if (cg_unified() <= 0 && controller && !streq(controller, SYSTEMD_CGROUP_CONTROLLER))
                 printf("Controller %s; ", controller);
+
         printf("Control group %s:\n", isempty(path) ? "/" : path);
         fflush(stdout);
 }
@@ -182,14 +184,15 @@ int main(int argc, char *argv[]) {
                 goto finish;
 
         if (!arg_no_pager) {
-                r = pager_open(false);
+                r = pager_open(arg_no_pager, false);
                 if (r > 0 && arg_full < 0)
                         arg_full = true;
         }
 
         output_flags =
                 arg_all * OUTPUT_SHOW_ALL |
-                (arg_full > 0) * OUTPUT_FULL_WIDTH;
+                (arg_full > 0) * OUTPUT_FULL_WIDTH |
+                arg_kernel_threads * OUTPUT_KERNEL_THREADS;
 
         if (optind < argc) {
                 _cleanup_free_ char *root = NULL;
@@ -207,7 +210,7 @@ int main(int argc, char *argv[]) {
                                 printf("Directory %s:\n", argv[i]);
                                 fflush(stdout);
 
-                                q = show_cgroup_by_path(argv[i], NULL, 0, arg_kernel_threads, output_flags);
+                                q = show_cgroup_by_path(argv[i], NULL, 0, output_flags);
                         } else {
                                 _cleanup_free_ char *c = NULL, *p = NULL, *j = NULL;
                                 const char *controller, *path;
@@ -233,7 +236,7 @@ int main(int argc, char *argv[]) {
 
                                 show_cg_info(controller, path);
 
-                                q = show_cgroup(controller, path, NULL, 0, arg_kernel_threads, output_flags);
+                                q = show_cgroup(controller, path, NULL, 0, output_flags);
                         }
 
                         if (q < 0)
@@ -256,7 +259,7 @@ int main(int argc, char *argv[]) {
                                 printf("Working directory %s:\n", cwd);
                                 fflush(stdout);
 
-                                r = show_cgroup_by_path(cwd, NULL, 0, arg_kernel_threads, output_flags);
+                                r = show_cgroup_by_path(cwd, NULL, 0, output_flags);
                                 done = true;
                         }
                 }
@@ -270,7 +273,8 @@ int main(int argc, char *argv[]) {
 
                         show_cg_info(SYSTEMD_CGROUP_CONTROLLER, root);
 
-                        r = show_cgroup(SYSTEMD_CGROUP_CONTROLLER, root, NULL, 0, arg_kernel_threads, output_flags);
+                        printf("-.slice\n");
+                        r = show_cgroup(SYSTEMD_CGROUP_CONTROLLER, root, NULL, 0, output_flags);
                 }
         }
 

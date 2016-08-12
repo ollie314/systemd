@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -50,6 +48,7 @@ typedef struct TimerValue {
 typedef enum TimerResult {
         TIMER_SUCCESS,
         TIMER_FAILURE_RESOURCES,
+        TIMER_FAILURE_START_LIMIT_HIT,
         _TIMER_RESULT_MAX,
         _TIMER_RESULT_INVALID = -1
 } TimerResult;
@@ -58,6 +57,7 @@ struct Timer {
         Unit meta;
 
         usec_t accuracy_usec;
+        usec_t random_usec;
 
         LIST_HEAD(TimerValue, values);
         usec_t next_elapse_realtime;
@@ -73,6 +73,7 @@ struct Timer {
 
         bool persistent;
         bool wake_system;
+        bool remain_after_elapse;
 
         char *stamp_path;
 };

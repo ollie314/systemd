@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -244,7 +242,7 @@ static int raw_pull_maybe_convert_qcow2(RawPull *i) {
 
         r = chattr_fd(converted_fd, FS_NOCOW_FL, FS_NOCOW_FL);
         if (r < 0)
-                log_warning_errno(errno, "Failed to set file attributes on %s: %m", t);
+                log_warning_errno(r, "Failed to set file attributes on %s: %m", t);
 
         log_info("Unpacking QCOW2 file.");
 
@@ -320,7 +318,7 @@ static int raw_pull_make_local_copy(RawPull *i) {
          * writes. */
         r = chattr_fd(dfd, FS_NOCOW_FL, FS_NOCOW_FL);
         if (r < 0)
-                log_warning_errno(errno, "Failed to set file attributes on %s: %m", tp);
+                log_warning_errno(r, "Failed to set file attributes on %s: %m", tp);
 
         r = copy_bytes(i->raw_job->disk_fd, dfd, (uint64_t) -1, true);
         if (r < 0) {
@@ -335,8 +333,9 @@ static int raw_pull_make_local_copy(RawPull *i) {
 
         r = rename(tp, p);
         if (r < 0)  {
+                r = log_error_errno(errno, "Failed to move writable image into place: %m");
                 unlink(tp);
-                return log_error_errno(errno, "Failed to move writable image into place: %m");
+                return r;
         }
 
         log_info("Created new local image '%s'.", i->local);
@@ -356,10 +355,12 @@ static int raw_pull_make_local_copy(RawPull *i) {
                 r = copy_file_atomic(i->settings_path, local_settings, 0644, i->force_local, 0);
                 if (r == -EEXIST)
                         log_warning_errno(r, "Settings file %s already exists, not replacing.", local_settings);
-                else if (r < 0 && r != -ENOENT)
+                else if (r == -ENOENT)
+                        log_debug_errno(r, "Skipping creation of settings file, since none was found.");
+                else if (r < 0)
                         log_warning_errno(r, "Failed to copy settings files %s, ignoring: %m", local_settings);
                 else
-                        log_info("Created new settings file '%s.nspawn'", i->local);
+                        log_info("Created new settings file %s.", local_settings);
         }
 
         return 0;
@@ -511,7 +512,7 @@ static int raw_pull_job_on_open_disk_raw(PullJob *j) {
 
         r = chattr_fd(j->disk_fd, FS_NOCOW_FL, FS_NOCOW_FL);
         if (r < 0)
-                log_warning_errno(errno, "Failed to set file attributes on %s: %m", i->temp_path);
+                log_warning_errno(r, "Failed to set file attributes on %s: %m", i->temp_path);
 
         return 0;
 }

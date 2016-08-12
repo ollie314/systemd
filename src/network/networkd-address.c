@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -29,9 +27,13 @@
 #include "networkd.h"
 #include "parse-util.h"
 #include "set.h"
+#include "socket-util.h"
 #include "string-util.h"
 #include "utf8.h"
 #include "util.h"
+
+#define ADDRESSES_PER_LINK_MAX 2048U
+#define STATIC_ADDRESSES_PER_NETWORK_MAX 1024U
 
 int address_new(Address **ret) {
         _cleanup_address_free_ Address *address = NULL;
@@ -55,6 +57,9 @@ int address_new_static(Network *network, unsigned section, Address **ret) {
         _cleanup_address_free_ Address *address = NULL;
         int r;
 
+        assert(network);
+        assert(ret);
+
         if (section) {
                 address = hashmap_get(network->addresses_by_section, UINT_TO_PTR(section));
                 if (address) {
@@ -65,19 +70,21 @@ int address_new_static(Network *network, unsigned section, Address **ret) {
                 }
         }
 
+        if (network->n_static_addresses >= STATIC_ADDRESSES_PER_NETWORK_MAX)
+                return -E2BIG;
+
         r = address_new(&address);
         if (r < 0)
                 return r;
 
-        address->network = network;
-
-        LIST_APPEND(addresses, network->static_addresses, address);
-
         if (section) {
                 address->section = section;
-                hashmap_put(network->addresses_by_section,
-                            UINT_TO_PTR(address->section), address);
+                hashmap_put(network->addresses_by_section, UINT_TO_PTR(address->section), address);
         }
+
+        address->network = network;
+        LIST_APPEND(addresses, network->static_addresses, address);
+        network->n_static_addresses++;
 
         *ret = address;
         address = NULL;
@@ -91,15 +98,19 @@ void address_free(Address *address) {
 
         if (address->network) {
                 LIST_REMOVE(addresses, address->network->static_addresses, address);
+                assert(address->network->n_static_addresses > 0);
+                address->network->n_static_addresses--;
 
                 if (address->section)
-                        hashmap_remove(address->network->addresses_by_section,
-                                       UINT_TO_PTR(address->section));
+                        hashmap_remove(address->network->addresses_by_section, UINT_TO_PTR(address->section));
         }
 
         if (address->link) {
                 set_remove(address->link->addresses, address);
                 set_remove(address->link->addresses_foreign, address);
+
+                if (in_addr_equal(AF_INET6, &address->in_addr, (const union in_addr_union *) &address->link->ipv6ll_address))
+                        memzero(&address->link->ipv6ll_address, sizeof(struct in6_addr));
         }
 
         free(address);
@@ -248,6 +259,8 @@ static int address_add_internal(Link *link, Set **addresses,
         address->family = family;
         address->in_addr = *in_addr;
         address->prefixlen = prefixlen;
+        /* Consider address tentative until we get the real flags from the kernel */
+        address->flags = IFA_F_TENTATIVE;
 
         r = set_ensure_allocated(addresses, &address_hash_ops);
         if (r < 0)
@@ -271,15 +284,35 @@ int address_add_foreign(Link *link, int family, const union in_addr_union *in_ad
         return address_add_internal(link, &link->addresses_foreign, family, in_addr, prefixlen, ret);
 }
 
-static int address_add(Link *link, int family, const union in_addr_union *in_addr, unsigned char prefixlen, Address **ret) {
+int address_add(Link *link, int family, const union in_addr_union *in_addr, unsigned char prefixlen, Address **ret) {
+        Address *address;
         int r;
 
-        r = address_add_internal(link, &link->addresses, family, in_addr, prefixlen, ret);
-        if (r < 0)
+        r = address_get(link, family, in_addr, prefixlen, &address);
+        if (r == -ENOENT) {
+                /* Address does not exist, create a new one */
+                r = address_add_internal(link, &link->addresses, family, in_addr, prefixlen, &address);
+                if (r < 0)
+                        return r;
+        } else if (r == 0) {
+                /* Take over a foreign address */
+                r = set_ensure_allocated(&link->addresses, &address_hash_ops);
+                if (r < 0)
+                        return r;
+
+                r = set_put(link->addresses, address);
+                if (r < 0)
+                        return r;
+
+                set_remove(link->addresses_foreign, address);
+        } else if (r == 1) {
+                /* Already exists, do nothing */
+                ;
+        } else
                 return r;
 
-        link_update_operstate(link);
-        link_dirty(link);
+        if (ret)
+                *ret = address;
 
         return 0;
 }
@@ -305,21 +338,42 @@ static int address_release(Address *address) {
         return 0;
 }
 
-int address_update(Address *address, unsigned char flags, unsigned char scope, struct ifa_cacheinfo *cinfo) {
+int address_update(
+                Address *address,
+                unsigned char flags,
+                unsigned char scope,
+                const struct ifa_cacheinfo *cinfo) {
+
         bool ready;
+        int r;
 
         assert(address);
         assert(cinfo);
+        assert_return(address->link, 1);
+
+        if (IN_SET(address->link->state, LINK_STATE_FAILED, LINK_STATE_LINGER))
+                return 1;
 
         ready = address_is_ready(address);
 
-        address->added = true;
         address->flags = flags;
         address->scope = scope;
         address->cinfo = *cinfo;
 
-        if (!ready && address_is_ready(address) && address->link)
+        link_update_operstate(address->link);
+
+        if (!ready && address_is_ready(address)) {
                 link_check_ready(address->link);
+
+                if (address->family == AF_INET6 &&
+                    in_addr_is_link_local(AF_INET6, &address->in_addr) > 0 &&
+                    in_addr_is_null(AF_INET6, (const union in_addr_union*) &address->link->ipv6ll_address) > 0) {
+
+                        r = link_ipv6ll_gained(address->link, &address->in_addr.in6);
+                        if (r < 0)
+                                return r;
+                }
+        }
 
         return 0;
 }
@@ -344,32 +398,46 @@ int address_drop(Address *address) {
         return 0;
 }
 
-int address_get(Link *link, int family, const union in_addr_union *in_addr, unsigned char prefixlen, Address **ret) {
-        Address address = {}, *existing;
+int address_get(Link *link,
+                int family,
+                const union in_addr_union *in_addr,
+                unsigned char prefixlen,
+                Address **ret) {
+
+        Address address, *existing;
 
         assert(link);
         assert(in_addr);
-        assert(ret);
 
-        address.family = family;
-        address.in_addr = *in_addr;
-        address.prefixlen = prefixlen;
+        address = (Address) {
+                .family = family,
+                .in_addr = *in_addr,
+                .prefixlen = prefixlen,
+        };
 
         existing = set_get(link->addresses, &address);
-        if (!existing) {
-                existing = set_get(link->addresses_foreign, &address);
-                if (!existing)
-                        return -ENOENT;
+        if (existing) {
+                if (ret)
+                        *ret = existing;
+                return 1;
         }
 
-        *ret = existing;
+        existing = set_get(link->addresses_foreign, &address);
+        if (existing) {
+                if (ret)
+                        *ret = existing;
+                return 0;
+        }
 
-        return 0;
+        return -ENOENT;
 }
 
-int address_remove(Address *address, Link *link,
-                 sd_netlink_message_handler_t callback) {
-        _cleanup_netlink_message_unref_ sd_netlink_message *req = NULL;
+int address_remove(
+                Address *address,
+                Link *link,
+                sd_netlink_message_handler_t callback) {
+
+        _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *req = NULL;
         int r;
 
         assert(address);
@@ -463,8 +531,13 @@ static int address_acquire(Link *link, Address *original, Address **ret) {
         return 0;
 }
 
-int address_configure(Address *address, Link *link, sd_netlink_message_handler_t callback, bool update) {
-        _cleanup_netlink_message_unref_ sd_netlink_message *req = NULL;
+int address_configure(
+                Address *address,
+                Link *link,
+                sd_netlink_message_handler_t callback,
+                bool update) {
+
+        _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *req = NULL;
         int r;
 
         assert(address);
@@ -473,6 +546,11 @@ int address_configure(Address *address, Link *link, sd_netlink_message_handler_t
         assert(link->ifindex > 0);
         assert(link->manager);
         assert(link->manager->rtnl);
+
+        /* If this is a new address, then refuse adding more than the limit */
+        if (address_get(link, address->family, &address->in_addr, address->prefixlen, NULL) <= 0 &&
+            set_size(link->addresses) >= ADDRESSES_PER_LINK_MAX)
+                return -E2BIG;
 
         r = address_acquire(link, address, &address);
         if (r < 0)
@@ -690,7 +768,8 @@ int config_parse_address(const char *unit,
         return 0;
 }
 
-int config_parse_label(const char *unit,
+int config_parse_label(
+                const char *unit,
                 const char *filename,
                 unsigned line,
                 const char *section,
@@ -700,9 +779,9 @@ int config_parse_label(const char *unit,
                 const char *rvalue,
                 void *data,
                 void *userdata) {
-        Network *network = userdata;
+
         _cleanup_address_free_ Address *n = NULL;
-        char *label;
+        Network *network = userdata;
         int r;
 
         assert(filename);
@@ -715,25 +794,64 @@ int config_parse_label(const char *unit,
         if (r < 0)
                 return r;
 
-        label = strdup(rvalue);
-        if (!label)
-                return log_oom();
-
-        if (!ascii_is_valid(label) || strlen(label) >= IFNAMSIZ) {
-                log_syntax(unit, LOG_ERR, filename, line, 0, "Interface label is not ASCII clean or is too long, ignoring assignment: %s", rvalue);
-                free(label);
+        if (!ifname_valid(rvalue)) {
+                log_syntax(unit, LOG_ERR, filename, line, 0, "Interface label is not valid or too long, ignoring assignment: %s", rvalue);
                 return 0;
         }
 
-        free(n->label);
-        if (*label)
-                n->label = label;
-        else {
-                free(label);
-                n->label = NULL;
-        }
+        r = free_and_strdup(&n->label, rvalue);
+        if (r < 0)
+                return log_oom();
 
         n = NULL;
+
+        return 0;
+}
+
+int config_parse_lifetime(const char *unit,
+                          const char *filename,
+                          unsigned line,
+                          const char *section,
+                          unsigned section_line,
+                          const char *lvalue,
+                          int ltype,
+                          const char *rvalue,
+                          void *data,
+                          void *userdata) {
+        Network *network = userdata;
+        _cleanup_address_free_ Address *n = NULL;
+        unsigned k;
+        int r;
+
+        assert(filename);
+        assert(section);
+        assert(lvalue);
+        assert(rvalue);
+        assert(data);
+
+        r = address_new_static(network, section_line, &n);
+        if (r < 0)
+                return r;
+
+        if (STR_IN_SET(rvalue, "forever", "infinity")) {
+                n->cinfo.ifa_prefered = CACHE_INFO_INFINITY_LIFE_TIME;
+                n = NULL;
+
+                return 0;
+        }
+
+        r = safe_atou(rvalue, &k);
+        if (r < 0) {
+                log_syntax(unit, LOG_ERR, filename, line, r, "Failed to parse PreferredLifetime, ignoring: %s", rvalue);
+                return 0;
+        }
+
+        if (k != 0)
+                log_syntax(unit, LOG_ERR, filename, line, 0, "Invalid PreferredLifetime value, ignoring: %d", k);
+        else {
+                n->cinfo.ifa_prefered = k;
+                n = NULL;
+        }
 
         return 0;
 }
@@ -741,5 +859,5 @@ int config_parse_label(const char *unit,
 bool address_is_ready(const Address *a) {
         assert(a);
 
-        return a->added && !(a->flags & (IFA_F_TENTATIVE | IFA_F_DEPRECATED));
+        return !(a->flags & (IFA_F_TENTATIVE | IFA_F_DEPRECATED));
 }

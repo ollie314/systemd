@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,9 +17,9 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <time.h>
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <time.h>
 
 #include "alloc-util.h"
 #include "fd-util.h"
@@ -106,7 +104,7 @@ void server_forward_console(
 
         fd = open_terminal(tty, O_WRONLY|O_NOCTTY|O_CLOEXEC);
         if (fd < 0) {
-                log_debug_errno(errno, "Failed to open %s for logging: %m", tty);
+                log_debug_errno(fd, "Failed to open %s for logging: %m", tty);
                 return;
         }
 

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -268,7 +266,7 @@ static char* disk_description(const char *path) {
                 "ID_MODEL_FROM_DATABASE\0"
                 "ID_MODEL\0";
 
-        _cleanup_device_unref_ sd_device *device = NULL;
+        _cleanup_(sd_device_unrefp) sd_device *device = NULL;
         struct stat st;
         const char *i;
         int r;
@@ -721,8 +719,12 @@ int main(int argc, char *argv[]) {
                 int k;
 
                 k = crypt_init_by_name(&cd, argv[2]);
-                if (k) {
-                        log_error_errno(k, "crypt_init() failed: %m");
+                if (k == -ENODEV) {
+                        log_info("Volume %s already inactive.", argv[2]);
+                        r = EXIT_SUCCESS;
+                        goto finish;
+                } else if (k) {
+                        log_error_errno(k, "crypt_init_by_name() failed: %m");
                         goto finish;
                 }
 

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,17 +17,17 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <unistd.h>
 #include <string.h>
+#include <unistd.h>
 
 #ifdef HAVE_KMOD
 #include <libkmod.h>
 #endif
 
-#include "macro.h"
-#include "capability-util.h"
 #include "bus-util.h"
+#include "capability-util.h"
 #include "kmod-setup.h"
+#include "macro.h"
 
 #ifdef HAVE_KMOD
 static void systemd_kmod_log(
@@ -65,9 +63,6 @@ int kmod_setup(void) {
 
                 /* this should never be a module */
                 { "unix",      "/proc/net/unix",            true,   true,    NULL      },
-
-                /* IPC is needed before we bring up any other services */
-                { "kdbus",     "/sys/fs/kdbus",             false,  false,   is_kdbus_wanted },
 
 #ifdef HAVE_LIBIPTC
                 /* netfilter is needed by networkd, nspawn among others, and cannot be autoloaded */

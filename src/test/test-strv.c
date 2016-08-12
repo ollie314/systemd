@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -72,6 +70,18 @@ static const char* const input_table_none[] = {
         NULL,
 };
 
+static const char* const input_table_two_empties[] = {
+        "",
+        "",
+        NULL,
+};
+
+static const char* const input_table_one_empty[] = {
+        "",
+        NULL,
+};
+
+
 static const char* const input_table_quotes[] = {
         "\"",
         "'",
@@ -132,7 +142,7 @@ static void test_strv_find_startswith(void) {
 }
 
 static void test_strv_join(void) {
-        _cleanup_free_ char *p = NULL, *q = NULL, *r = NULL, *s = NULL, *t = NULL;
+        _cleanup_free_ char *p = NULL, *q = NULL, *r = NULL, *s = NULL, *t = NULL, *v = NULL, *w = NULL;
 
         p = strv_join((char **)input_table_multiple, ", ");
         assert_se(p);
@@ -153,6 +163,14 @@ static void test_strv_join(void) {
         t = strv_join((char **)input_table_none, ", ");
         assert_se(t);
         assert_se(streq(t, ""));
+
+        v = strv_join((char **)input_table_two_empties, ", ");
+        assert_se(v);
+        assert_se(streq(v, ", "));
+
+        w = strv_join((char **)input_table_one_empty, ", ");
+        assert_se(w);
+        assert_se(streq(w, ""));
 }
 
 static void test_strv_quote_unquote(const char* const *split, const char *quoted) {
@@ -340,7 +358,7 @@ static void test_strv_extend_strv_concat(void) {
 }
 
 static void test_strv_extend_strv(void) {
-        _cleanup_strv_free_ char **a = NULL, **b = NULL;
+        _cleanup_strv_free_ char **a = NULL, **b = NULL, **n = NULL;
 
         a = strv_new("abc", "def", "ghi", NULL);
         b = strv_new("jkl", "mno", "abc", "pqr", NULL);
@@ -355,8 +373,14 @@ static void test_strv_extend_strv(void) {
         assert_se(streq(a[3], "jkl"));
         assert_se(streq(a[4], "mno"));
         assert_se(streq(a[5], "pqr"));
-
         assert_se(strv_length(a) == 6);
+
+        assert_se(strv_extend_strv(&n, b, false) >= 0);
+        assert_se(streq(n[0], "jkl"));
+        assert_se(streq(n[1], "mno"));
+        assert_se(streq(n[2], "abc"));
+        assert_se(streq(n[3], "pqr"));
+        assert_se(strv_length(n) == 4);
 }
 
 static void test_strv_extend(void) {
@@ -623,7 +647,9 @@ static void test_strv_extend_n(void) {
 static void test_strv_make_nulstr_one(char **l) {
         _cleanup_free_ char *b = NULL, *c = NULL;
         _cleanup_strv_free_ char **q = NULL;
+        const char *s = NULL;
         size_t n, m;
+        unsigned i = 0;
 
         assert_se(strv_make_nulstr(l, &b, &n) >= 0);
         assert_se(q = strv_parse_nulstr(b, n));
@@ -632,6 +658,10 @@ static void test_strv_make_nulstr_one(char **l) {
         assert_se(strv_make_nulstr(q, &c, &m) >= 0);
         assert_se(m == n);
         assert_se(memcmp(b, c, m) == 0);
+
+        NULSTR_FOREACH(s, b)
+                assert_se(streq(s, l[i++]));
+        assert_se(i == strv_length(l));
 }
 
 static void test_strv_make_nulstr(void) {
@@ -640,6 +670,35 @@ static void test_strv_make_nulstr(void) {
         test_strv_make_nulstr_one(STRV_MAKE("foo"));
         test_strv_make_nulstr_one(STRV_MAKE("foo", "bar"));
         test_strv_make_nulstr_one(STRV_MAKE("foo", "bar", "quuux"));
+}
+
+static void test_foreach_string(void) {
+        const char * const t[] = {
+                "foo",
+                "bar",
+                "waldo",
+                NULL
+        };
+        const char *x;
+        unsigned i = 0;
+
+        FOREACH_STRING(x, "foo", "bar", "waldo")
+                assert_se(streq_ptr(t[i++], x));
+
+        assert_se(i == 3);
+
+        FOREACH_STRING(x, "zzz")
+                assert_se(streq(x, "zzz"));
+}
+
+static void test_strv_fnmatch(void) {
+        _cleanup_strv_free_ char **v = NULL;
+
+        assert_se(!strv_fnmatch(STRV_MAKE_EMPTY, "a", 0));
+
+        v = strv_new("*\\*", NULL);
+        assert_se(!strv_fnmatch(v, "\\", 0));
+        assert_se(strv_fnmatch(v, "\\", FNM_NOESCAPE));
 }
 
 int main(int argc, char *argv[]) {
@@ -655,6 +714,8 @@ int main(int argc, char *argv[]) {
         test_strv_quote_unquote(input_table_multiple, "\"one\" \"two\" \"three\"");
         test_strv_quote_unquote(input_table_one, "\"one\"");
         test_strv_quote_unquote(input_table_none, "");
+        test_strv_quote_unquote(input_table_one_empty, "\"\"");
+        test_strv_quote_unquote(input_table_two_empties, "\"\" \"\"");
         test_strv_quote_unquote(input_table_quotes, QUOTES_STRING);
         test_strv_quote_unquote(input_table_spaces, SPACES_STRING);
 
@@ -703,6 +764,9 @@ int main(int argc, char *argv[]) {
         test_strv_skip();
         test_strv_extend_n();
         test_strv_make_nulstr();
+
+        test_foreach_string();
+        test_strv_fnmatch();
 
         return 0;
 }

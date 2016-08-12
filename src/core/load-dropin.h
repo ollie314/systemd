@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -21,13 +19,13 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include "unit.h"
 #include "dropin.h"
+#include "unit.h"
 
 /* Read service data supplementary drop-in directories */
 
 static inline int unit_find_dropin_paths(Unit *u, char ***paths) {
-        return unit_file_find_dropin_paths(u->manager->lookup_paths.unit_path,
+        return unit_file_find_dropin_paths(u->manager->lookup_paths.search_path,
                                            u->manager->unit_path_cache,
                                            u->names,
                                            paths);

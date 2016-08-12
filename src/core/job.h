@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -26,6 +24,7 @@
 #include "sd-event.h"
 
 #include "list.h"
+#include "unit-name.h"
 
 typedef struct Job Job;
 typedef struct JobDependency JobDependency;
@@ -64,6 +63,9 @@ enum JobType {
          * it always collapses into JOB_RESTART or JOB_NOP before entering.
          * Thus we never need to merge it with anything. */
         JOB_TRY_RESTART = _JOB_TYPE_MAX_IN_TRANSACTION, /* if running, stop and then start */
+
+        /* Similar to JOB_TRY_RESTART but collapses to JOB_RELOAD or JOB_NOP */
+        JOB_TRY_RELOAD,
 
         /* JOB_RELOAD_OR_START won't enter into a transaction and cannot result
          * from transaction merging (there's no way for JOB_RELOAD and
@@ -162,7 +164,6 @@ struct Job {
         bool installed:1;
         bool in_run_queue:1;
         bool matters_to_anchor:1;
-        bool override:1;
         bool in_dbus_queue:1;
         bool sent_dbus_new_signal:1;
         bool ignore_order:1;
@@ -218,11 +219,13 @@ void job_add_to_dbus_queue(Job *j);
 int job_start_timer(Job *j);
 
 int job_run_and_invalidate(Job *j);
-int job_finish_and_invalidate(Job *j, JobResult result, bool recursive);
+int job_finish_and_invalidate(Job *j, JobResult result, bool recursive, bool already);
 
 char *job_dbus_path(Job *j);
 
 void job_shutdown_magic(Job *j);
+
+int job_get_timeout(Job *j, usec_t *timeout) _pure_;
 
 const char* job_type_to_string(JobType t) _const_;
 JobType job_type_from_string(const char *s) _pure_;
@@ -236,4 +239,4 @@ JobMode job_mode_from_string(const char *s) _pure_;
 const char* job_result_to_string(JobResult t) _const_;
 JobResult job_result_from_string(const char *s) _pure_;
 
-int job_get_timeout(Job *j, uint64_t *timeout) _pure_;
+const char* job_type_to_access_method(JobType t);

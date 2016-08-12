@@ -113,7 +113,7 @@
     <function>sd_journal_get_data()</function> or
     <function>sd_journal_enumerate_data()</function>, or the read
     pointer is altered. Note that the data returned will be prefixed
-    with the field name and '='. Also note that by default data fields
+    with the field name and '='. Also note that, by default, data fields
     larger than 64K might get truncated to 64K. This threshold may be
     changed and turned off with
     <function>sd_journal_set_data_threshold()</function> (see
@@ -148,10 +148,10 @@
     <function>sd_journal_enumerate_unique()</function>. This threshold
     is a hint only: it indicates that the client program is interested
     only in the initial parts of the data fields, up to the threshold
-    in size -- but the library might still return larger data objects.
+    in size — but the library might still return larger data objects.
     That means applications should not rely exclusively on this
     setting to limit the size of the data fields returned, but need to
-    apply a explicit size limit on the returned data as well. This
+    apply an explicit size limit on the returned data as well. This
     threshold defaults to 64K by default. To retrieve the complete
     data fields this threshold should be turned off by setting it to
     0, so that the library always returns the complete data objects.

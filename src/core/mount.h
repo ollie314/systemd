@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -24,7 +22,7 @@
 typedef struct Mount Mount;
 
 #include "kill.h"
-#include "execute.h"
+#include "dynamic-user.h"
 
 typedef enum MountExecCommand {
         MOUNT_EXEC_MOUNT,
@@ -41,6 +39,7 @@ typedef enum MountResult {
         MOUNT_FAILURE_EXIT_CODE,
         MOUNT_FAILURE_SIGNAL,
         MOUNT_FAILURE_CORE_DUMP,
+        MOUNT_FAILURE_START_LIMIT_HIT,
         _MOUNT_RESULT_MAX,
         _MOUNT_RESULT_INVALID = -1
 } MountResult;
@@ -71,7 +70,6 @@ struct Mount {
         bool reset_cpu_usage:1;
 
         bool sloppy_options;
-        char *smack_fs_root_label;
 
         MountResult result;
         MountResult reload_result;
@@ -87,6 +85,7 @@ struct Mount {
         CGroupContext cgroup_context;
 
         ExecRuntime *exec_runtime;
+        DynamicCreds dynamic_creds;
 
         MountState state, deserialized_state;
 

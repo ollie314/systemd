@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -46,6 +44,7 @@
 #endif
 #include "strv.h"
 #include "syslog-util.h"
+#include "user-util.h"
 #include "utf8.h"
 
 BUS_DEFINE_PROPERTY_GET_ENUM(bus_property_get_exec_output, exec_output, ExecOutput);
@@ -141,7 +140,7 @@ static int property_get_nice(
         else {
                 errno = 0;
                 n = getpriority(PRIO_PROCESS, 0);
-                if (errno != 0)
+                if (errno > 0)
                         n = 0;
         }
 
@@ -293,12 +292,10 @@ static int property_get_capability_bounding_set(
         assert(reply);
         assert(c);
 
-        /* We store this negated internally, to match the kernel, but
-         * we expose it normalized. */
-        return sd_bus_message_append(reply, "t", ~c->capability_bounding_set_drop);
+        return sd_bus_message_append(reply, "t", c->capability_bounding_set);
 }
 
-static int property_get_capabilities(
+static int property_get_ambient_capabilities(
                 sd_bus *bus,
                 const char *path,
                 const char *interface,
@@ -308,22 +305,27 @@ static int property_get_capabilities(
                 sd_bus_error *error) {
 
         ExecContext *c = userdata;
-        _cleanup_cap_free_charp_ char *t = NULL;
-        const char *s;
 
         assert(bus);
         assert(reply);
         assert(c);
 
-        if (c->capabilities)
-                s = t = cap_to_text(c->capabilities, NULL);
-        else
-                s = "";
+        return sd_bus_message_append(reply, "t", c->capability_ambient_set);
+}
 
-        if (!s)
-                return -ENOMEM;
+static int property_get_empty_string(
+                sd_bus *bus,
+                const char *path,
+                const char *interface,
+                const char *property,
+                sd_bus_message *reply,
+                void *userdata,
+                sd_bus_error *error) {
 
-        return sd_bus_message_append(reply, "s", s);
+        assert(bus);
+        assert(reply);
+
+        return sd_bus_message_append(reply, "s", "");
 }
 
 static int property_get_syscall_filter(
@@ -629,23 +631,40 @@ const sd_bus_vtable bus_exec_vtable[] = {
         SD_BUS_VTABLE_START(0),
         SD_BUS_PROPERTY("Environment", "as", NULL, offsetof(ExecContext, environment), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("EnvironmentFiles", "a(sb)", property_get_environment_files, 0, SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("PassEnvironment", "as", NULL, offsetof(ExecContext, pass_environment), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("UMask", "u", bus_property_get_mode, offsetof(ExecContext, umask), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("LimitCPU", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_CPU]), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("LimitCPUSoft", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_CPU]), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("LimitFSIZE", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_FSIZE]), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("LimitFSIZESoft", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_FSIZE]), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("LimitDATA", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_DATA]), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("LimitDATASoft", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_DATA]), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("LimitSTACK", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_STACK]), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("LimitSTACKSoft", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_STACK]), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("LimitCORE", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_CORE]), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("LimitCORESoft", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_CORE]), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("LimitRSS", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_RSS]), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("LimitRSSSoft", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_RSS]), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("LimitNOFILE", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_NOFILE]), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("LimitNOFILESoft", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_NOFILE]), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("LimitAS", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_AS]), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("LimitASSoft", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_AS]), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("LimitNPROC", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_NPROC]), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("LimitNPROCSoft", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_NPROC]), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("LimitMEMLOCK", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_MEMLOCK]), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("LimitMEMLOCKSoft", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_MEMLOCK]), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("LimitLOCKS", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_LOCKS]), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("LimitLOCKSSoft", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_LOCKS]), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("LimitSIGPENDING", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_SIGPENDING]), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("LimitSIGPENDINGSoft", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_SIGPENDING]), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("LimitMSGQUEUE", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_MSGQUEUE]), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("LimitMSGQUEUESoft", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_MSGQUEUE]), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("LimitNICE", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_NICE]), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("LimitNICESoft", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_NICE]), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("LimitRTPRIO", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_RTPRIO]), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("LimitRTPRIOSoft", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_RTPRIO]), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("LimitRTTIME", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_RTTIME]), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("LimitRTTIMESoft", "t", bus_property_get_rlimit, offsetof(ExecContext, rlimit[RLIMIT_RTTIME]), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("WorkingDirectory", "s", property_get_working_directory, 0, SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("RootDirectory", "s", NULL, offsetof(ExecContext, root_directory), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("OOMScoreAdjust", "i", property_get_oom_score_adjust, 0, SD_BUS_VTABLE_PROPERTY_CONST),
@@ -669,20 +688,26 @@ const sd_bus_vtable bus_exec_vtable[] = {
         SD_BUS_PROPERTY("SyslogLevelPrefix", "b", bus_property_get_bool, offsetof(ExecContext, syslog_level_prefix), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("SyslogLevel", "i", property_get_syslog_level, 0, SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("SyslogFacility", "i", property_get_syslog_facility, 0, SD_BUS_VTABLE_PROPERTY_CONST),
-        SD_BUS_PROPERTY("Capabilities", "s", property_get_capabilities, 0, SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("Capabilities", "s", property_get_empty_string, 0, SD_BUS_VTABLE_PROPERTY_CONST|SD_BUS_VTABLE_HIDDEN),
         SD_BUS_PROPERTY("SecureBits", "i", bus_property_get_int, offsetof(ExecContext, secure_bits), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("CapabilityBoundingSet", "t", property_get_capability_bounding_set, 0, SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("AmbientCapabilities", "t", property_get_ambient_capabilities, 0, SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("User", "s", NULL, offsetof(ExecContext, user), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("Group", "s", NULL, offsetof(ExecContext, group), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("DynamicUser", "b", bus_property_get_bool, offsetof(ExecContext, dynamic_user), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("SupplementaryGroups", "as", NULL, offsetof(ExecContext, supplementary_groups), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("PAMName", "s", NULL, offsetof(ExecContext, pam_name), SD_BUS_VTABLE_PROPERTY_CONST),
-        SD_BUS_PROPERTY("ReadWriteDirectories", "as", NULL, offsetof(ExecContext, read_write_dirs), SD_BUS_VTABLE_PROPERTY_CONST),
-        SD_BUS_PROPERTY("ReadOnlyDirectories", "as", NULL, offsetof(ExecContext, read_only_dirs), SD_BUS_VTABLE_PROPERTY_CONST),
-        SD_BUS_PROPERTY("InaccessibleDirectories", "as", NULL, offsetof(ExecContext, inaccessible_dirs), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("ReadWriteDirectories", "as", NULL, offsetof(ExecContext, read_write_paths), SD_BUS_VTABLE_PROPERTY_CONST|SD_BUS_VTABLE_HIDDEN),
+        SD_BUS_PROPERTY("ReadOnlyDirectories", "as", NULL, offsetof(ExecContext, read_only_paths), SD_BUS_VTABLE_PROPERTY_CONST|SD_BUS_VTABLE_HIDDEN),
+        SD_BUS_PROPERTY("InaccessibleDirectories", "as", NULL, offsetof(ExecContext, inaccessible_paths), SD_BUS_VTABLE_PROPERTY_CONST|SD_BUS_VTABLE_HIDDEN),
+        SD_BUS_PROPERTY("ReadWritePaths", "as", NULL, offsetof(ExecContext, read_write_paths), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("ReadOnlyPaths", "as", NULL, offsetof(ExecContext, read_only_paths), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("InaccessiblePaths", "as", NULL, offsetof(ExecContext, inaccessible_paths), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("MountFlags", "t", bus_property_get_ulong, offsetof(ExecContext, mount_flags), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("PrivateTmp", "b", bus_property_get_bool, offsetof(ExecContext, private_tmp), SD_BUS_VTABLE_PROPERTY_CONST),
-        SD_BUS_PROPERTY("PrivateNetwork", "b", bus_property_get_bool, offsetof(ExecContext, private_network), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("PrivateDevices", "b", bus_property_get_bool, offsetof(ExecContext, private_devices), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("PrivateNetwork", "b", bus_property_get_bool, offsetof(ExecContext, private_network), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("PrivateUsers", "b", bus_property_get_bool, offsetof(ExecContext, private_users), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("ProtectHome", "s", bus_property_get_protect_home, offsetof(ExecContext, protect_home), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("ProtectSystem", "s", bus_property_get_protect_system, offsetof(ExecContext, protect_system), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("SameProcessGroup", "b", bus_property_get_bool, offsetof(ExecContext, same_pgrp), SD_BUS_VTABLE_PROPERTY_CONST),
@@ -700,6 +725,8 @@ const sd_bus_vtable bus_exec_vtable[] = {
         SD_BUS_PROPERTY("RestrictAddressFamilies", "(bas)", property_get_address_families, 0, SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("RuntimeDirectoryMode", "u", bus_property_get_mode, offsetof(ExecContext, runtime_directory_mode), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_PROPERTY("RuntimeDirectory", "as", NULL, offsetof(ExecContext, runtime_directory), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("MemoryDenyWriteExecute", "b", bus_property_get_bool, offsetof(ExecContext, memory_deny_write_execute), SD_BUS_VTABLE_PROPERTY_CONST),
+        SD_BUS_PROPERTY("RestrictRealtime", "b", bus_property_get_bool, offsetof(ExecContext, restrict_realtime), SD_BUS_VTABLE_PROPERTY_CONST),
         SD_BUS_VTABLE_END
 };
 
@@ -801,7 +828,8 @@ int bus_exec_context_set_transient_property(
                 UnitSetPropertiesMode mode,
                 sd_bus_error *error) {
 
-        int r;
+        const char *soft = NULL;
+        int r, ri;
 
         assert(u);
         assert(c);
@@ -815,22 +843,17 @@ int bus_exec_context_set_transient_property(
                 if (r < 0)
                         return r;
 
+                if (!isempty(uu) && !valid_user_group_name_or_id(uu))
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Invalid user name: %s", uu);
+
                 if (mode != UNIT_CHECK) {
 
-                        if (isempty(uu)) {
+                        if (isempty(uu))
                                 c->user = mfree(c->user);
-                        } else {
-                                char *t;
+                        else if (free_and_strdup(&c->user, uu) < 0)
+                                return -ENOMEM;
 
-                                t = strdup(uu);
-                                if (!t)
-                                        return -ENOMEM;
-
-                                free(c->user);
-                                c->user = t;
-                        }
-
-                        unit_write_drop_in_private_format(u, mode, name, "User=%s\n", uu);
+                        unit_write_drop_in_private_format(u, mode, name, "User=%s", uu);
                 }
 
                 return 1;
@@ -842,22 +865,17 @@ int bus_exec_context_set_transient_property(
                 if (r < 0)
                         return r;
 
+                if (!isempty(gg) && !valid_user_group_name_or_id(gg))
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Invalid group name: %s", gg);
+
                 if (mode != UNIT_CHECK) {
 
-                        if (isempty(gg)) {
+                        if (isempty(gg))
                                 c->group = mfree(c->group);
-                        } else {
-                                char *t;
+                        else if (free_and_strdup(&c->group, gg) < 0)
+                                return -ENOMEM;
 
-                                t = strdup(gg);
-                                if (!t)
-                                        return -ENOMEM;
-
-                                free(c->group);
-                                c->group = t;
-                        }
-
-                        unit_write_drop_in_private_format(u, mode, name, "Group=%s\n", gg);
+                        unit_write_drop_in_private_format(u, mode, name, "Group=%s", gg);
                 }
 
                 return 1;
@@ -870,20 +888,12 @@ int bus_exec_context_set_transient_property(
 
                 if (mode != UNIT_CHECK) {
 
-                        if (isempty(id)) {
+                        if (isempty(id))
                                 c->syslog_identifier = mfree(c->syslog_identifier);
-                        } else {
-                                char *t;
+                        else if (free_and_strdup(&c->syslog_identifier, id) < 0)
+                                return -ENOMEM;
 
-                                t = strdup(id);
-                                if (!t)
-                                        return -ENOMEM;
-
-                                free(c->syslog_identifier);
-                                c->syslog_identifier = t;
-                        }
-
-                        unit_write_drop_in_private_format(u, mode, name, "SyslogIdentifier=%s\n", id);
+                        unit_write_drop_in_private_format(u, mode, name, "SyslogIdentifier=%s", id);
                 }
 
                 return 1;
@@ -899,7 +909,7 @@ int bus_exec_context_set_transient_property(
 
                 if (mode != UNIT_CHECK) {
                         c->syslog_priority = (c->syslog_priority & LOG_FACMASK) | level;
-                        unit_write_drop_in_private_format(u, mode, name, "SyslogLevel=%i\n", level);
+                        unit_write_drop_in_private_format(u, mode, name, "SyslogLevel=%i", level);
                 }
 
                 return 1;
@@ -915,7 +925,7 @@ int bus_exec_context_set_transient_property(
 
                 if (mode != UNIT_CHECK) {
                         c->syslog_priority = (facility << 3) | LOG_PRI(c->syslog_priority);
-                        unit_write_drop_in_private_format(u, mode, name, "SyslogFacility=%i\n", facility);
+                        unit_write_drop_in_private_format(u, mode, name, "SyslogFacility=%i", facility);
                 }
 
                 return 1;
@@ -926,12 +936,12 @@ int bus_exec_context_set_transient_property(
                 if (r < 0)
                         return r;
 
-                if (n < PRIO_MIN || n >= PRIO_MAX)
+                if (!nice_is_valid(n))
                         return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Nice value out of range");
 
                 if (mode != UNIT_CHECK) {
                         c->nice = n;
-                        unit_write_drop_in_private_format(u, mode, name, "Nice=%i\n", n);
+                        unit_write_drop_in_private_format(u, mode, name, "Nice=%i", n);
                 }
 
                 return 1;
@@ -956,7 +966,7 @@ int bus_exec_context_set_transient_property(
                         if (r < 0)
                                 return r;
 
-                        unit_write_drop_in_private_format(u, mode, name, "%s=%s\n", name, s);
+                        unit_write_drop_in_private_format(u, mode, name, "%s=%s", name, s);
                 }
 
                 return 1;
@@ -1011,7 +1021,7 @@ int bus_exec_context_set_transient_property(
                 if (mode != UNIT_CHECK) {
                         c->std_input = p;
 
-                        unit_write_drop_in_private_format(u, mode, name, "StandardInput=%s\n", exec_input_to_string(p));
+                        unit_write_drop_in_private_format(u, mode, name, "StandardInput=%s", exec_input_to_string(p));
                 }
 
                 return 1;
@@ -1032,7 +1042,7 @@ int bus_exec_context_set_transient_property(
                 if (mode != UNIT_CHECK) {
                         c->std_output = p;
 
-                        unit_write_drop_in_private_format(u, mode, name, "StandardOutput=%s\n", exec_output_to_string(p));
+                        unit_write_drop_in_private_format(u, mode, name, "StandardOutput=%s", exec_output_to_string(p));
                 }
 
                 return 1;
@@ -1052,15 +1062,16 @@ int bus_exec_context_set_transient_property(
                 if (mode != UNIT_CHECK) {
                         c->std_error = p;
 
-                        unit_write_drop_in_private_format(u, mode, name, "StandardError=%s\n", exec_output_to_string(p));
+                        unit_write_drop_in_private_format(u, mode, name, "StandardError=%s", exec_output_to_string(p));
                 }
 
                 return 1;
 
         } else if (STR_IN_SET(name,
                               "IgnoreSIGPIPE", "TTYVHangup", "TTYReset",
-                              "PrivateTmp", "PrivateDevices", "PrivateNetwork",
-                              "NoNewPrivileges", "SyslogLevelPrefix")) {
+                              "PrivateTmp", "PrivateDevices", "PrivateNetwork", "PrivateUsers",
+                              "NoNewPrivileges", "SyslogLevelPrefix", "MemoryDenyWriteExecute",
+                              "RestrictRealtime", "DynamicUser")) {
                 int b;
 
                 r = sd_bus_message_read(message, "b", &b);
@@ -1080,12 +1091,20 @@ int bus_exec_context_set_transient_property(
                                 c->private_devices = b;
                         else if (streq(name, "PrivateNetwork"))
                                 c->private_network = b;
+                        else if (streq(name, "PrivateUsers"))
+                                c->private_users = b;
                         else if (streq(name, "NoNewPrivileges"))
                                 c->no_new_privileges = b;
                         else if (streq(name, "SyslogLevelPrefix"))
                                 c->syslog_level_prefix = b;
+                        else if (streq(name, "MemoryDenyWriteExecute"))
+                                c->memory_deny_write_execute = b;
+                        else if (streq(name, "RestrictRealtime"))
+                                c->restrict_realtime = b;
+                        else if (streq(name, "DynamicUser"))
+                                c->dynamic_user = b;
 
-                        unit_write_drop_in_private_format(u, mode, name, "%s=%s\n", name, yes_no(b));
+                        unit_write_drop_in_private_format(u, mode, name, "%s=%s", name, yes_no(b));
                 }
 
                 return 1;
@@ -1103,7 +1122,7 @@ int bus_exec_context_set_transient_property(
                         else if (free_and_strdup(&c->utmp_id, id) < 0)
                                 return -ENOMEM;
 
-                        unit_write_drop_in_private_format(u, mode, name, "UtmpIdentifier=%s\n", strempty(id));
+                        unit_write_drop_in_private_format(u, mode, name, "UtmpIdentifier=%s", strempty(id));
                 }
 
                 return 1;
@@ -1123,7 +1142,7 @@ int bus_exec_context_set_transient_property(
                 if (mode != UNIT_CHECK) {
                         c->utmp_mode = m;
 
-                        unit_write_drop_in_private_format(u, mode, name, "UtmpMode=%s\n", exec_utmp_mode_to_string(m));
+                        unit_write_drop_in_private_format(u, mode, name, "UtmpMode=%s", exec_utmp_mode_to_string(m));
                 }
 
                 return 1;
@@ -1141,7 +1160,7 @@ int bus_exec_context_set_transient_property(
                         else if (free_and_strdup(&c->pam_name, n) < 0)
                                 return -ENOMEM;
 
-                        unit_write_drop_in_private_format(u, mode, name, "PAMName=%s\n", strempty(n));
+                        unit_write_drop_in_private_format(u, mode, name, "PAMName=%s", strempty(n));
                 }
 
                 return 1;
@@ -1163,7 +1182,7 @@ int bus_exec_context_set_transient_property(
 
                         if (strv_length(l) == 0) {
                                 c->environment = strv_free(c->environment);
-                                unit_write_drop_in_private_format(u, mode, name, "Environment=\n");
+                                unit_write_drop_in_private_format(u, mode, name, "Environment=");
                         } else {
                                 e = strv_env_merge(2, c->environment, l);
                                 if (!e)
@@ -1176,7 +1195,7 @@ int bus_exec_context_set_transient_property(
                                 if (!joined)
                                         return -ENOMEM;
 
-                                unit_write_drop_in_private_format(u, mode, name, "Environment=%s\n", joined);
+                                unit_write_drop_in_private_format(u, mode, name, "Environment=%s", joined);
                         }
                 }
 
@@ -1192,7 +1211,7 @@ int bus_exec_context_set_transient_property(
 
                 if (mode != UNIT_CHECK) {
                         c->timer_slack_nsec = n;
-                        unit_write_drop_in_private_format(u, mode, name, "TimerSlackNSec=" NSEC_FMT "\n", n);
+                        unit_write_drop_in_private_format(u, mode, name, "TimerSlackNSec=" NSEC_FMT, n);
                 }
 
                 return 1;
@@ -1210,7 +1229,7 @@ int bus_exec_context_set_transient_property(
                 if (mode != UNIT_CHECK) {
                         c->oom_score_adjust = oa;
                         c->oom_score_adjust_set = true;
-                        unit_write_drop_in_private_format(u, mode, name, "OOMScoreAdjust=%i\n", oa);
+                        unit_write_drop_in_private_format(u, mode, name, "OOMScoreAdjust=%i", oa);
                 }
 
                 return 1;
@@ -1232,7 +1251,7 @@ int bus_exec_context_set_transient_property(
                         return -ENOMEM;
 
                 STRV_FOREACH(i, c->environment_files)
-                        fprintf(f, "EnvironmentFile=%s\n", *i);
+                        fprintf(f, "EnvironmentFile=%s", *i);
 
                 while ((r = sd_bus_message_enter_container(message, 'r', "sb")) > 0) {
                         const char *path;
@@ -1256,7 +1275,7 @@ int bus_exec_context_set_transient_property(
                                 if (!buf)
                                         return -ENOMEM;
 
-                                fprintf(f, "EnvironmentFile=%s\n", buf);
+                                fprintf(f, "EnvironmentFile=%s", buf);
 
                                 r = strv_consume(&l, buf);
                                 if (r < 0)
@@ -1277,7 +1296,7 @@ int bus_exec_context_set_transient_property(
                 if (mode != UNIT_CHECK) {
                         if (strv_isempty(l)) {
                                 c->environment_files = strv_free(c->environment_files);
-                                unit_write_drop_in_private(u, mode, name, "EnvironmentFile=\n");
+                                unit_write_drop_in_private(u, mode, name, "EnvironmentFile=");
                         } else {
                                 r = strv_extend_strv(&c->environment_files, l, true);
                                 if (r < 0)
@@ -1289,8 +1308,40 @@ int bus_exec_context_set_transient_property(
 
                 return 1;
 
-        } else if (STR_IN_SET(name, "ReadWriteDirectories", "ReadOnlyDirectories", "InaccessibleDirectories")) {
+        } else if (streq(name, "PassEnvironment")) {
 
+                _cleanup_strv_free_ char **l = NULL;
+
+                r = sd_bus_message_read_strv(message, &l);
+                if (r < 0)
+                        return r;
+
+                if (!strv_env_name_is_valid(l))
+                        return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Invalid PassEnvironment block.");
+
+                if (mode != UNIT_CHECK) {
+                        if (strv_isempty(l)) {
+                                c->pass_environment = strv_free(c->pass_environment);
+                                unit_write_drop_in_private_format(u, mode, name, "PassEnvironment=");
+                        } else {
+                                _cleanup_free_ char *joined = NULL;
+
+                                r = strv_extend_strv(&c->pass_environment, l, true);
+                                if (r < 0)
+                                        return r;
+
+                                joined = strv_join_quoted(c->pass_environment);
+                                if (!joined)
+                                        return -ENOMEM;
+
+                                unit_write_drop_in_private_format(u, mode, name, "PassEnvironment=%s", joined);
+                        }
+                }
+
+                return 1;
+
+        } else if (STR_IN_SET(name, "ReadWriteDirectories", "ReadOnlyDirectories", "InaccessibleDirectories",
+                              "ReadWritePaths", "ReadOnlyPaths", "InaccessiblePaths")) {
                 _cleanup_strv_free_ char **l = NULL;
                 char ***dirs;
                 char **p;
@@ -1312,16 +1363,16 @@ int bus_exec_context_set_transient_property(
                 if (mode != UNIT_CHECK) {
                         _cleanup_free_ char *joined = NULL;
 
-                        if (streq(name, "ReadWriteDirectories"))
-                                dirs = &c->read_write_dirs;
-                        else if (streq(name, "ReadOnlyDirectories"))
-                                dirs = &c->read_only_dirs;
-                        else if (streq(name, "InaccessibleDirectories"))
-                                dirs = &c->inaccessible_dirs;
+                        if (STR_IN_SET(name, "ReadWriteDirectories", "ReadWritePaths"))
+                                dirs = &c->read_write_paths;
+                        else if (STR_IN_SET(name, "ReadOnlyDirectories", "ReadOnlyPaths"))
+                                dirs = &c->read_only_paths;
+                        else /* "InaccessiblePaths" */
+                                dirs = &c->inaccessible_paths;
 
                         if (strv_length(l) == 0) {
                                 *dirs = strv_free(*dirs);
-                                unit_write_drop_in_private_format(u, mode, name, "%s=\n", name);
+                                unit_write_drop_in_private_format(u, mode, name, "%s=", name);
                         } else {
                                 r = strv_extend_strv(dirs, l, true);
 
@@ -1332,7 +1383,7 @@ int bus_exec_context_set_transient_property(
                                 if (!joined)
                                         return -ENOMEM;
 
-                                unit_write_drop_in_private_format(u, mode, name, "%s=%s\n", name, joined);
+                                unit_write_drop_in_private_format(u, mode, name, "%s=%s", name, joined);
                         }
 
                 }
@@ -1360,7 +1411,7 @@ int bus_exec_context_set_transient_property(
 
                 if (mode != UNIT_CHECK) {
                         c->protect_system = ps;
-                        unit_write_drop_in_private_format(u, mode, name, "%s=%s\n", name, s);
+                        unit_write_drop_in_private_format(u, mode, name, "%s=%s", name, s);
                 }
 
                 return 1;
@@ -1386,12 +1437,81 @@ int bus_exec_context_set_transient_property(
 
                 if (mode != UNIT_CHECK) {
                         c->protect_home = ph;
-                        unit_write_drop_in_private_format(u, mode, name, "%s=%s\n", name, s);
+                        unit_write_drop_in_private_format(u, mode, name, "%s=%s", name, s);
                 }
 
                 return 1;
 
-        } else if (rlimit_from_string(name) >= 0) {
+        } else if (streq(name, "RuntimeDirectory")) {
+                _cleanup_strv_free_ char **l = NULL;
+                char **p;
+
+                r = sd_bus_message_read_strv(message, &l);
+                if (r < 0)
+                        return r;
+
+                STRV_FOREACH(p, l) {
+                        if (!filename_is_valid(*p))
+                                return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Runtime directory is not valid %s", *p);
+                }
+
+                if (mode != UNIT_CHECK) {
+                        _cleanup_free_ char *joined = NULL;
+
+                        if (strv_isempty(l)) {
+                                c->runtime_directory = strv_free(c->runtime_directory);
+                                unit_write_drop_in_private_format(u, mode, name, "%s=", name);
+                        } else {
+                                r = strv_extend_strv(&c->runtime_directory, l, true);
+
+                                if (r < 0)
+                                        return -ENOMEM;
+
+                                joined = strv_join_quoted(c->runtime_directory);
+                                if (!joined)
+                                        return -ENOMEM;
+
+                                unit_write_drop_in_private_format(u, mode, name, "%s=%s", name, joined);
+                        }
+                }
+
+                return 1;
+
+        } else if (streq(name, "SELinuxContext")) {
+                const char *s;
+
+                r = sd_bus_message_read(message, "s", &s);
+                if (r < 0)
+                        return r;
+
+                if (mode != UNIT_CHECK) {
+                        if (isempty(s))
+                                c->selinux_context = mfree(c->selinux_context);
+                        else if (free_and_strdup(&c->selinux_context, s) < 0)
+                                return -ENOMEM;
+
+                        unit_write_drop_in_private_format(u, mode, name, "%s=%s", name, strempty(s));
+                }
+
+                return 1;
+
+        }
+
+        ri = rlimit_from_string(name);
+        if (ri < 0) {
+                soft = endswith(name, "Soft");
+                if (soft) {
+                        const char *n;
+
+                        n = strndupa(name, soft - name);
+                        ri = rlimit_from_string(n);
+                        if (ri >= 0)
+                                name = n;
+
+                }
+        }
+
+        if (ri >= 0) {
                 uint64_t rl;
                 rlim_t x;
 
@@ -1409,22 +1529,36 @@ int bus_exec_context_set_transient_property(
                 }
 
                 if (mode != UNIT_CHECK) {
-                        int z;
+                        _cleanup_free_ char *f = NULL;
+                        struct rlimit nl;
 
-                        z = rlimit_from_string(name);
+                        if (c->rlimit[ri]) {
+                                nl = *c->rlimit[ri];
 
-                        if (!c->rlimit[z]) {
-                                c->rlimit[z] = new(struct rlimit, 1);
-                                if (!c->rlimit[z])
+                                if (soft)
+                                        nl.rlim_cur = x;
+                                else
+                                        nl.rlim_max = x;
+                        } else
+                                /* When the resource limit is not initialized yet, then assign the value to both fields */
+                                nl = (struct rlimit) {
+                                        .rlim_cur = x,
+                                        .rlim_max = x,
+                                };
+
+                        r = rlimit_format(&nl, &f);
+                        if (r < 0)
+                                return r;
+
+                        if (c->rlimit[ri])
+                                *c->rlimit[ri] = nl;
+                        else {
+                                c->rlimit[ri] = newdup(struct rlimit, &nl, 1);
+                                if (!c->rlimit[ri])
                                         return -ENOMEM;
                         }
 
-                        c->rlimit[z]->rlim_cur = c->rlimit[z]->rlim_max = x;
-
-                        if (x == RLIM_INFINITY)
-                                unit_write_drop_in_private_format(u, mode, name, "%s=infinity\n", name);
-                        else
-                                unit_write_drop_in_private_format(u, mode, name, "%s=%" PRIu64 "\n", name, rl);
+                        unit_write_drop_in_private_format(u, mode, name, "%s=%s", name, f);
                 }
 
                 return 1;

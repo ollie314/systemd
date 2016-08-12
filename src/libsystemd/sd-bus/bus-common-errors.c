@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -22,8 +20,9 @@
 #include <errno.h>
 
 #include "sd-bus.h"
-#include "bus-error.h"
+
 #include "bus-common-errors.h"
+#include "bus-error.h"
 
 BUS_ERROR_MAP_ELF_REGISTER const sd_bus_error_map bus_common_errors[] = {
         SD_BUS_ERROR_MAP(BUS_ERROR_NO_SUCH_UNIT,                 ENOENT),
@@ -38,11 +37,14 @@ BUS_ERROR_MAP_ELF_REGISTER const sd_bus_error_map bus_common_errors[] = {
         SD_BUS_ERROR_MAP(BUS_ERROR_TRANSACTION_JOBS_CONFLICTING, EDEADLK),
         SD_BUS_ERROR_MAP(BUS_ERROR_TRANSACTION_ORDER_IS_CYCLIC,  EDEADLK),
         SD_BUS_ERROR_MAP(BUS_ERROR_TRANSACTION_IS_DESTRUCTIVE,   EDEADLK),
-        SD_BUS_ERROR_MAP(BUS_ERROR_UNIT_MASKED,                  EBADR),
+        SD_BUS_ERROR_MAP(BUS_ERROR_UNIT_MASKED,                  ESHUTDOWN),
+        SD_BUS_ERROR_MAP(BUS_ERROR_UNIT_GENERATED,               EADDRNOTAVAIL),
+        SD_BUS_ERROR_MAP(BUS_ERROR_UNIT_LINKED,                  ELOOP),
         SD_BUS_ERROR_MAP(BUS_ERROR_JOB_TYPE_NOT_APPLICABLE,      EBADR),
         SD_BUS_ERROR_MAP(BUS_ERROR_NO_ISOLATION,                 EPERM),
         SD_BUS_ERROR_MAP(BUS_ERROR_SHUTTING_DOWN,                ECANCELED),
         SD_BUS_ERROR_MAP(BUS_ERROR_SCOPE_NOT_RUNNING,            EHOSTDOWN),
+        SD_BUS_ERROR_MAP(BUS_ERROR_NO_SUCH_DYNAMIC_USER,         ESRCH),
 
         SD_BUS_ERROR_MAP(BUS_ERROR_NO_SUCH_MACHINE,              ENXIO),
         SD_BUS_ERROR_MAP(BUS_ERROR_NO_SUCH_IMAGE,                ENOENT),
@@ -66,12 +68,18 @@ BUS_ERROR_MAP_ELF_REGISTER const sd_bus_error_map bus_common_errors[] = {
 
         SD_BUS_ERROR_MAP(BUS_ERROR_NO_SUCH_PROCESS,              ESRCH),
 
-        SD_BUS_ERROR_MAP(BUS_ERROR_NO_NAME_SERVERS,              EIO),
+        SD_BUS_ERROR_MAP(BUS_ERROR_NO_NAME_SERVERS,              ESRCH),
         SD_BUS_ERROR_MAP(BUS_ERROR_INVALID_REPLY,                EINVAL),
         SD_BUS_ERROR_MAP(BUS_ERROR_NO_SUCH_RR,                   ENOENT),
-        SD_BUS_ERROR_MAP(BUS_ERROR_NO_RESOURCES,                 ENOMEM),
         SD_BUS_ERROR_MAP(BUS_ERROR_CNAME_LOOP,                   EDEADLK),
         SD_BUS_ERROR_MAP(BUS_ERROR_ABORTED,                      ECANCELED),
+        SD_BUS_ERROR_MAP(BUS_ERROR_NO_SUCH_SERVICE,              EUNATCH),
+        SD_BUS_ERROR_MAP(BUS_ERROR_DNSSEC_FAILED,                EHOSTUNREACH),
+        SD_BUS_ERROR_MAP(BUS_ERROR_NO_TRUST_ANCHOR,              EHOSTUNREACH),
+        SD_BUS_ERROR_MAP(BUS_ERROR_RR_TYPE_UNSUPPORTED,          EOPNOTSUPP),
+        SD_BUS_ERROR_MAP(BUS_ERROR_NO_SUCH_LINK,                 ENXIO),
+        SD_BUS_ERROR_MAP(BUS_ERROR_LINK_BUSY,                    EBUSY),
+        SD_BUS_ERROR_MAP(BUS_ERROR_NETWORK_DOWN,                 ENETDOWN),
 
         SD_BUS_ERROR_MAP(BUS_ERROR_NO_SUCH_TRANSFER,             ENXIO),
         SD_BUS_ERROR_MAP(BUS_ERROR_TRANSFER_IN_PROGRESS,         EBUSY),

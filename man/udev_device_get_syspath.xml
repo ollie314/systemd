@@ -127,6 +127,8 @@
       <funcprototype>
         <funcdef>struct udev_device *<function>udev_device_get_parent_with_subsystem_devtype</function></funcdef>
         <paramdef>struct udev_device *<parameter>udev_device</parameter></paramdef>
+        <paramdef>const char *<parameter>subsystem</parameter></paramdef>
+        <paramdef>const char *<parameter>devtype</parameter></paramdef>
       </funcprototype>
 
       <funcprototype>
@@ -137,8 +139,6 @@
       <funcprototype>
         <funcdef>const char *<function>udev_device_get_action</function></funcdef>
         <paramdef>struct udev_device *<parameter>udev_device</parameter></paramdef>
-        <paramdef>const char *<parameter>subsystem</parameter></paramdef>
-        <paramdef>const char *<parameter>devtype</parameter></paramdef>
       </funcprototype>
 
     </funcsynopsis>
@@ -181,13 +181,13 @@
     <function>udev_device_get_parent_with_subsystem_devtype()</function>
     return a pointer to the parent device. No additional reference
     to this device is acquired, but the child device owns a reference
-    to such parent device. On failure, <constant>NULL</constant>
+    to such a parent device. On failure, <constant>NULL</constant>
     is returned.</para>
 
-    <para>On success, <function>udev_device_get_is_initialized()</function>
-    returns either <constant>1</constant> or <constant>0</constant>,
-    depending on whether the passed device is initialized or not. On
-    failure, a negative error code is returned.</para>
+    <para>On success, <function>udev_device_get_is_initialized()</function> returns either <constant>1</constant> or
+    <constant>0</constant>, depending on whether the passed device has already been initialized by udev or not. On
+    failure, a negative error code is returned. Note that devices for which no udev rules are defined are never
+    reported initialized.</para>
   </refsect1>
 
   <refsect1>

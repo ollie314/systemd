@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -22,6 +20,9 @@
 ***/
 
 #include <inttypes.h>
+#include <limits.h>
+#include <stddef.h>
+#include <stdint.h>
 #include <sys/types.h>
 
 #include "macro.h"
@@ -31,6 +32,7 @@
 int parse_boolean(const char *v) _pure_;
 int parse_pid(const char *s, pid_t* ret_pid);
 int parse_mode(const char *s, mode_t *ret);
+int parse_ifindex(const char *s, int *ret);
 
 int parse_size(const char *t, uint64_t base, uint64_t *size);
 int parse_range(const char *t, unsigned *lower, unsigned *upper);
@@ -88,4 +90,23 @@ static inline int safe_atoli(const char *s, long int *ret_u) {
 }
 #endif
 
+#if SIZE_MAX == UINT_MAX
+static inline int safe_atozu(const char *s, size_t *ret_u) {
+        assert_cc(sizeof(size_t) == sizeof(unsigned));
+        return safe_atou(s, (unsigned *) ret_u);
+}
+#else
+static inline int safe_atozu(const char *s, size_t *ret_u) {
+        assert_cc(sizeof(size_t) == sizeof(long unsigned));
+        return safe_atolu(s, ret_u);
+}
+#endif
+
 int safe_atod(const char *s, double *ret_d);
+
+int parse_fractional_part_u(const char **s, size_t digits, unsigned *res);
+
+int parse_percent_unbounded(const char *p);
+int parse_percent(const char *p);
+
+int parse_nice(const char *p, int *ret);

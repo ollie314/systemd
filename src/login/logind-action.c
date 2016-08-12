@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -61,7 +59,7 @@ int manager_handle_action(
                 [HANDLE_HYBRID_SLEEP] = SPECIAL_HYBRID_SLEEP_TARGET
         };
 
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         InhibitWhat inhibit_operation;
         Inhibitor *offending = NULL;
         bool supported;
@@ -87,7 +85,7 @@ int manager_handle_action(
         }
 
         /* If the key handling is inhibited, don't do anything */
-        if (inhibit_key > 0) {
+        if (!ignore_inhibited && inhibit_key > 0) {
                 if (manager_is_inhibited(m, inhibit_key, INHIBIT_BLOCK, NULL, true, false, 0, NULL)) {
                         log_debug("Refusing operation, %s is inhibited.", inhibit_what_to_string(inhibit_key));
                         return 0;
@@ -126,7 +124,7 @@ int manager_handle_action(
                 return -EALREADY;
         }
 
-        inhibit_operation = handle == HANDLE_SUSPEND || handle == HANDLE_HIBERNATE || handle == HANDLE_HYBRID_SLEEP ? INHIBIT_SLEEP : INHIBIT_SHUTDOWN;
+        inhibit_operation = IN_SET(handle, HANDLE_SUSPEND, HANDLE_HIBERNATE, HANDLE_HYBRID_SLEEP) ? INHIBIT_SLEEP : INHIBIT_SHUTDOWN;
 
         /* If the actual operation is inhibited, warn and fail */
         if (!ignore_inhibited &&

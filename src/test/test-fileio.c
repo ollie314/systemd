@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,8 +17,8 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <stdio.h>
 #include <fcntl.h>
+#include <stdio.h>
 #include <unistd.h>
 
 #include "alloc-util.h"
@@ -29,6 +27,7 @@
 #include "env-util.h"
 #include "fd-util.h"
 #include "fileio.h"
+#include "io-util.h"
 #include "parse-util.h"
 #include "process-util.h"
 #include "string-util.h"
@@ -290,7 +289,7 @@ static void test_capeff(void) {
 
                 assert_se(r == 0);
                 assert_se(*capeff);
-                p = capeff[strspn(capeff, DIGITS "abcdefABCDEF")];
+                p = capeff[strspn(capeff, HEXDIGITS)];
                 assert_se(!p || isspace(p));
         }
 }
@@ -363,6 +362,26 @@ static void test_write_string_file_no_create(void) {
         unlink(fn);
 }
 
+static void test_write_string_file_verify(void) {
+        _cleanup_free_ char *buf = NULL, *buf2 = NULL;
+        int r;
+
+        assert_se(read_one_line_file("/proc/cmdline", &buf) >= 0);
+        assert_se((buf2 = strjoin(buf, "\n", NULL)));
+
+        r = write_string_file("/proc/cmdline", buf, 0);
+        assert_se(r == -EACCES || r == -EIO);
+        r = write_string_file("/proc/cmdline", buf2, 0);
+        assert_se(r == -EACCES || r == -EIO);
+
+        assert_se(write_string_file("/proc/cmdline", buf, WRITE_STRING_FILE_VERIFY_ON_FAILURE) == 0);
+        assert_se(write_string_file("/proc/cmdline", buf2, WRITE_STRING_FILE_VERIFY_ON_FAILURE) == 0);
+
+        r = write_string_file("/proc/cmdline", buf, WRITE_STRING_FILE_VERIFY_ON_FAILURE|WRITE_STRING_FILE_AVOID_NEWLINE);
+        assert_se(r == -EACCES || r == -EIO);
+        assert_se(write_string_file("/proc/cmdline", buf2, WRITE_STRING_FILE_VERIFY_ON_FAILURE|WRITE_STRING_FILE_AVOID_NEWLINE) == 0);
+}
+
 static void test_load_env_file_pairs(void) {
         char fn[] = "/tmp/test-load_env_file_pairs-XXXXXX";
         int fd;
@@ -407,6 +426,134 @@ static void test_load_env_file_pairs(void) {
         unlink(fn);
 }
 
+static void test_search_and_fopen(void) {
+        const char *dirs[] = {"/tmp/foo/bar", "/tmp", NULL};
+        char name[] = "/tmp/test-search_and_fopen.XXXXXX";
+        int fd = -1;
+        int r;
+        FILE *f;
+
+        fd = mkostemp_safe(name, O_RDWR|O_CLOEXEC);
+        assert_se(fd >= 0);
+        close(fd);
+
+        r = search_and_fopen(basename(name), "r", NULL, dirs, &f);
+        assert_se(r >= 0);
+        fclose(f);
+
+        r = search_and_fopen(name, "r", NULL, dirs, &f);
+        assert_se(r >= 0);
+        fclose(f);
+
+        r = search_and_fopen(basename(name), "r", "/", dirs, &f);
+        assert_se(r >= 0);
+        fclose(f);
+
+        r = search_and_fopen("/a/file/which/does/not/exist/i/guess", "r", NULL, dirs, &f);
+        assert_se(r < 0);
+        r = search_and_fopen("afilewhichdoesnotexistiguess", "r", NULL, dirs, &f);
+        assert_se(r < 0);
+
+        r = unlink(name);
+        assert_se(r == 0);
+
+        r = search_and_fopen(basename(name), "r", NULL, dirs, &f);
+        assert_se(r < 0);
+}
+
+
+static void test_search_and_fopen_nulstr(void) {
+        const char dirs[] = "/tmp/foo/bar\0/tmp\0";
+        char name[] = "/tmp/test-search_and_fopen.XXXXXX";
+        int fd = -1;
+        int r;
+        FILE *f;
+
+        fd = mkostemp_safe(name, O_RDWR|O_CLOEXEC);
+        assert_se(fd >= 0);
+        close(fd);
+
+        r = search_and_fopen_nulstr(basename(name), "r", NULL, dirs, &f);
+        assert_se(r >= 0);
+        fclose(f);
+
+        r = search_and_fopen_nulstr(name, "r", NULL, dirs, &f);
+        assert_se(r >= 0);
+        fclose(f);
+
+        r = search_and_fopen_nulstr("/a/file/which/does/not/exist/i/guess", "r", NULL, dirs, &f);
+        assert_se(r < 0);
+        r = search_and_fopen_nulstr("afilewhichdoesnotexistiguess", "r", NULL, dirs, &f);
+        assert_se(r < 0);
+
+        r = unlink(name);
+        assert_se(r == 0);
+
+        r = search_and_fopen_nulstr(basename(name), "r", NULL, dirs, &f);
+        assert_se(r < 0);
+}
+
+static void test_writing_tmpfile(void) {
+        char name[] = "/tmp/test-systemd_writing_tmpfile.XXXXXX";
+        _cleanup_free_ char *contents = NULL;
+        size_t size;
+        int fd, r;
+        struct iovec iov[3];
+
+        IOVEC_SET_STRING(iov[0], "abc\n");
+        IOVEC_SET_STRING(iov[1], ALPHANUMERICAL "\n");
+        IOVEC_SET_STRING(iov[2], "");
+
+        fd = mkostemp_safe(name, O_RDWR|O_CLOEXEC);
+        printf("tmpfile: %s", name);
+
+        r = writev(fd, iov, 3);
+        assert_se(r >= 0);
+
+        r = read_full_file(name, &contents, &size);
+        assert_se(r == 0);
+        printf("contents: %s", contents);
+        assert_se(streq(contents, "abc\n" ALPHANUMERICAL "\n"));
+
+        unlink(name);
+}
+
+static void test_tempfn(void) {
+        char *ret = NULL, *p;
+
+        assert_se(tempfn_xxxxxx("/foo/bar/waldo", NULL, &ret) >= 0);
+        assert_se(streq_ptr(ret, "/foo/bar/.#waldoXXXXXX"));
+        free(ret);
+
+        assert_se(tempfn_xxxxxx("/foo/bar/waldo", "[miau]", &ret) >= 0);
+        assert_se(streq_ptr(ret, "/foo/bar/.#[miau]waldoXXXXXX"));
+        free(ret);
+
+        assert_se(tempfn_random("/foo/bar/waldo", NULL, &ret) >= 0);
+        assert_se(p = startswith(ret, "/foo/bar/.#waldo"));
+        assert_se(strlen(p) == 16);
+        assert_se(in_charset(p, "0123456789abcdef"));
+        free(ret);
+
+        assert_se(tempfn_random("/foo/bar/waldo", "[wuff]", &ret) >= 0);
+        assert_se(p = startswith(ret, "/foo/bar/.#[wuff]waldo"));
+        assert_se(strlen(p) == 16);
+        assert_se(in_charset(p, "0123456789abcdef"));
+        free(ret);
+
+        assert_se(tempfn_random_child("/foo/bar/waldo", NULL, &ret) >= 0);
+        assert_se(p = startswith(ret, "/foo/bar/waldo/.#"));
+        assert_se(strlen(p) == 16);
+        assert_se(in_charset(p, "0123456789abcdef"));
+        free(ret);
+
+        assert_se(tempfn_random_child("/foo/bar/waldo", "[kikiriki]", &ret) >= 0);
+        assert_se(p = startswith(ret, "/foo/bar/waldo/.#[kikiriki]"));
+        assert_se(strlen(p) == 16);
+        assert_se(in_charset(p, "0123456789abcdef"));
+        free(ret);
+}
+
 int main(int argc, char *argv[]) {
         log_parse_environment();
         log_open();
@@ -419,7 +566,12 @@ int main(int argc, char *argv[]) {
         test_write_string_stream();
         test_write_string_file();
         test_write_string_file_no_create();
+        test_write_string_file_verify();
         test_load_env_file_pairs();
+        test_search_and_fopen();
+        test_search_and_fopen_nulstr();
+        test_writing_tmpfile();
+        test_tempfn();
 
         return 0;
 }

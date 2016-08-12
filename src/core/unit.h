@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -30,14 +28,15 @@ typedef struct UnitVTable UnitVTable;
 typedef struct UnitRef UnitRef;
 typedef struct UnitStatusMessageFormats UnitStatusMessageFormats;
 
-#include "list.h"
 #include "condition.h"
-#include "install.h"
-#include "unit-name.h"
 #include "failure-action.h"
+#include "install.h"
+#include "list.h"
+#include "unit-name.h"
 
 typedef enum KillOperation {
         KILL_TERMINATE,
+        KILL_TERMINATE_AND_LOG,
         KILL_KILL,
         KILL_ABORT,
         _KILL_OPERATION_MAX,
@@ -97,6 +96,9 @@ struct Unit {
         usec_t source_mtime;
         usec_t dropin_mtime;
 
+        /* If this is a transient unit we are currently writing, this is where we are writing it to */
+        FILE *transient_file;
+
         /* If there is something to do with this unit, then this is the installed job for it */
         Job *job;
 
@@ -121,6 +123,10 @@ struct Unit {
         dual_timestamp condition_timestamp;
         dual_timestamp assert_timestamp;
 
+        /* Updated whenever the low-level state changes */
+        dual_timestamp state_change_timestamp;
+
+        /* Updated whenever the (high-level) active state enters or leaves the active or inactive states */
         dual_timestamp inactive_exit_timestamp;
         dual_timestamp active_enter_timestamp;
         dual_timestamp active_exit_timestamp;
@@ -157,11 +163,19 @@ struct Unit {
          * process SIGCHLD for */
         Set *pids;
 
+        /* Used in sigchld event invocation to avoid repeat events being invoked */
+        uint64_t sigchldgen;
+
         /* Used during GC sweeps */
         unsigned gc_marker;
 
         /* Error code when we didn't manage to load the unit (negative) */
         int load_error;
+
+        /* Put a ratelimit on unit starting */
+        RateLimit start_limit;
+        FailureAction start_limit_action;
+        char *reboot_arg;
 
         /* Make sure we never enter endless loops with the check unneeded logic, or the BindsTo= logic */
         RateLimit auto_stop_ratelimit;
@@ -176,6 +190,7 @@ struct Unit {
         /* Counterparts in the cgroup filesystem */
         char *cgroup_path;
         CGroupMask cgroup_realized_mask;
+        CGroupMask cgroup_enabled_mask;
         CGroupMask cgroup_subtree_mask;
         CGroupMask cgroup_members_mask;
         int cgroup_inotify_wd;
@@ -203,9 +218,6 @@ struct Unit {
         /* Ignore this unit when isolating */
         bool ignore_on_isolate;
 
-        /* Ignore this unit when snapshotting */
-        bool ignore_on_snapshot;
-
         /* Did the last condition check succeed? */
         bool condition_result;
         bool assert_result;
@@ -229,6 +241,8 @@ struct Unit {
         bool cgroup_members_mask_valid:1;
         bool cgroup_subtree_mask_valid:1;
 
+        bool start_limit_hit:1;
+
         /* Did we already invoke unit_coldplug() for this unit? */
         bool coldplugged:1;
 };
@@ -245,17 +259,16 @@ typedef enum UnitSetPropertiesMode {
         UNIT_PERSISTENT = 2,
 } UnitSetPropertiesMode;
 
-#include "socket.h"
-#include "busname.h"
-#include "target.h"
-#include "snapshot.h"
-#include "device.h"
 #include "automount.h"
-#include "swap.h"
-#include "timer.h"
-#include "slice.h"
+#include "busname.h"
+#include "device.h"
 #include "path.h"
 #include "scope.h"
+#include "slice.h"
+#include "socket.h"
+#include "swap.h"
+#include "target.h"
+#include "timer.h"
 
 struct UnitVTable {
         /* How much memory does an object of this unit type need */
@@ -277,6 +290,10 @@ struct UnitVTable {
          * pointer to ExecRuntime is found, if the unit type has
          * that */
         size_t exec_runtime_offset;
+
+        /* If greater than 0, the offset into the object where the pointer to DynamicCreds is found, if the unit type
+         * has that. */
+        size_t dynamic_creds_offset;
 
         /* The name of the configuration file section with the private settings of this unit */
         const char *private_section;
@@ -322,7 +339,7 @@ struct UnitVTable {
         int (*deserialize_item)(Unit *u, const char *key, const char *data, FDSet *fds);
 
         /* Try to match up fds with what we need for this unit */
-        int (*distribute_fds)(Unit *u, FDSet *fds);
+        void (*distribute_fds)(Unit *u, FDSet *fds);
 
         /* Boils down the more complex internal state of this unit to
          * a simpler one that the engine can understand */
@@ -342,9 +359,6 @@ struct UnitVTable {
         /* When the unit is not running and no job for it queued we
          * shall release its runtime resources */
         void (*release_resources)(Unit *u);
-
-        /* Return true when this unit is suitable for snapshotting */
-        bool (*check_snapshot)(Unit *u);
 
         /* Invoked on every child that died */
         void (*sigchld_event)(Unit *u, pid_t pid, int code, int status);
@@ -382,14 +396,21 @@ struct UnitVTable {
         /* Called whenever CLOCK_REALTIME made a jump */
         void (*time_change)(Unit *u);
 
-        int (*get_timeout)(Unit *u, uint64_t *timeout);
+        /* Returns the next timeout of a unit */
+        int (*get_timeout)(Unit *u, usec_t *timeout);
+
+        /* Returns the main PID if there is any defined, or 0. */
+        pid_t (*main_pid)(Unit *u);
+
+        /* Returns the main PID if there is any defined, or 0. */
+        pid_t (*control_pid)(Unit *u);
 
         /* This is called for each unit type and should be used to
          * enumerate existing devices and load them. However,
          * everything that is loaded here should still stay in
          * inactive state. It is the job of the coldplug() call above
          * to put the units into the initial state.  */
-        int (*enumerate)(Manager *m);
+        void (*enumerate)(Manager *m);
 
         /* Type specific cleanups. */
         void (*shutdown)(Manager *m);
@@ -403,15 +424,6 @@ struct UnitVTable {
 
         /* The strings to print in status messages */
         UnitStatusMessageFormats status_message_formats;
-
-        /* Can units of this type have multiple names? */
-        bool no_alias:1;
-
-        /* Instances make no sense for this type */
-        bool no_instances:1;
-
-        /* Exclude from automatic gc */
-        bool no_gc:1;
 
         /* True if transient units of this type are OK */
         bool can_transient:1;
@@ -443,7 +455,6 @@ DEFINE_CAST(SERVICE, Service);
 DEFINE_CAST(SOCKET, Socket);
 DEFINE_CAST(BUSNAME, BusName);
 DEFINE_CAST(TARGET, Target);
-DEFINE_CAST(SNAPSHOT, Snapshot);
 DEFINE_CAST(DEVICE, Device);
 DEFINE_CAST(MOUNT, Mount);
 DEFINE_CAST(AUTOMOUNT, Automount);
@@ -539,7 +550,7 @@ int unit_serialize_item_escaped(Unit *u, FILE *f, const char *key, const char *v
 int unit_serialize_item_fd(Unit *u, FILE *f, FDSet *fds, const char *key, int fd);
 void unit_serialize_item_format(Unit *u, FILE *f, const char *key, const char *value, ...) _printf_(4,5);
 
-int unit_add_node_link(Unit *u, const char *what, bool wants);
+int unit_add_node_link(Unit *u, const char *what, bool wants, UnitDependency d);
 
 int unit_coldplug(Unit *u);
 
@@ -582,6 +593,7 @@ CGroupContext *unit_get_cgroup_context(Unit *u) _pure_;
 ExecRuntime *unit_get_exec_runtime(Unit *u) _pure_;
 
 int unit_setup_exec_runtime(Unit *u);
+int unit_setup_dynamic_creds(Unit *u);
 
 int unit_write_drop_in(Unit *u, UnitSetPropertiesMode mode, const char *name, const char *data);
 int unit_write_drop_in_format(Unit *u, UnitSetPropertiesMode mode, const char *name, const char *format, ...) _printf_(4,5);
@@ -597,12 +609,19 @@ int unit_require_mounts_for(Unit *u, const char *path);
 
 bool unit_type_supported(UnitType t);
 
+bool unit_is_pristine(Unit *u);
+
+pid_t unit_control_pid(Unit *u);
+pid_t unit_main_pid(Unit *u);
+
 static inline bool unit_supported(Unit *u) {
         return unit_type_supported(u->type);
 }
 
 void unit_warn_if_dir_nonempty(Unit *u, const char* where);
 int unit_fail_if_symlink(Unit *u, const char* where);
+
+int unit_start_limit_test(Unit *u);
 
 /* Macros which append UNIT= or USER_UNIT= to the message */
 

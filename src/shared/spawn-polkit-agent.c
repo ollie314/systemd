@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,18 +17,20 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <stdlib.h>
-#include <unistd.h>
-#include <signal.h>
 #include <errno.h>
 #include <poll.h>
+#include <signal.h>
+#include <stdlib.h>
+#include <unistd.h>
 
 #include "fd-util.h"
 #include "io-util.h"
 #include "log.h"
+#include "macro.h"
 #include "process-util.h"
 #include "spawn-polkit-agent.h"
 #include "stdio-util.h"
+#include "time-util.h"
 #include "util.h"
 
 #ifdef ENABLE_POLKIT
@@ -42,6 +42,10 @@ int polkit_agent_open(void) {
         char notify_fd[DECIMAL_STR_MAX(int) + 1];
 
         if (agent_pid > 0)
+                return 0;
+
+        /* Clients that run as root don't need to activate/query polkit */
+        if (geteuid() == 0)
                 return 0;
 
         /* We check STDIN here, not STDOUT, since this is about input,

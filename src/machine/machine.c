@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -29,6 +27,7 @@
 #include "bus-error.h"
 #include "bus-util.h"
 #include "escape.h"
+#include "extract-word.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "formats-util.h"
@@ -37,6 +36,7 @@
 #include "machine.h"
 #include "mkdir.h"
 #include "parse-util.h"
+#include "process-util.h"
 #include "special.h"
 #include "string-table.h"
 #include "terminal-util.h"
@@ -89,7 +89,7 @@ void machine_free(Machine *m) {
         assert(m);
 
         while (m->operations)
-                machine_operation_unref(m->operations);
+                operation_free(m->operations);
 
         if (m->in_gc_queue)
                 LIST_REMOVE(gc_queue, m->manager->machine_gc_queue, m);
@@ -104,7 +104,7 @@ void machine_free(Machine *m) {
                 m->manager->host_machine = NULL;
 
         if (m->leader > 0)
-                (void) hashmap_remove_value(m->manager->machine_leaders, UINT_TO_PTR(m->leader), m);
+                (void) hashmap_remove_value(m->manager->machine_leaders, PID_TO_PTR(m->leader), m);
 
         sd_bus_message_unref(m->create_message);
 
@@ -181,7 +181,7 @@ int machine_save(Machine *m) {
                 fprintf(f, "ROOT=%s\n", escaped);
         }
 
-        if (!sd_id128_equal(m->id, SD_ID128_NULL))
+        if (!sd_id128_is_null(m->id))
                 fprintf(f, "ID=" SD_ID128_FORMAT_STR "\n", SD_ID128_FORMAT_VAL(m->id));
 
         if (m->leader != 0)
@@ -299,32 +299,32 @@ int machine_load(Machine *m) {
                         m->class = c;
         }
 
-        if (realtime) {
-                unsigned long long l;
-                if (sscanf(realtime, "%llu", &l) > 0)
-                        m->timestamp.realtime = l;
-        }
-
-        if (monotonic) {
-                unsigned long long l;
-                if (sscanf(monotonic, "%llu", &l) > 0)
-                        m->timestamp.monotonic = l;
-        }
+        if (realtime)
+                timestamp_deserialize(realtime, &m->timestamp.realtime);
+        if (monotonic)
+                timestamp_deserialize(monotonic, &m->timestamp.monotonic);
 
         if (netif) {
-                size_t l, allocated = 0, nr = 0;
-                const char *word, *state;
+                size_t allocated = 0, nr = 0;
+                const char *p;
                 int *ni = NULL;
 
-                FOREACH_WORD(word, l, netif, state) {
-                        char buf[l+1];
+                p = netif;
+                for (;;) {
+                        _cleanup_free_ char *word = NULL;
                         int ifi;
 
-                        *(char*) (mempcpy(buf, word, l)) = 0;
+                        r = extract_first_word(&p, &word, NULL, 0);
+                        if (r == 0)
+                                break;
+                        if (r == -ENOMEM)
+                                return log_oom();
+                        if (r < 0) {
+                                log_warning_errno(r, "Failed to parse NETIF: %s", netif);
+                                break;
+                        }
 
-                        if (safe_atoi(buf, &ifi) < 0)
-                                continue;
-                        if (ifi <= 0)
+                        if (parse_ifindex(word, &ifi) < 0)
                                 continue;
 
                         if (!GREEDY_REALLOC(ni, allocated, nr+1)) {
@@ -393,7 +393,7 @@ int machine_start(Machine *m, sd_bus_message *properties, sd_bus_error *error) {
         if (m->started)
                 return 0;
 
-        r = hashmap_put(m->manager->machine_leaders, UINT_TO_PTR(m->leader), m);
+        r = hashmap_put(m->manager->machine_leaders, PID_TO_PTR(m->leader), m);
         if (r < 0)
                 return r;
 
@@ -423,7 +423,7 @@ int machine_start(Machine *m, sd_bus_message *properties, sd_bus_error *error) {
 }
 
 static int machine_stop_scope(Machine *m) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         char *job = NULL;
         int r;
 
@@ -544,7 +544,7 @@ int machine_kill(Machine *m, KillWho who, int signo) {
                 return 0;
         }
 
-        /* Otherwise make PID 1 do it for us, for the entire cgroup */
+        /* Otherwise, make PID 1 do it for us, for the entire cgroup */
         return manager_kill_unit(m->manager, m->unit, signo, NULL);
 }
 
@@ -594,28 +594,6 @@ int machine_open_terminal(Machine *m, const char *path, int mode) {
         default:
                 return -EOPNOTSUPP;
         }
-}
-
-MachineOperation *machine_operation_unref(MachineOperation *o) {
-        if (!o)
-                return NULL;
-
-        sd_event_source_unref(o->event_source);
-
-        safe_close(o->errno_fd);
-
-        if (o->pid > 1)
-                (void) kill(o->pid, SIGKILL);
-
-        sd_bus_message_unref(o->message);
-
-        if (o->machine) {
-                LIST_REMOVE(operations, o->machine->operations, o);
-                o->machine->n_operations--;
-        }
-
-        free(o);
-        return NULL;
 }
 
 void machine_release_unit(Machine *m) {

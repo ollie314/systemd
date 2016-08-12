@@ -1,11 +1,9 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
   Copyright 2010 Lennart Poettering
   Copyright (C) 2012 Roberto Sassu - Politecnico di Torino, Italy
-                                     TORSEC group -- http://security.polito.it
+                                     TORSEC group — http://security.polito.it
 
   systemd is free software; you can redistribute it and/or modify it
   under the terms of the GNU Lesser General Public License as published by
@@ -21,8 +19,8 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <unistd.h>
 #include <errno.h>
+#include <unistd.h>
 
 #include "fd-util.h"
 #include "fileio.h"

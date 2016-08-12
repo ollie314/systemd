@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #ifndef foosdresolvehfoo
 #define foosdresolvehfoo
 
@@ -28,6 +26,7 @@
 #include <sys/types.h>
 
 #include "sd-event.h"
+
 #include "_sd-common.h"
 
 _SD_BEGIN_DECLARATIONS;
@@ -43,9 +42,9 @@ typedef int (*sd_resolve_getaddrinfo_handler_t)(sd_resolve_query *q, int ret, co
 typedef int (*sd_resolve_getnameinfo_handler_t)(sd_resolve_query *q, int ret, const char *host, const char *serv, void *userdata);
 
 enum {
-        SD_RESOLVE_GET_HOST = 1ULL,
-        SD_RESOLVE_GET_SERVICE = 2ULL,
-        SD_RESOLVE_GET_BOTH = 3ULL
+        SD_RESOLVE_GET_HOST = UINT64_C(1),
+        SD_RESOLVE_GET_SERVICE = UINT64_C(2),
+        SD_RESOLVE_GET_BOTH = UINT64_C(3),
 };
 
 int sd_resolve_default(sd_resolve **ret);
@@ -80,7 +79,7 @@ int sd_resolve_wait(sd_resolve *resolve, uint64_t timeout_usec);
 
 int sd_resolve_get_tid(sd_resolve *resolve, pid_t *tid);
 
-int sd_resolve_attach_event(sd_resolve *resolve, sd_event *e, int priority);
+int sd_resolve_attach_event(sd_resolve *resolve, sd_event *e, int64_t priority);
 int sd_resolve_detach_event(sd_resolve *resolve);
 sd_event *sd_resolve_get_event(sd_resolve *resolve);
 
@@ -109,6 +108,9 @@ void *sd_resolve_query_get_userdata(sd_resolve_query *q);
 void *sd_resolve_query_set_userdata(sd_resolve_query *q, void *userdata);
 
 sd_resolve *sd_resolve_query_get_resolve(sd_resolve_query *q);
+
+_SD_DEFINE_POINTER_CLEANUP_FUNC(sd_resolve, sd_resolve_unref);
+_SD_DEFINE_POINTER_CLEANUP_FUNC(sd_resolve_query, sd_resolve_query_unref);
 
 _SD_END_DECLARATIONS;
 

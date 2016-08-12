@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -79,7 +77,7 @@ int main(int argc, char *argv[]) {
         JournalFile *one, *two, *three;
         char t[] = "/tmp/journal-stream-XXXXXX";
         unsigned i;
-        _cleanup_journal_close_ sd_journal *j = NULL;
+        _cleanup_(sd_journal_closep) sd_journal *j = NULL;
         char *z;
         const void *data;
         size_t l;
@@ -94,9 +92,9 @@ int main(int argc, char *argv[]) {
         assert_se(mkdtemp(t));
         assert_se(chdir(t) >= 0);
 
-        assert_se(journal_file_open("one.journal", O_RDWR|O_CREAT, 0666, true, false, NULL, NULL, NULL, &one) == 0);
-        assert_se(journal_file_open("two.journal", O_RDWR|O_CREAT, 0666, true, false, NULL, NULL, NULL, &two) == 0);
-        assert_se(journal_file_open("three.journal", O_RDWR|O_CREAT, 0666, true, false, NULL, NULL, NULL, &three) == 0);
+        assert_se(journal_file_open(-1, "one.journal", O_RDWR|O_CREAT, 0666, true, false, NULL, NULL, NULL, NULL, &one) == 0);
+        assert_se(journal_file_open(-1, "two.journal", O_RDWR|O_CREAT, 0666, true, false, NULL, NULL, NULL, NULL, &two) == 0);
+        assert_se(journal_file_open(-1, "three.journal", O_RDWR|O_CREAT, 0666, true, false, NULL, NULL, NULL, NULL, &three) == 0);
 
         for (i = 0; i < N_ENTRIES; i++) {
                 char *p, *q;
@@ -135,9 +133,9 @@ int main(int argc, char *argv[]) {
                 free(q);
         }
 
-        journal_file_close(one);
-        journal_file_close(two);
-        journal_file_close(three);
+        (void) journal_file_close(one);
+        (void) journal_file_close(two);
+        (void) journal_file_close(three);
 
         assert_se(sd_journal_open_directory(&j, t, 0) >= 0);
 

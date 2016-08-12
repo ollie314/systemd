@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -487,7 +485,7 @@ int process_source(RemoteSource *source, bool compress, bool seal) {
         }
 
         target = source->size;
-        while (target > 16 * LINE_CHUNK && remain < target / 2)
+        while (target > 16 * LINE_CHUNK && source->filled < target / 2)
                 target /= 2;
         if (target < source->size) {
                 char *tmp;

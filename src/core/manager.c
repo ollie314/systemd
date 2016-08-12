@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -51,6 +49,7 @@
 #include "dbus-manager.h"
 #include "dbus-unit.h"
 #include "dbus.h"
+#include "dirent-util.h"
 #include "env-util.h"
 #include "escape.h"
 #include "exit-status.h"
@@ -86,19 +85,22 @@
 #include "virt.h"
 #include "watchdog.h"
 
+#define NOTIFY_RCVBUF_SIZE (8*1024*1024)
+#define CGROUPS_AGENT_RCVBUF_SIZE (8*1024*1024)
+
 /* Initial delay and the interval for printing status messages about running jobs */
 #define JOBS_IN_PROGRESS_WAIT_USEC (5*USEC_PER_SEC)
 #define JOBS_IN_PROGRESS_PERIOD_USEC (USEC_PER_SEC / 3)
 #define JOBS_IN_PROGRESS_PERIOD_DIVISOR 3
 
 static int manager_dispatch_notify_fd(sd_event_source *source, int fd, uint32_t revents, void *userdata);
+static int manager_dispatch_cgroups_agent_fd(sd_event_source *source, int fd, uint32_t revents, void *userdata);
 static int manager_dispatch_signal_fd(sd_event_source *source, int fd, uint32_t revents, void *userdata);
 static int manager_dispatch_time_change_fd(sd_event_source *source, int fd, uint32_t revents, void *userdata);
 static int manager_dispatch_idle_pipe_fd(sd_event_source *source, int fd, uint32_t revents, void *userdata);
 static int manager_dispatch_jobs_in_progress(sd_event_source *source, usec_t usec, void *userdata);
 static int manager_dispatch_run_queue(sd_event_source *source, void *userdata);
 static int manager_run_generators(Manager *m);
-static void manager_undo_generators(Manager *m);
 
 static void manager_watch_jobs_in_progress(Manager *m) {
         usec_t next;
@@ -133,23 +135,28 @@ static void draw_cylon(char buffer[], size_t buflen, unsigned width, unsigned po
         if (pos > 1) {
                 if (pos > 2)
                         p = mempset(p, ' ', pos-2);
-                p = stpcpy(p, ANSI_RED);
+                if (log_get_show_color())
+                        p = stpcpy(p, ANSI_RED);
                 *p++ = '*';
         }
 
         if (pos > 0 && pos <= width) {
-                p = stpcpy(p, ANSI_HIGHLIGHT_RED);
+                if (log_get_show_color())
+                        p = stpcpy(p, ANSI_HIGHLIGHT_RED);
                 *p++ = '*';
         }
 
-        p = stpcpy(p, ANSI_NORMAL);
+        if (log_get_show_color())
+                p = stpcpy(p, ANSI_NORMAL);
 
         if (pos < width) {
-                p = stpcpy(p, ANSI_RED);
+                if (log_get_show_color())
+                        p = stpcpy(p, ANSI_RED);
                 *p++ = '*';
                 if (pos < width-1)
                         p = mempset(p, ' ', width-1-pos);
-                strcpy(p, ANSI_NORMAL);
+                if (log_get_show_color())
+                        strcpy(p, ANSI_NORMAL);
         }
 }
 
@@ -231,7 +238,7 @@ static int have_ask_password(void) {
 
                 errno = 0;
                 de = readdir(dir);
-                if (!de && errno != 0)
+                if (!de && errno > 0)
                         return -errno;
                 if (!de)
                         return false;
@@ -378,6 +385,9 @@ static int enable_special_signals(Manager *m) {
 
         assert(m);
 
+        if (m->test_run)
+                return 0;
+
         /* Enable that we get SIGINT on control-alt-del. In containers
          * this will fail with EPERM (older) or EINVAL (newer), so
          * ignore that. */
@@ -480,15 +490,15 @@ static int manager_setup_signals(Manager *m) {
 
         (void) sd_event_source_set_description(m->signal_event_source, "manager-signal");
 
-        /* Process signals a bit earlier than the rest of things, but
-         * later than notify_fd processing, so that the notify
-         * processing can still figure out to which process/service a
-         * message belongs, before we reap the process. */
-        r = sd_event_source_set_priority(m->signal_event_source, -5);
+        /* Process signals a bit earlier than the rest of things, but later than notify_fd processing, so that the
+         * notify processing can still figure out to which process/service a message belongs, before we reap the
+         * process. Also, process this before handling cgroup notifications, so that we always collect child exit
+         * status information before detecting that there's no process in a cgroup. */
+        r = sd_event_source_set_priority(m->signal_event_source, SD_EVENT_PRIORITY_NORMAL-6);
         if (r < 0)
                 return r;
 
-        if (m->running_as == MANAGER_SYSTEM)
+        if (MANAGER_IS_SYSTEM(m))
                 return enable_special_signals(m);
 
         return 0;
@@ -515,7 +525,7 @@ static void manager_clean_environment(Manager *m) {
 static int manager_default_environment(Manager *m) {
         assert(m);
 
-        if (m->running_as == MANAGER_SYSTEM) {
+        if (MANAGER_IS_SYSTEM(m)) {
                 /* The system manager always starts with a clean
                  * environment for its children. It does not import
                  * the kernel or the parents exported variables.
@@ -543,55 +553,47 @@ static int manager_default_environment(Manager *m) {
         return 0;
 }
 
-
-int manager_new(ManagerRunningAs running_as, bool test_run, Manager **_m) {
-
-        static const char * const unit_log_fields[_MANAGER_RUNNING_AS_MAX] = {
-                [MANAGER_SYSTEM] = "UNIT=",
-                [MANAGER_USER] = "USER_UNIT=",
-        };
-
-        static const char * const unit_log_format_strings[_MANAGER_RUNNING_AS_MAX] = {
-                [MANAGER_SYSTEM] = "UNIT=%s",
-                [MANAGER_USER] = "USER_UNIT=%s",
-        };
-
+int manager_new(UnitFileScope scope, bool test_run, Manager **_m) {
         Manager *m;
         int r;
 
         assert(_m);
-        assert(running_as >= 0);
-        assert(running_as < _MANAGER_RUNNING_AS_MAX);
+        assert(IN_SET(scope, UNIT_FILE_SYSTEM, UNIT_FILE_USER));
 
         m = new0(Manager, 1);
         if (!m)
                 return -ENOMEM;
 
+        m->unit_file_scope = scope;
+        m->exit_code = _MANAGER_EXIT_CODE_INVALID;
+        m->default_timer_accuracy_usec = USEC_PER_MINUTE;
+        m->default_tasks_accounting = true;
+        m->default_tasks_max = UINT64_MAX;
+
 #ifdef ENABLE_EFI
-        if (running_as == MANAGER_SYSTEM && detect_container() <= 0)
+        if (MANAGER_IS_SYSTEM(m) && detect_container() <= 0)
                 boot_timestamps(&m->userspace_timestamp, &m->firmware_timestamp, &m->loader_timestamp);
 #endif
 
-        m->running_as = running_as;
-        m->exit_code = _MANAGER_EXIT_CODE_INVALID;
-        m->default_timer_accuracy_usec = USEC_PER_MINUTE;
-
         /* Prepare log fields we can use for structured logging */
-        m->unit_log_field = unit_log_fields[running_as];
-        m->unit_log_format_string = unit_log_format_strings[running_as];
+        if (MANAGER_IS_SYSTEM(m)) {
+                m->unit_log_field = "UNIT=";
+                m->unit_log_format_string = "UNIT=%s";
+        } else {
+                m->unit_log_field = "USER_UNIT=";
+                m->unit_log_format_string = "USER_UNIT=%s";
+        }
 
         m->idle_pipe[0] = m->idle_pipe[1] = m->idle_pipe[2] = m->idle_pipe[3] = -1;
 
-        m->pin_cgroupfs_fd = m->notify_fd = m->signal_fd = m->time_change_fd =
-                m->dev_autofs_fd = m->private_listen_fd = m->kdbus_fd = m->cgroup_inotify_fd = -1;
+        m->pin_cgroupfs_fd = m->notify_fd = m->cgroups_agent_fd = m->signal_fd = m->time_change_fd =
+                m->dev_autofs_fd = m->private_listen_fd = m->kdbus_fd = m->cgroup_inotify_fd =
+                m->ask_password_inotify_fd = -1;
 
         m->current_job_id = 1; /* start as id #1, so that we can leave #0 around as "null-like" value */
 
-        m->ask_password_inotify_fd = -1;
         m->have_ask_password = -EINVAL; /* we don't know */
         m->first_boot = -1;
-
-        m->cgroup_netclass_registry_last = CGROUP_NETCLASS_FIXED_MAX;
 
         m->test_run = test_run;
 
@@ -680,6 +682,7 @@ static int manager_setup_notify(Manager *m) {
                         .sa.sa_family = AF_UNIX,
                 };
                 static const int one = 1;
+                const char *e;
 
                 /* First free all secondary fields */
                 m->notify_socket = mfree(m->notify_socket);
@@ -689,19 +692,15 @@ static int manager_setup_notify(Manager *m) {
                 if (fd < 0)
                         return log_error_errno(errno, "Failed to allocate notification socket: %m");
 
-                if (m->running_as == MANAGER_SYSTEM)
-                        m->notify_socket = strdup("/run/systemd/notify");
-                else {
-                        const char *e;
+                fd_inc_rcvbuf(fd, NOTIFY_RCVBUF_SIZE);
 
-                        e = getenv("XDG_RUNTIME_DIR");
-                        if (!e) {
-                                log_error_errno(errno, "XDG_RUNTIME_DIR is not set: %m");
-                                return -EINVAL;
-                        }
-
-                        m->notify_socket = strappend(e, "/systemd/notify");
+                e = manager_get_runtime_prefix(m);
+                if (!e) {
+                        log_error("Failed to determine runtime prefix.");
+                        return -EINVAL;
                 }
+
+                m->notify_socket = strappend(e, "/systemd/notify");
                 if (!m->notify_socket)
                         return log_oom();
 
@@ -709,7 +708,7 @@ static int manager_setup_notify(Manager *m) {
                 (void) unlink(m->notify_socket);
 
                 strncpy(sa.un.sun_path, m->notify_socket, sizeof(sa.un.sun_path)-1);
-                r = bind(fd, &sa.sa, offsetof(struct sockaddr_un, sun_path) + strlen(sa.un.sun_path));
+                r = bind(fd, &sa.sa, SOCKADDR_UN_LEN(sa.un));
                 if (r < 0)
                         return log_error_errno(errno, "bind(%s) failed: %m", sa.un.sun_path);
 
@@ -728,9 +727,9 @@ static int manager_setup_notify(Manager *m) {
                 if (r < 0)
                         return log_error_errno(r, "Failed to allocate notify event source: %m");
 
-                /* Process signals a bit earlier than SIGCHLD, so that we can
-                 * still identify to which service an exit message belongs */
-                r = sd_event_source_set_priority(m->notify_event_source, -7);
+                /* Process notification messages a bit earlier than SIGCHLD, so that we can still identify to which
+                 * service an exit message belongs. */
+                r = sd_event_source_set_priority(m->notify_event_source, SD_EVENT_PRIORITY_NORMAL-7);
                 if (r < 0)
                         return log_error_errno(r, "Failed to set priority of notify event source: %m");
 
@@ -740,24 +739,75 @@ static int manager_setup_notify(Manager *m) {
         return 0;
 }
 
-static int manager_setup_kdbus(Manager *m) {
-        _cleanup_free_ char *p = NULL;
+static int manager_setup_cgroups_agent(Manager *m) {
 
-        assert(m);
+        static const union sockaddr_union sa = {
+                .un.sun_family = AF_UNIX,
+                .un.sun_path = "/run/systemd/cgroups-agent",
+        };
+        int r;
 
-        if (m->test_run || m->kdbus_fd >= 0)
+        /* This creates a listening socket we receive cgroups agent messages on. We do not use D-Bus for delivering
+         * these messages from the cgroups agent binary to PID 1, as the cgroups agent binary is very short-living, and
+         * each instance of it needs a new D-Bus connection. Since D-Bus connections are SOCK_STREAM/AF_UNIX, on
+         * overloaded systems the backlog of the D-Bus socket becomes relevant, as not more than the configured number
+         * of D-Bus connections may be queued until the kernel will start dropping further incoming connections,
+         * possibly resulting in lost cgroups agent messages. To avoid this, we'll use a private SOCK_DGRAM/AF_UNIX
+         * socket, where no backlog is relevant as communication may take place without an actual connect() cycle, and
+         * we thus won't lose messages.
+         *
+         * Note that PID 1 will forward the agent message to system bus, so that the user systemd instance may listen
+         * to it. The system instance hence listens on this special socket, but the user instances listen on the system
+         * bus for these messages. */
+
+        if (m->test_run)
                 return 0;
-        if (!is_kdbus_available())
-                return -ESOCKTNOSUPPORT;
 
-        m->kdbus_fd = bus_kernel_create_bus(
-                        m->running_as == MANAGER_SYSTEM ? "system" : "user",
-                        m->running_as == MANAGER_SYSTEM, &p);
+        if (!MANAGER_IS_SYSTEM(m))
+                return 0;
 
-        if (m->kdbus_fd < 0)
-                return log_debug_errno(m->kdbus_fd, "Failed to set up kdbus: %m");
+        if (cg_unified() > 0) /* We don't need this anymore on the unified hierarchy */
+                return 0;
 
-        log_debug("Successfully set up kdbus on %s", p);
+        if (m->cgroups_agent_fd < 0) {
+                _cleanup_close_ int fd = -1;
+
+                /* First free all secondary fields */
+                m->cgroups_agent_event_source = sd_event_source_unref(m->cgroups_agent_event_source);
+
+                fd = socket(AF_UNIX, SOCK_DGRAM|SOCK_CLOEXEC|SOCK_NONBLOCK, 0);
+                if (fd < 0)
+                        return log_error_errno(errno, "Failed to allocate cgroups agent socket: %m");
+
+                fd_inc_rcvbuf(fd, CGROUPS_AGENT_RCVBUF_SIZE);
+
+                (void) unlink(sa.un.sun_path);
+
+                /* Only allow root to connect to this socket */
+                RUN_WITH_UMASK(0077)
+                        r = bind(fd, &sa.sa, SOCKADDR_UN_LEN(sa.un));
+                if (r < 0)
+                        return log_error_errno(errno, "bind(%s) failed: %m", sa.un.sun_path);
+
+                m->cgroups_agent_fd = fd;
+                fd = -1;
+        }
+
+        if (!m->cgroups_agent_event_source) {
+                r = sd_event_add_io(m->event, &m->cgroups_agent_event_source, m->cgroups_agent_fd, EPOLLIN, manager_dispatch_cgroups_agent_fd, m);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to allocate cgroups agent event source: %m");
+
+                /* Process cgroups notifications early, but after having processed service notification messages or
+                 * SIGCHLD signals, so that a cgroup running empty is always just the last safety net of notification,
+                 * and we collected the metadata the notification and SIGCHLD stuff offers first. Also see handling of
+                 * cgroup inotify for the unified cgroup stuff. */
+                r = sd_event_source_set_priority(m->cgroups_agent_event_source, SD_EVENT_PRIORITY_NORMAL-5);
+                if (r < 0)
+                        return log_error_errno(r, "Failed to set priority of cgroups agent event source: %m");
+
+                (void) sd_event_source_set_description(m->cgroups_agent_event_source, "manager-cgroups-agent");
+        }
 
         return 0;
 }
@@ -773,7 +823,7 @@ static int manager_connect_bus(Manager *m, bool reexecuting) {
         try_bus_connect =
                 m->kdbus_fd >= 0 ||
                 reexecuting ||
-                (m->running_as == MANAGER_USER && getenv("DBUS_SESSION_BUS_ADDRESS"));
+                (MANAGER_IS_USER(m) && getenv("DBUS_SESSION_BUS_ADDRESS"));
 
         /* Try to connect to the buses, if possible. */
         return bus_init(m, try_bus_connect);
@@ -803,6 +853,19 @@ enum {
         _GC_OFFSET_MAX
 };
 
+static void unit_gc_mark_good(Unit *u, unsigned gc_marker)
+{
+        Iterator i;
+        Unit *other;
+
+        u->gc_marker = gc_marker + GC_OFFSET_GOOD;
+
+        /* Recursively mark referenced units as GOOD as well */
+        SET_FOREACH(other, u->dependencies[UNIT_REFERENCES], i)
+                if (other->gc_marker == gc_marker + GC_OFFSET_UNSURE)
+                        unit_gc_mark_good(other, gc_marker);
+}
+
 static void unit_gc_sweep(Unit *u, unsigned gc_marker) {
         Iterator i;
         Unit *other;
@@ -812,6 +875,7 @@ static void unit_gc_sweep(Unit *u, unsigned gc_marker) {
 
         if (u->gc_marker == gc_marker + GC_OFFSET_GOOD ||
             u->gc_marker == gc_marker + GC_OFFSET_BAD ||
+            u->gc_marker == gc_marker + GC_OFFSET_UNSURE ||
             u->gc_marker == gc_marker + GC_OFFSET_IN_PATH)
                 return;
 
@@ -852,7 +916,7 @@ bad:
         return;
 
 good:
-        u->gc_marker = gc_marker + GC_OFFSET_GOOD;
+        unit_gc_mark_good(u, gc_marker);
 }
 
 static unsigned manager_dispatch_gc_queue(Manager *m) {
@@ -935,9 +999,12 @@ Manager* manager_free(Manager *m) {
          * around */
         manager_shutdown_cgroup(m, m->exit_code != MANAGER_REEXECUTE);
 
-        manager_undo_generators(m);
+        lookup_paths_flush_generator(&m->lookup_paths);
 
         bus_done(m);
+
+        dynamic_user_vacuum(m, false);
+        hashmap_free(m->dynamic_users);
 
         hashmap_free(m->units);
         hashmap_free(m->jobs);
@@ -950,12 +1017,14 @@ Manager* manager_free(Manager *m) {
 
         sd_event_source_unref(m->signal_event_source);
         sd_event_source_unref(m->notify_event_source);
+        sd_event_source_unref(m->cgroups_agent_event_source);
         sd_event_source_unref(m->time_change_event_source);
         sd_event_source_unref(m->jobs_in_progress_event_source);
         sd_event_source_unref(m->run_queue_event_source);
 
         safe_close(m->signal_fd);
         safe_close(m->notify_fd);
+        safe_close(m->cgroups_agent_fd);
         safe_close(m->time_change_fd);
         safe_close(m->kdbus_fd);
 
@@ -974,13 +1043,11 @@ Manager* manager_free(Manager *m) {
         hashmap_free(m->cgroup_unit);
         set_free_free(m->unit_path_cache);
 
-        hashmap_free(m->cgroup_netclass_registry);
-
         free(m->switch_root);
         free(m->switch_root_init);
 
         for (i = 0; i < _RLIMIT_MAX; i++)
-                free(m->rlimit[i]);
+                m->rlimit[i] = mfree(m->rlimit[i]);
 
         assert(hashmap_isempty(m->units_requiring_mounts_for));
         hashmap_free(m->units_requiring_mounts_for);
@@ -989,8 +1056,7 @@ Manager* manager_free(Manager *m) {
         return NULL;
 }
 
-int manager_enumerate(Manager *m) {
-        int r = 0;
+void manager_enumerate(Manager *m) {
         UnitType c;
 
         assert(m);
@@ -998,8 +1064,6 @@ int manager_enumerate(Manager *m) {
         /* Let's ask every type to load all units from disk/kernel
          * that it might know */
         for (c = 0; c < _UNIT_TYPE_MAX; c++) {
-                int q;
-
                 if (!unit_type_supported(c)) {
                         log_debug("Unit type .%s is not supported on this system.", unit_type_to_string(c));
                         continue;
@@ -1008,13 +1072,10 @@ int manager_enumerate(Manager *m) {
                 if (!unit_vtable[c]->enumerate)
                         continue;
 
-                q = unit_vtable[c]->enumerate(m);
-                if (q < 0)
-                        r = q;
+                unit_vtable[c]->enumerate(m);
         }
 
         manager_dispatch_load_queue(m);
-        return r;
 }
 
 static void manager_coldplug(Manager *m) {
@@ -1040,7 +1101,6 @@ static void manager_coldplug(Manager *m) {
 
 static void manager_build_unit_path_cache(Manager *m) {
         char **i;
-        _cleanup_closedir_ DIR *d = NULL;
         int r;
 
         assert(m);
@@ -1049,28 +1109,26 @@ static void manager_build_unit_path_cache(Manager *m) {
 
         m->unit_path_cache = set_new(&string_hash_ops);
         if (!m->unit_path_cache) {
-                log_error("Failed to allocate unit path cache.");
-                return;
+                r = -ENOMEM;
+                goto fail;
         }
 
         /* This simply builds a list of files we know exist, so that
          * we don't always have to go to disk */
 
-        STRV_FOREACH(i, m->lookup_paths.unit_path) {
+        STRV_FOREACH(i, m->lookup_paths.search_path) {
+                _cleanup_closedir_ DIR *d = NULL;
                 struct dirent *de;
 
                 d = opendir(*i);
                 if (!d) {
                         if (errno != ENOENT)
-                                log_error_errno(errno, "Failed to open directory %s: %m", *i);
+                                log_warning_errno(errno, "Failed to open directory %s, ignoring: %m", *i);
                         continue;
                 }
 
-                while ((de = readdir(d))) {
+                FOREACH_DIRENT(de, d, r = -errno; goto fail) {
                         char *p;
-
-                        if (hidden_file(de->d_name))
-                                continue;
 
                         p = strjoin(streq(*i, "/") ? "" : *i, "/", de->d_name, NULL);
                         if (!p) {
@@ -1082,24 +1140,18 @@ static void manager_build_unit_path_cache(Manager *m) {
                         if (r < 0)
                                 goto fail;
                 }
-
-                d = safe_closedir(d);
         }
 
         return;
 
 fail:
-        log_error_errno(r, "Failed to build unit path cache: %m");
-
-        set_free_free(m->unit_path_cache);
-        m->unit_path_cache = NULL;
+        log_warning_errno(r, "Failed to build unit path cache, proceeding without: %m");
+        m->unit_path_cache = set_free_free(m->unit_path_cache);
 }
 
-
-static int manager_distribute_fds(Manager *m, FDSet *fds) {
-        Unit *u;
+static void manager_distribute_fds(Manager *m, FDSet *fds) {
         Iterator i;
-        int r;
+        Unit *u;
 
         assert(m);
 
@@ -1108,14 +1160,11 @@ static int manager_distribute_fds(Manager *m, FDSet *fds) {
                 if (fdset_size(fds) <= 0)
                         break;
 
-                if (UNIT_VTABLE(u)->distribute_fds) {
-                        r = UNIT_VTABLE(u)->distribute_fds(u, fds);
-                        if (r < 0)
-                                return r;
-                }
-        }
+                if (!UNIT_VTABLE(u)->distribute_fds)
+                        continue;
 
-        return 0;
+                UNIT_VTABLE(u)->distribute_fds(u, fds);
+        }
 }
 
 int manager_startup(Manager *m, FILE *serialization, FDSet *fds) {
@@ -1123,32 +1172,33 @@ int manager_startup(Manager *m, FILE *serialization, FDSet *fds) {
 
         assert(m);
 
+        r = lookup_paths_init(&m->lookup_paths, m->unit_file_scope, 0, NULL);
+        if (r < 0)
+                return r;
+
+        /* Make sure the transient directory always exists, so that it remains in the search path */
+        r = mkdir_p_label(m->lookup_paths.transient, 0755);
+        if (r < 0)
+                return r;
+
         dual_timestamp_get(&m->generators_start_timestamp);
         r = manager_run_generators(m);
         dual_timestamp_get(&m->generators_finish_timestamp);
         if (r < 0)
                 return r;
 
-        r = lookup_paths_init(
-                        &m->lookup_paths, m->running_as, true,
-                        NULL,
-                        m->generator_unit_path,
-                        m->generator_unit_path_early,
-                        m->generator_unit_path_late);
-        if (r < 0)
-                return r;
-
+        lookup_paths_reduce(&m->lookup_paths);
         manager_build_unit_path_cache(m);
 
         /* If we will deserialize make sure that during enumeration
          * this is already known, so we increase the counter here
          * already */
         if (serialization)
-                m->n_reloading ++;
+                m->n_reloading++;
 
         /* First, enumerate what we can from all config files */
         dual_timestamp_get(&m->units_load_start_timestamp);
-        r = manager_enumerate(m);
+        manager_enumerate(m);
         dual_timestamp_get(&m->units_load_finish_timestamp);
 
         /* Second, deserialize if there is something to deserialize */
@@ -1159,11 +1209,7 @@ int manager_startup(Manager *m, FILE *serialization, FDSet *fds) {
          * useful to allow container managers to pass some file
          * descriptors to us pre-initialized. This enables
          * socket-based activation of entire containers. */
-        if (fdset_size(fds) > 0) {
-                q = manager_distribute_fds(m, fds);
-                if (q < 0 && r == 0)
-                        r = q;
-        }
+        manager_distribute_fds(m, fds);
 
         /* We might have deserialized the notify fd, but if we didn't
          * then let's create the bus now */
@@ -1171,18 +1217,24 @@ int manager_startup(Manager *m, FILE *serialization, FDSet *fds) {
         if (q < 0 && r == 0)
                 r = q;
 
+        q = manager_setup_cgroups_agent(m);
+        if (q < 0 && r == 0)
+                r = q;
+
         /* We might have deserialized the kdbus control fd, but if we
          * didn't, then let's create the bus now. */
-        manager_setup_kdbus(m);
         manager_connect_bus(m, !!serialization);
         bus_track_coldplug(m, &m->subscribed, &m->deserialized_subscribed);
 
         /* Third, fire things up! */
         manager_coldplug(m);
 
+        /* Release any dynamic users no longer referenced */
+        dynamic_user_vacuum(m, true);
+
         if (serialization) {
                 assert(m->n_reloading > 0);
-                m->n_reloading --;
+                m->n_reloading--;
 
                 /* Let's wait for the UnitNew/JobNew messages being
                  * sent, before we notify that the reload is
@@ -1193,7 +1245,7 @@ int manager_startup(Manager *m, FILE *serialization, FDSet *fds) {
         return r;
 }
 
-int manager_add_job(Manager *m, JobType type, Unit *unit, JobMode mode, bool override, sd_bus_error *e, Job **_ret) {
+int manager_add_job(Manager *m, JobType type, Unit *unit, JobMode mode, sd_bus_error *e, Job **_ret) {
         int r;
         Transaction *tr;
 
@@ -1216,7 +1268,7 @@ int manager_add_job(Manager *m, JobType type, Unit *unit, JobMode mode, bool ove
         if (!tr)
                 return -ENOMEM;
 
-        r = transaction_add_job_and_dependencies(tr, type, unit, NULL, true, override, false,
+        r = transaction_add_job_and_dependencies(tr, type, unit, NULL, true, false,
                                                  mode == JOB_IGNORE_DEPENDENCIES || mode == JOB_IGNORE_REQUIREMENTS,
                                                  mode == JOB_IGNORE_DEPENDENCIES, e);
         if (r < 0)
@@ -1248,7 +1300,7 @@ tr_abort:
         return r;
 }
 
-int manager_add_job_by_name(Manager *m, JobType type, const char *name, JobMode mode, bool override, sd_bus_error *e, Job **_ret) {
+int manager_add_job_by_name(Manager *m, JobType type, const char *name, JobMode mode, sd_bus_error *e, Job **ret) {
         Unit *unit;
         int r;
 
@@ -1261,7 +1313,23 @@ int manager_add_job_by_name(Manager *m, JobType type, const char *name, JobMode 
         if (r < 0)
                 return r;
 
-        return manager_add_job(m, type, unit, mode, override, e, _ret);
+        return manager_add_job(m, type, unit, mode, e, ret);
+}
+
+int manager_add_job_by_name_and_warn(Manager *m, JobType type, const char *name, JobMode mode, Job **ret) {
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        int r;
+
+        assert(m);
+        assert(type < _JOB_TYPE_MAX);
+        assert(name);
+        assert(mode < _JOB_MODE_MAX);
+
+        r = manager_add_job_by_name(m, type, name, mode, &error, ret);
+        if (r < 0)
+                return log_warning_errno(r, "Failed to enqueue %s job for %s: %s", job_mode_to_string(mode), name, bus_error_message(&error, r));
+
+        return r;
 }
 
 Job *manager_get_job(Manager *m, uint32_t id) {
@@ -1328,8 +1396,12 @@ int manager_load_unit_prepare(
 
         t = unit_name_to_type(name);
 
-        if (t == _UNIT_TYPE_INVALID || !unit_name_is_valid(name, UNIT_NAME_PLAIN|UNIT_NAME_INSTANCE))
+        if (t == _UNIT_TYPE_INVALID || !unit_name_is_valid(name, UNIT_NAME_PLAIN|UNIT_NAME_INSTANCE)) {
+                if (unit_name_is_valid(name, UNIT_NAME_TEMPLATE))
+                        return sd_bus_error_setf(e, SD_BUS_ERROR_INVALID_ARGS, "Unit name %s is missing the instance name.", name);
+
                 return sd_bus_error_setf(e, SD_BUS_ERROR_INVALID_ARGS, "Unit name %s is not valid.", name);
+        }
 
         ret = manager_get_unit(m, name);
         if (ret) {
@@ -1422,7 +1494,7 @@ void manager_clear_jobs(Manager *m) {
 
         while ((j = hashmap_first(m->jobs)))
                 /* No need to recurse. We're cancelling all jobs. */
-                job_finish_and_invalidate(j, JOB_CANCELED, false);
+                job_finish_and_invalidate(j, JOB_CANCELED, false, false);
 }
 
 static int manager_dispatch_run_queue(sd_event_source *source, void *userdata) {
@@ -1488,7 +1560,36 @@ static unsigned manager_dispatch_dbus_queue(Manager *m) {
         return n;
 }
 
-static void manager_invoke_notify_message(Manager *m, Unit *u, pid_t pid, char *buf, size_t n, FDSet *fds) {
+static int manager_dispatch_cgroups_agent_fd(sd_event_source *source, int fd, uint32_t revents, void *userdata) {
+        Manager *m = userdata;
+        char buf[PATH_MAX+1];
+        ssize_t n;
+
+        n = recv(fd, buf, sizeof(buf), 0);
+        if (n < 0)
+                return log_error_errno(errno, "Failed to read cgroups agent message: %m");
+        if (n == 0) {
+                log_error("Got zero-length cgroups agent message, ignoring.");
+                return 0;
+        }
+        if ((size_t) n >= sizeof(buf)) {
+                log_error("Got overly long cgroups agent message, ignoring.");
+                return 0;
+        }
+
+        if (memchr(buf, 0, n)) {
+                log_error("Got cgroups agent message with embedded NUL byte, ignoring.");
+                return 0;
+        }
+        buf[n] = 0;
+
+        manager_notify_cgroup_empty(m, buf);
+        bus_forward_agent_released(m, buf);
+
+        return 0;
+}
+
+static void manager_invoke_notify_message(Manager *m, Unit *u, pid_t pid, const char *buf, size_t n, FDSet *fds) {
         _cleanup_strv_free_ char **tags = NULL;
 
         assert(m);
@@ -1509,9 +1610,9 @@ static void manager_invoke_notify_message(Manager *m, Unit *u, pid_t pid, char *
 }
 
 static int manager_dispatch_notify_fd(sd_event_source *source, int fd, uint32_t revents, void *userdata) {
+
         _cleanup_fdset_free_ FDSet *fds = NULL;
         Manager *m = userdata;
-
         char buf[NOTIFY_BUFFER_MAX+1];
         struct iovec iovec = {
                 .iov_base = buf,
@@ -1618,15 +1719,29 @@ static int manager_dispatch_notify_fd(sd_event_source *source, int fd, uint32_t 
         return 0;
 }
 
-static void invoke_sigchld_event(Manager *m, Unit *u, siginfo_t *si) {
+static void invoke_sigchld_event(Manager *m, Unit *u, const siginfo_t *si) {
+        uint64_t iteration;
+
         assert(m);
         assert(u);
         assert(si);
 
+        sd_event_get_iteration(m->event, &iteration);
+
         log_unit_debug(u, "Child "PID_FMT" belongs to %s", si->si_pid, u->id);
 
         unit_unwatch_pid(u, si->si_pid);
-        UNIT_VTABLE(u)->sigchld_event(u, si->si_pid, si->si_code, si->si_status);
+
+        if (UNIT_VTABLE(u)->sigchld_event) {
+                if (set_size(u->pids) <= 1 ||
+                    iteration != u->sigchldgen ||
+                    unit_main_pid(u) == si->si_pid ||
+                    unit_control_pid(u) == si->si_pid) {
+                        UNIT_VTABLE(u)->sigchld_event(u, si->si_pid, si->si_code, si->si_status);
+                        u->sigchldgen = iteration;
+                } else
+                        log_debug("%s already issued a sigchld this iteration %" PRIu64 ", skipping. Pids still being watched %d", u->id, iteration, set_size(u->pids));
+         }
 }
 
 static int manager_dispatch_sigchld(Manager *m) {
@@ -1692,12 +1807,12 @@ static int manager_dispatch_sigchld(Manager *m) {
 }
 
 static int manager_start_target(Manager *m, const char *name, JobMode mode) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
         log_debug("Activating special unit %s", name);
 
-        r = manager_add_job_by_name(m, JOB_START, name, mode, true, &error, NULL);
+        r = manager_add_job_by_name(m, JOB_START, name, mode, &error, NULL);
         if (r < 0)
                 log_error("Failed to enqueue %s job: %s", name, bus_error_message(&error, r));
 
@@ -1733,7 +1848,7 @@ static int manager_dispatch_signal_fd(sd_event_source *source, int fd, uint32_t 
                 }
 
                 log_received_signal(sfsi.ssi_signo == SIGCHLD ||
-                                    (sfsi.ssi_signo == SIGTERM && m->running_as == MANAGER_USER)
+                                    (sfsi.ssi_signo == SIGTERM && MANAGER_IS_USER(m))
                                     ? LOG_DEBUG : LOG_INFO,
                                     &sfsi);
 
@@ -1744,7 +1859,7 @@ static int manager_dispatch_signal_fd(sd_event_source *source, int fd, uint32_t 
                         break;
 
                 case SIGTERM:
-                        if (m->running_as == MANAGER_SYSTEM) {
+                        if (MANAGER_IS_SYSTEM(m)) {
                                 /* This is for compatibility with the
                                  * original sysvinit */
                                 m->exit_code = MANAGER_REEXECUTE;
@@ -1754,7 +1869,7 @@ static int manager_dispatch_signal_fd(sd_event_source *source, int fd, uint32_t 
                         /* Fall through */
 
                 case SIGINT:
-                        if (m->running_as == MANAGER_SYSTEM) {
+                        if (MANAGER_IS_SYSTEM(m)) {
 
                                 /* If the user presses C-A-D more than
                                  * 7 times within 2s, we reboot
@@ -1780,14 +1895,14 @@ static int manager_dispatch_signal_fd(sd_event_source *source, int fd, uint32_t 
                         break;
 
                 case SIGWINCH:
-                        if (m->running_as == MANAGER_SYSTEM)
+                        if (MANAGER_IS_SYSTEM(m))
                                 manager_start_target(m, SPECIAL_KBREQUEST_TARGET, JOB_REPLACE);
 
                         /* This is a nop on non-init */
                         break;
 
                 case SIGPWR:
-                        if (m->running_as == MANAGER_SYSTEM)
+                        if (MANAGER_IS_SYSTEM(m))
                                 manager_start_target(m, SPECIAL_SIGPWR_TARGET, JOB_REPLACE);
 
                         /* This is a nop on non-init */
@@ -1877,27 +1992,25 @@ static int manager_dispatch_signal_fd(sd_event_source *source, int fd, uint32_t 
                         switch (sfsi.ssi_signo - SIGRTMIN) {
 
                         case 20:
-                                log_debug("Enabling showing of status.");
                                 manager_set_show_status(m, SHOW_STATUS_YES);
                                 break;
 
                         case 21:
-                                log_debug("Disabling showing of status.");
                                 manager_set_show_status(m, SHOW_STATUS_NO);
                                 break;
 
                         case 22:
                                 log_set_max_level(LOG_DEBUG);
-                                log_notice("Setting log level to debug.");
+                                log_info("Setting log level to debug.");
                                 break;
 
                         case 23:
                                 log_set_max_level(LOG_INFO);
-                                log_notice("Setting log level to info.");
+                                log_info("Setting log level to info.");
                                 break;
 
                         case 24:
-                                if (m->running_as == MANAGER_USER) {
+                                if (MANAGER_IS_USER(m)) {
                                         m->exit_code = MANAGER_EXIT;
                                         return 0;
                                 }
@@ -2000,8 +2113,7 @@ int manager_loop(Manager *m) {
         m->exit_code = MANAGER_OK;
 
         /* Release the path cache */
-        set_free_free(m->unit_path_cache);
-        m->unit_path_cache = NULL;
+        m->unit_path_cache = set_free_free(m->unit_path_cache);
 
         manager_check_finished(m);
 
@@ -2014,14 +2126,13 @@ int manager_loop(Manager *m) {
         while (m->exit_code == MANAGER_OK) {
                 usec_t wait_usec;
 
-                if (m->runtime_watchdog > 0 && m->running_as == MANAGER_SYSTEM)
+                if (m->runtime_watchdog > 0 && m->runtime_watchdog != USEC_INFINITY && MANAGER_IS_SYSTEM(m))
                         watchdog_ping();
 
                 if (!ratelimit_test(&rl)) {
                         /* Yay, something is going seriously wrong, pause a little */
                         log_warning("Looping too fast. Throttling execution a little.");
                         sleep(1);
-                        continue;
                 }
 
                 if (manager_dispatch_load_queue(m) > 0)
@@ -2040,7 +2151,7 @@ int manager_loop(Manager *m) {
                         continue;
 
                 /* Sleep for half the watchdog time */
-                if (m->runtime_watchdog > 0 && m->running_as == MANAGER_SYSTEM) {
+                if (m->runtime_watchdog > 0 && m->runtime_watchdog != USEC_INFINITY && MANAGER_IS_SYSTEM(m)) {
                         wait_usec = m->runtime_watchdog / 2;
                         if (wait_usec <= 0)
                                 wait_usec = 1;
@@ -2111,16 +2222,16 @@ void manager_send_unit_audit(Manager *m, Unit *u, int type, bool success) {
         const char *msg;
         int audit_fd, r;
 
+        if (!MANAGER_IS_SYSTEM(m))
+                return;
+
         audit_fd = get_audit_fd();
         if (audit_fd < 0)
                 return;
 
         /* Don't generate audit events if the service was already
          * started and we're just deserializing */
-        if (m->n_reloading > 0)
-                return;
-
-        if (m->running_as != MANAGER_SYSTEM)
+        if (MANAGER_IS_RELOADING(m))
                 return;
 
         if (u->type != UNIT_SERVICE)
@@ -2146,18 +2257,17 @@ void manager_send_unit_audit(Manager *m, Unit *u, int type, bool success) {
 }
 
 void manager_send_unit_plymouth(Manager *m, Unit *u) {
-        union sockaddr_union sa = PLYMOUTH_SOCKET;
-
-        int n = 0;
+        static const union sockaddr_union sa = PLYMOUTH_SOCKET;
         _cleanup_free_ char *message = NULL;
         _cleanup_close_ int fd = -1;
+        int n = 0;
 
         /* Don't generate plymouth events if the service was already
          * started and we're just deserializing */
-        if (m->n_reloading > 0)
+        if (MANAGER_IS_RELOADING(m))
                 return;
 
-        if (m->running_as != MANAGER_SYSTEM)
+        if (!MANAGER_IS_SYSTEM(m))
                 return;
 
         if (detect_container() > 0)
@@ -2176,7 +2286,7 @@ void manager_send_unit_plymouth(Manager *m, Unit *u) {
                 return;
         }
 
-        if (connect(fd, &sa.sa, offsetof(struct sockaddr_un, sun_path) + 1 + strlen(sa.un.sun_path+1)) < 0) {
+        if (connect(fd, &sa.sa, SOCKADDR_UN_LEN(sa.un)) < 0) {
 
                 if (!IN_SET(errno, EPIPE, EAGAIN, ENOENT, ECONNREFUSED, ECONNRESET, ECONNABORTED))
                         log_error_errno(errno, "connect() failed: %m");
@@ -2201,8 +2311,8 @@ int manager_open_serialization(Manager *m, FILE **_f) {
 
         assert(_f);
 
-        path = m->running_as == MANAGER_SYSTEM ? "/run/systemd" : "/tmp";
-        fd = open_tmpfile(path, O_RDWR|O_CLOEXEC);
+        path = MANAGER_IS_SYSTEM(m) ? "/run/systemd" : "/tmp";
+        fd = open_tmpfile_unlinkable(path, O_RDWR|O_CLOEXEC);
         if (fd < 0)
                 return -errno;
 
@@ -2230,7 +2340,7 @@ int manager_serialize(Manager *m, FILE *f, FDSet *fds, bool switching_root) {
         assert(f);
         assert(fds);
 
-        m->n_reloading ++;
+        m->n_reloading++;
 
         fprintf(f, "current-job-id=%"PRIu32"\n", m->current_job_id);
         fprintf(f, "taint-usr=%s\n", yes_no(m->taint_usr));
@@ -2276,6 +2386,16 @@ int manager_serialize(Manager *m, FILE *f, FDSet *fds, bool switching_root) {
                 fprintf(f, "notify-socket=%s\n", m->notify_socket);
         }
 
+        if (m->cgroups_agent_fd >= 0) {
+                int copy;
+
+                copy = fdset_put_dup(fds, m->cgroups_agent_fd);
+                if (copy < 0)
+                        return copy;
+
+                fprintf(f, "cgroups-agent-fd=%i\n", copy);
+        }
+
         if (m->kdbus_fd >= 0) {
                 int copy;
 
@@ -2287,6 +2407,10 @@ int manager_serialize(Manager *m, FILE *f, FDSet *fds, bool switching_root) {
         }
 
         bus_track_serialize(m->subscribed, f);
+
+        r = dynamic_user_serialize(m, f, fds);
+        if (r < 0)
+                return r;
 
         fputc('\n', f);
 
@@ -2300,13 +2424,13 @@ int manager_serialize(Manager *m, FILE *f, FDSet *fds, bool switching_root) {
 
                 r = unit_serialize(u, f, fds, !switching_root);
                 if (r < 0) {
-                        m->n_reloading --;
+                        m->n_reloading--;
                         return r;
                 }
         }
 
         assert(m->n_reloading > 0);
-        m->n_reloading --;
+        m->n_reloading--;
 
         if (ferror(f))
                 return -EIO;
@@ -2326,7 +2450,7 @@ int manager_deserialize(Manager *m, FILE *f, FDSet *fds) {
 
         log_debug("Deserializing state...");
 
-        m->n_reloading ++;
+        m->n_reloading++;
 
         for (;;) {
                 char line[LINE_MAX], *l;
@@ -2443,6 +2567,17 @@ int manager_deserialize(Manager *m, FILE *f, FDSet *fds) {
                         free(m->notify_socket);
                         m->notify_socket = n;
 
+                } else if (startswith(l, "cgroups-agent-fd=")) {
+                        int fd;
+
+                        if (safe_atoi(l + 17, &fd) < 0 || fd < 0 || !fdset_contains(fds, fd))
+                                log_debug("Failed to parse cgroups agent fd: %s", l + 10);
+                        else {
+                                m->cgroups_agent_event_source = sd_event_source_unref(m->cgroups_agent_event_source);
+                                safe_close(m->cgroups_agent_fd);
+                                m->cgroups_agent_fd = fdset_remove(fds, fd);
+                        }
+
                 } else if (startswith(l, "kdbus-fd=")) {
                         int fd;
 
@@ -2453,7 +2588,9 @@ int manager_deserialize(Manager *m, FILE *f, FDSet *fds) {
                                 m->kdbus_fd = fdset_remove(fds, fd);
                         }
 
-                } else {
+                } else if (startswith(l, "dynamic-user="))
+                        dynamic_user_deserialize_one(m, l + 13, fds);
+                else {
                         int k;
 
                         k = bus_track_deserialize_item(&m->deserialized_subscribed, l);
@@ -2494,7 +2631,7 @@ finish:
                 r = -EIO;
 
         assert(m->n_reloading > 0);
-        m->n_reloading --;
+        m->n_reloading--;
 
         return r;
 }
@@ -2510,51 +2647,46 @@ int manager_reload(Manager *m) {
         if (r < 0)
                 return r;
 
-        m->n_reloading ++;
+        m->n_reloading++;
         bus_manager_send_reloading(m, true);
 
         fds = fdset_new();
         if (!fds) {
-                m->n_reloading --;
+                m->n_reloading--;
                 return -ENOMEM;
         }
 
         r = manager_serialize(m, f, fds, false);
         if (r < 0) {
-                m->n_reloading --;
+                m->n_reloading--;
                 return r;
         }
 
         if (fseeko(f, 0, SEEK_SET) < 0) {
-                m->n_reloading --;
+                m->n_reloading--;
                 return -errno;
         }
 
         /* From here on there is no way back. */
         manager_clear_jobs_and_units(m);
-        manager_undo_generators(m);
+        lookup_paths_flush_generator(&m->lookup_paths);
         lookup_paths_free(&m->lookup_paths);
+        dynamic_user_vacuum(m, false);
+
+        q = lookup_paths_init(&m->lookup_paths, m->unit_file_scope, 0, NULL);
+        if (q < 0 && r >= 0)
+                r = q;
 
         /* Find new unit paths */
         q = manager_run_generators(m);
         if (q < 0 && r >= 0)
                 r = q;
 
-        q = lookup_paths_init(
-                        &m->lookup_paths, m->running_as, true,
-                        NULL,
-                        m->generator_unit_path,
-                        m->generator_unit_path_early,
-                        m->generator_unit_path_late);
-        if (q < 0 && r >= 0)
-                r = q;
-
+        lookup_paths_reduce(&m->lookup_paths);
         manager_build_unit_path_cache(m);
 
         /* First, enumerate what we can from all config files */
-        q = manager_enumerate(m);
-        if (q < 0 && r >= 0)
-                r = q;
+        manager_enumerate(m);
 
         /* Second, deserialize our stored data */
         q = manager_deserialize(m, f, fds);
@@ -2569,8 +2701,19 @@ int manager_reload(Manager *m) {
         if (q < 0 && r >= 0)
                 r = q;
 
+        q = manager_setup_cgroups_agent(m);
+        if (q < 0 && r >= 0)
+                r = q;
+
         /* Third, fire things up! */
         manager_coldplug(m);
+
+        /* Release any dynamic users no longer referenced */
+        dynamic_user_vacuum(m, true);
+
+        /* Sync current state of bus names with our set of listening units */
+        if (m->api_bus)
+                manager_sync_bus_names(m, m->api_bus);
 
         assert(m->n_reloading > 0);
         m->n_reloading--;
@@ -2578,12 +2721,6 @@ int manager_reload(Manager *m) {
         m->send_reloading_done = true;
 
         return r;
-}
-
-bool manager_is_reloading_or_reexecuting(Manager *m) {
-        assert(m);
-
-        return m->n_reloading != 0;
 }
 
 void manager_reset_failed(Manager *m) {
@@ -2617,7 +2754,7 @@ static void manager_notify_finished(Manager *m) {
         if (m->test_run)
                 return;
 
-        if (m->running_as == MANAGER_SYSTEM && detect_container() <= 0) {
+        if (MANAGER_IS_SYSTEM(m) && detect_container() <= 0) {
 
                 /* Note that m->kernel_usec.monotonic is always at 0,
                  * and m->firmware_usec.monotonic and
@@ -2682,7 +2819,7 @@ static void manager_notify_finished(Manager *m) {
 void manager_check_finished(Manager *m) {
         assert(m);
 
-        if (m->n_reloading > 0)
+        if (MANAGER_IS_RELOADING(m))
                 return;
 
         /* Verify that we are actually running currently. Initially
@@ -2723,78 +2860,6 @@ void manager_check_finished(Manager *m) {
         manager_invalidate_startup_units(m);
 }
 
-static int create_generator_dir(Manager *m, char **generator, const char *name) {
-        char *p;
-        int r;
-
-        assert(m);
-        assert(generator);
-        assert(name);
-
-        if (*generator)
-                return 0;
-
-        if (m->running_as == MANAGER_SYSTEM && getpid() == 1) {
-                /* systemd --system, not running --test */
-
-                p = strappend("/run/systemd/", name);
-                if (!p)
-                        return log_oom();
-
-                r = mkdir_p_label(p, 0755);
-                if (r < 0) {
-                        log_error_errno(r, "Failed to create generator directory %s: %m", p);
-                        free(p);
-                        return r;
-                }
-        } else if (m->running_as == MANAGER_USER) {
-                const char *s = NULL;
-
-                s = getenv("XDG_RUNTIME_DIR");
-                if (!s)
-                        return -EINVAL;
-                p = strjoin(s, "/systemd/", name, NULL);
-                if (!p)
-                        return log_oom();
-
-                r = mkdir_p_label(p, 0755);
-                if (r < 0) {
-                        log_error_errno(r, "Failed to create generator directory %s: %m", p);
-                        free(p);
-                        return r;
-                }
-        } else {
-                /* systemd --system --test */
-
-                p = strjoin("/tmp/systemd-", name, ".XXXXXX", NULL);
-                if (!p)
-                        return log_oom();
-
-                if (!mkdtemp(p)) {
-                        log_error_errno(errno, "Failed to create generator directory %s: %m",
-                                  p);
-                        free(p);
-                        return -errno;
-                }
-        }
-
-        *generator = p;
-        return 0;
-}
-
-static void trim_generator_dir(Manager *m, char **generator) {
-        assert(m);
-        assert(generator);
-
-        if (!*generator)
-                return;
-
-        if (rmdir(*generator) >= 0)
-                *generator = mfree(*generator);
-
-        return;
-}
-
 static int manager_run_generators(Manager *m) {
         _cleanup_strv_free_ char **paths = NULL;
         const char *argv[5];
@@ -2806,69 +2871,38 @@ static int manager_run_generators(Manager *m) {
         if (m->test_run)
                 return 0;
 
-        paths = generator_paths(m->running_as);
+        paths = generator_binary_paths(m->unit_file_scope);
         if (!paths)
                 return log_oom();
 
         /* Optimize by skipping the whole process by not creating output directories
          * if no generators are found. */
         STRV_FOREACH(path, paths) {
-                r = access(*path, F_OK);
-                if (r == 0)
+                if (access(*path, F_OK) >= 0)
                         goto found;
                 if (errno != ENOENT)
                         log_warning_errno(errno, "Failed to open generator directory %s: %m", *path);
         }
+
         return 0;
 
  found:
-        r = create_generator_dir(m, &m->generator_unit_path, "generator");
-        if (r < 0)
-                goto finish;
-
-        r = create_generator_dir(m, &m->generator_unit_path_early, "generator.early");
-        if (r < 0)
-                goto finish;
-
-        r = create_generator_dir(m, &m->generator_unit_path_late, "generator.late");
+        r = lookup_paths_mkdir_generator(&m->lookup_paths);
         if (r < 0)
                 goto finish;
 
         argv[0] = NULL; /* Leave this empty, execute_directory() will fill something in */
-        argv[1] = m->generator_unit_path;
-        argv[2] = m->generator_unit_path_early;
-        argv[3] = m->generator_unit_path_late;
+        argv[1] = m->lookup_paths.generator;
+        argv[2] = m->lookup_paths.generator_early;
+        argv[3] = m->lookup_paths.generator_late;
         argv[4] = NULL;
 
         RUN_WITH_UMASK(0022)
                 execute_directories((const char* const*) paths, DEFAULT_TIMEOUT_USEC, (char**) argv);
 
 finish:
-        trim_generator_dir(m, &m->generator_unit_path);
-        trim_generator_dir(m, &m->generator_unit_path_early);
-        trim_generator_dir(m, &m->generator_unit_path_late);
+        lookup_paths_trim_generator(&m->lookup_paths);
         return r;
-}
-
-static void remove_generator_dir(Manager *m, char **generator) {
-        assert(m);
-        assert(generator);
-
-        if (!*generator)
-                return;
-
-        strv_remove(m->lookup_paths.unit_path, *generator);
-        (void) rm_rf(*generator, REMOVE_ROOT);
-
-        *generator = mfree(*generator);
-}
-
-static void manager_undo_generators(Manager *m) {
-        assert(m);
-
-        remove_generator_dir(m, &m->generator_unit_path);
-        remove_generator_dir(m, &m->generator_unit_path_early);
-        remove_generator_dir(m, &m->generator_unit_path_late);
 }
 
 int manager_environment_add(Manager *m, char **minus, char **plus) {
@@ -2915,6 +2949,8 @@ int manager_set_default_rlimits(Manager *m, struct rlimit **default_rlimit) {
         assert(m);
 
         for (i = 0; i < _RLIMIT_MAX; i++) {
+                m->rlimit[i] = mfree(m->rlimit[i]);
+
                 if (!default_rlimit[i])
                         continue;
 
@@ -2931,7 +2967,7 @@ void manager_recheck_journal(Manager *m) {
 
         assert(m);
 
-        if (m->running_as != MANAGER_SYSTEM)
+        if (!MANAGER_IS_SYSTEM(m))
                 return;
 
         u = manager_get_unit(m, SPECIAL_JOURNALD_SOCKET);
@@ -2955,9 +2991,12 @@ void manager_set_show_status(Manager *m, ShowStatus mode) {
         assert(m);
         assert(IN_SET(mode, SHOW_STATUS_AUTO, SHOW_STATUS_NO, SHOW_STATUS_YES, SHOW_STATUS_TEMPORARY));
 
-        if (m->running_as != MANAGER_SYSTEM)
+        if (!MANAGER_IS_SYSTEM(m))
                 return;
 
+        if (m->show_status != mode)
+                log_debug("%s showing of status.",
+                          mode == SHOW_STATUS_NO ? "Disabling" : "Enabling");
         m->show_status = mode;
 
         if (mode > 0)
@@ -2969,7 +3008,7 @@ void manager_set_show_status(Manager *m, ShowStatus mode) {
 static bool manager_get_show_status(Manager *m, StatusType type) {
         assert(m);
 
-        if (m->running_as != MANAGER_SYSTEM)
+        if (!MANAGER_IS_SYSTEM(m))
                 return false;
 
         if (m->no_console_output)
@@ -2991,7 +3030,7 @@ static bool manager_get_show_status(Manager *m, StatusType type) {
 void manager_set_first_boot(Manager *m, bool b) {
         assert(m);
 
-        if (m->running_as != MANAGER_SYSTEM)
+        if (!MANAGER_IS_SYSTEM(m))
                 return;
 
         if (m->first_boot != (int) b) {
@@ -3037,7 +3076,7 @@ Set *manager_get_units_requiring_mounts_for(Manager *m, const char *path) {
 const char *manager_get_runtime_prefix(Manager *m) {
         assert(m);
 
-        return m->running_as == MANAGER_SYSTEM ?
+        return MANAGER_IS_SYSTEM(m) ?
                "/run" :
                getenv("XDG_RUNTIME_DIR");
 }
@@ -3084,18 +3123,18 @@ ManagerState manager_state(Manager *m) {
 
         /* Is the special shutdown target queued? If so, we are in shutdown state */
         u = manager_get_unit(m, SPECIAL_SHUTDOWN_TARGET);
-        if (u && u->job && IN_SET(u->job->type, JOB_START, JOB_RESTART, JOB_TRY_RESTART, JOB_RELOAD_OR_START))
+        if (u && u->job && IN_SET(u->job->type, JOB_START, JOB_RESTART, JOB_RELOAD_OR_START))
                 return MANAGER_STOPPING;
 
         /* Are the rescue or emergency targets active or queued? If so we are in maintenance state */
         u = manager_get_unit(m, SPECIAL_RESCUE_TARGET);
         if (u && (UNIT_IS_ACTIVE_OR_ACTIVATING(unit_active_state(u)) ||
-                  (u->job && IN_SET(u->job->type, JOB_START, JOB_RESTART, JOB_TRY_RESTART, JOB_RELOAD_OR_START))))
+                  (u->job && IN_SET(u->job->type, JOB_START, JOB_RESTART, JOB_RELOAD_OR_START))))
                 return MANAGER_MAINTENANCE;
 
         u = manager_get_unit(m, SPECIAL_EMERGENCY_TARGET);
         if (u && (UNIT_IS_ACTIVE_OR_ACTIVATING(unit_active_state(u)) ||
-                  (u->job && IN_SET(u->job->type, JOB_START, JOB_RESTART, JOB_TRY_RESTART, JOB_RELOAD_OR_START))))
+                  (u->job && IN_SET(u->job->type, JOB_START, JOB_RESTART, JOB_RELOAD_OR_START))))
                 return MANAGER_MAINTENANCE;
 
         /* Are there any failed units? If so, we are in degraded mode */

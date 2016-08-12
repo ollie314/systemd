@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -21,12 +19,13 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include <libmount.h>
 #include <stdbool.h>
 #include <stdio.h>
-#include <libmount.h>
 
 #include "sd-bus.h"
 #include "sd-event.h"
+
 #include "cgroup-util.h"
 #include "fdset.h"
 #include "hashmap.h"
@@ -133,6 +132,9 @@ struct Manager {
         int notify_fd;
         sd_event_source *notify_event_source;
 
+        int cgroups_agent_fd;
+        sd_event_source *cgroups_agent_event_source;
+
         int signal_fd;
         sd_event_source *signal_event_source;
 
@@ -141,8 +143,7 @@ struct Manager {
 
         sd_event_source *jobs_in_progress_event_source;
 
-        unsigned n_snapshots;
-
+        UnitFileScope unit_file_scope;
         LookupPaths lookup_paths;
         Set *unit_path_cache;
 
@@ -164,10 +165,6 @@ struct Manager {
         dual_timestamp generators_finish_timestamp;
         dual_timestamp units_load_start_timestamp;
         dual_timestamp units_load_finish_timestamp;
-
-        char *generator_unit_path;
-        char *generator_unit_path_early;
-        char *generator_unit_path_late;
 
         struct udev* udev;
 
@@ -231,7 +228,6 @@ struct Manager {
         unsigned n_in_gc_queue;
 
         /* Flags */
-        ManagerRunningAs running_as;
         ManagerExitCode exit_code:5;
 
         bool dispatching_load_queue:1;
@@ -259,9 +255,11 @@ struct Manager {
 
         bool default_cpu_accounting;
         bool default_memory_accounting;
+        bool default_io_accounting;
         bool default_blockio_accounting;
         bool default_tasks_accounting;
 
+        uint64_t default_tasks_max;
         usec_t default_timer_accuracy_usec;
 
         struct rlimit *rlimit[_RLIMIT_MAX];
@@ -300,23 +298,27 @@ struct Manager {
         /* Used for processing polkit authorization responses */
         Hashmap *polkit_registry;
 
+        /* Dynamic users/groups, indexed by their name */
+        Hashmap *dynamic_users;
+
         /* When the user hits C-A-D more than 7 times per 2s, reboot immediately... */
         RateLimit ctrl_alt_del_ratelimit;
 
         const char *unit_log_field;
         const char *unit_log_format_string;
 
-        int first_boot;
-
-        /* Used for NetClass=auto units */
-        Hashmap *cgroup_netclass_registry;
-        uint32_t cgroup_netclass_registry_last;
+        int first_boot; /* tri-state */
 };
 
-int manager_new(ManagerRunningAs running_as, bool test_run, Manager **m);
+#define MANAGER_IS_SYSTEM(m) ((m)->unit_file_scope == UNIT_FILE_SYSTEM)
+#define MANAGER_IS_USER(m) ((m)->unit_file_scope != UNIT_FILE_SYSTEM)
+
+#define MANAGER_IS_RELOADING(m) ((m)->n_reloading > 0)
+
+int manager_new(UnitFileScope scope, bool test_run, Manager **m);
 Manager* manager_free(Manager *m);
 
-int manager_enumerate(Manager *m);
+void manager_enumerate(Manager *m);
 int manager_startup(Manager *m, FILE *serialization, FDSet *fds);
 
 Job *manager_get_job(Manager *m, uint32_t id);
@@ -328,8 +330,9 @@ int manager_load_unit_prepare(Manager *m, const char *name, const char *path, sd
 int manager_load_unit(Manager *m, const char *name, const char *path, sd_bus_error *e, Unit **_ret);
 int manager_load_unit_from_dbus_path(Manager *m, const char *s, sd_bus_error *e, Unit **_u);
 
-int manager_add_job(Manager *m, JobType type, Unit *unit, JobMode mode, bool force, sd_bus_error *e, Job **_ret);
-int manager_add_job_by_name(Manager *m, JobType type, const char *name, JobMode mode, bool force, sd_bus_error *e, Job **_ret);
+int manager_add_job(Manager *m, JobType type, Unit *unit, JobMode mode, sd_bus_error *e, Job **_ret);
+int manager_add_job_by_name(Manager *m, JobType type, const char *name, JobMode mode, sd_bus_error *e, Job **_ret);
+int manager_add_job_by_name_and_warn(Manager *m, JobType type, const char *name, JobMode mode, Job **ret);
 
 void manager_dump_units(Manager *s, FILE *f, const char *prefix);
 void manager_dump_jobs(Manager *s, FILE *f, const char *prefix);
@@ -349,8 +352,6 @@ int manager_serialize(Manager *m, FILE *f, FDSet *fds, bool switching_root);
 int manager_deserialize(Manager *m, FILE *f, FDSet *fds);
 
 int manager_reload(Manager *m);
-
-bool manager_is_reloading_or_reexecuting(Manager *m) _pure_;
 
 void manager_reset_failed(Manager *m);
 

@@ -68,11 +68,13 @@
   <refsect1>
     <title>Options</title>
 
+    <para>The following settings are configured in the <literal>[Time]</literal> section:</para>
+
     <variablelist class='network-directives'>
 
       <varlistentry>
         <term><varname>NTP=</varname></term>
-        <listitem><para>A space separated list of NTP server host
+        <listitem><para>A space-separated list of NTP server host
         names or IP addresses. During runtime this list is combined
         with any per-interface NTP servers acquired from
         <citerefentry><refentrytitle>systemd-networkd.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>.
@@ -84,7 +86,7 @@
 
       <varlistentry>
         <term><varname>FallbackNTP=</varname></term>
-        <listitem><para>A space separated list of NTP server host
+        <listitem><para>A space-separated list of NTP server host
         names or IP addresses to be used as the fallback NTP servers.
         Any per-interface NTP servers obtained from
         <citerefentry><refentrytitle>systemd-networkd.service</refentrytitle><manvolnum>8</manvolnum></citerefentry>

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,11 +17,11 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <stdio.h>
-#include <errno.h>
-#include <unistd.h>
-#include <sys/epoll.h>
 #include <ctype.h>
+#include <errno.h>
+#include <stdio.h>
+#include <sys/epoll.h>
+#include <unistd.h>
 
 #include "sd-bus.h"
 #include "sd-daemon.h"
@@ -101,7 +99,7 @@ static const char *translate_runlevel(int runlevel, bool *isolate) {
 
 static void change_runlevel(Server *s, int runlevel) {
         const char *target;
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         const char *mode;
         bool isolate = false;
         int r;
@@ -212,8 +210,7 @@ static int fifo_process(Fifo *f) {
                 if (errno == EAGAIN)
                         return 0;
 
-                log_warning_errno(errno, "Failed to read from fifo: %m");
-                return -errno;
+                return log_warning_errno(errno, "Failed to read from fifo: %m");
         }
 
         f->bytes_read += l;
@@ -317,7 +314,7 @@ static int server_init(Server *s, unsigned n_sockets) {
                 f->fd = fd;
                 LIST_PREPEND(fifo, s->fifos, f);
                 f->server = s;
-                s->n_fifos ++;
+                s->n_fifos++;
         }
 
         r = bus_connect_system_systemd(&s->bus);

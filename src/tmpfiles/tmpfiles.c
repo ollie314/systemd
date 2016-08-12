@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -45,6 +43,7 @@
 #include "chattr-util.h"
 #include "conf-files.h"
 #include "copy.h"
+#include "def.h"
 #include "escape.h"
 #include "fd-util.h"
 #include "fileio.h"
@@ -95,6 +94,7 @@ typedef enum ItemType {
 
         /* These ones take globs */
         WRITE_FILE = 'w',
+        EMPTY_DIRECTORY = 'e',
         SET_XATTR = 't',
         RECURSIVE_SET_XATTR = 'T',
         SET_ACL = 'a',
@@ -158,7 +158,7 @@ static char **arg_include_prefixes = NULL;
 static char **arg_exclude_prefixes = NULL;
 static char *arg_root = NULL;
 
-static const char conf_file_dirs[] = CONF_DIRS_NULSTR("tmpfiles");
+static const char conf_file_dirs[] = CONF_PATHS_NULSTR("tmpfiles.d");
 
 #define MAX_DEPTH 256
 
@@ -180,6 +180,7 @@ static bool needs_glob(ItemType t) {
                       IGNORE_DIRECTORY_PATH,
                       REMOVE_PATH,
                       RECURSIVE_REMOVE_PATH,
+                      EMPTY_DIRECTORY,
                       ADJUST_MODE,
                       RELABEL_PATH,
                       RECURSIVE_RELABEL_PATH,
@@ -196,6 +197,7 @@ static bool takes_ownership(ItemType t) {
                       CREATE_FILE,
                       TRUNCATE_FILE,
                       CREATE_DIRECTORY,
+                      EMPTY_DIRECTORY,
                       TRUNCATE_DIRECTORY,
                       CREATE_SUBVOLUME,
                       CREATE_SUBVOLUME_INHERIT_QUOTA,
@@ -614,7 +616,7 @@ static int path_set_perms(Item *i, const char *path) {
          * with AT_SYMLINK_NOFOLLOW, hence we emulate it here via
          * O_PATH. */
 
-        fd = open(path, O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_PATH|O_NOATIME);
+        fd = open(path, O_NOFOLLOW|O_CLOEXEC|O_PATH);
         if (fd < 0)
                 return log_error_errno(errno, "Adjusting owner and mode for %s failed: %m", path);
 
@@ -805,7 +807,7 @@ static int path_set_acls(Item *item, const char *path) {
         assert(item);
         assert(path);
 
-        fd = open(path, O_RDONLY|O_NOFOLLOW|O_CLOEXEC|O_PATH|O_NOATIME);
+        fd = open(path, O_NOFOLLOW|O_CLOEXEC|O_PATH);
         if (fd < 0)
                 return log_error_errno(errno, "Adjusting ACL of %s failed: %m", path);
 
@@ -864,7 +866,7 @@ static int parse_attribute_from_arg(Item *item) {
                 { 'a', FS_APPEND_FL },       /* writes to file may only append */
                 { 'c', FS_COMPR_FL },        /* Compress file */
                 { 'd', FS_NODUMP_FL },       /* do not dump file */
-                { 'e', FS_EXTENT_FL },       /* Top of directory hierarchies*/
+                { 'e', FS_EXTENT_FL },       /* Extents */
                 { 'i', FS_IMMUTABLE_FL },    /* Immutable file */
                 { 'j', FS_JOURNAL_DATA_FL }, /* Reserved for ext3 */
                 { 's', FS_SECRM_FL },        /* Secure deletion */
@@ -918,10 +920,7 @@ static int parse_attribute_from_arg(Item *item) {
 
                 v = attributes[i].value;
 
-                if (mode == MODE_ADD || mode == MODE_SET)
-                        value |= v;
-                else
-                        value &= ~v;
+                SET_FLAG(value, v, (mode == MODE_ADD || mode == MODE_SET));
 
                 mask |= v;
         }
@@ -1074,7 +1073,7 @@ static int item_do_children(Item *i, const char *path, action_t action) {
                 errno = 0;
                 de = readdir(d);
                 if (!de) {
-                        if (errno != 0 && r == 0)
+                        if (errno > 0 && r == 0)
                                 r = -errno;
 
                         break;
@@ -1152,6 +1151,7 @@ static int create_item(Item *i) {
         _cleanup_free_ char *resolved = NULL;
         struct stat st;
         int r = 0;
+        int q = 0;
         CreationMode creation;
 
         assert(i);
@@ -1220,13 +1220,32 @@ static int create_item(Item *i) {
         case CREATE_SUBVOLUME:
         case CREATE_SUBVOLUME_INHERIT_QUOTA:
         case CREATE_SUBVOLUME_NEW_QUOTA:
-
                 RUN_WITH_UMASK(0000)
                         mkdir_parents_label(i->path, 0755);
 
                 if (IN_SET(i->type, CREATE_SUBVOLUME, CREATE_SUBVOLUME_INHERIT_QUOTA, CREATE_SUBVOLUME_NEW_QUOTA)) {
-                        RUN_WITH_UMASK((~i->mode) & 0777)
-                                r = btrfs_subvol_make(i->path);
+
+                        if (btrfs_is_subvol(isempty(arg_root) ? "/" : arg_root) <= 0)
+
+                                /* Don't create a subvolume unless the
+                                 * root directory is one, too. We do
+                                 * this under the assumption that if
+                                 * the root directory is just a plain
+                                 * directory (i.e. very light-weight),
+                                 * we shouldn't try to split it up
+                                 * into subvolumes (i.e. more
+                                 * heavy-weight). Thus, chroot()
+                                 * environments and suchlike will get
+                                 * a full brtfs subvolume set up below
+                                 * their tree only if they
+                                 * specifically set up a btrfs
+                                 * subvolume for the root dir too. */
+
+                                r = -ENOTTY;
+                        else {
+                                RUN_WITH_UMASK((~i->mode) & 0777)
+                                        r = btrfs_subvol_make(i->path);
+                        }
                 } else
                         r = 0;
 
@@ -1258,30 +1277,32 @@ static int create_item(Item *i) {
 
                 if (IN_SET(i->type, CREATE_SUBVOLUME_NEW_QUOTA, CREATE_SUBVOLUME_INHERIT_QUOTA)) {
                         r = btrfs_subvol_auto_qgroup(i->path, 0, i->type == CREATE_SUBVOLUME_NEW_QUOTA);
-                        if (r == -ENOTTY) {
-                                log_debug_errno(r, "Couldn't adjust quota for subvolume \"%s\" because of unsupported file system or because directory is not a subvolume: %m", i->path);
-                                return 0;
-                        }
-                        if (r == -EROFS) {
-                                log_debug_errno(r, "Couldn't adjust quota for subvolume \"%s\" because of read-only file system: %m", i->path);
-                                return 0;
-                        }
-                        if (r < 0)
-                                return log_error_errno(r, "Failed to adjust quota for subvolume \"%s\": %m", i->path);
-                        if (r > 0)
+                        if (r == -ENOTTY)
+                                log_debug_errno(r, "Couldn't adjust quota for subvolume \"%s\" (unsupported fs or dir not a subvolume): %m", i->path);
+                        else if (r == -EROFS)
+                                log_debug_errno(r, "Couldn't adjust quota for subvolume \"%s\" (fs is read-only).", i->path);
+                        else if (r == -ENOPROTOOPT)
+                                log_debug_errno(r, "Couldn't adjust quota for subvolume \"%s\" (quota support is disabled).", i->path);
+                        else if (r < 0)
+                                q = log_error_errno(r, "Failed to adjust quota for subvolume \"%s\": %m", i->path);
+                        else if (r > 0)
                                 log_debug("Adjusted quota for subvolume \"%s\".", i->path);
-                        if (r == 0)
+                        else if (r == 0)
                                 log_debug("Quota for subvolume \"%s\" already in place, no change made.", i->path);
                 }
 
+                /* fall through */
+
+        case EMPTY_DIRECTORY:
                 r = path_set_perms(i, i->path);
+                if (q < 0)
+                        return q;
                 if (r < 0)
                         return r;
 
                 break;
 
         case CREATE_FIFO:
-
                 RUN_WITH_UMASK(0000) {
                         mac_selinux_create_file_prepare(i->path, S_IFIFO);
                         r = mkfifo(i->path, i->mode);
@@ -1518,47 +1539,20 @@ static int remove_item_instance(Item *i, const char *instance) {
 }
 
 static int remove_item(Item *i) {
-        int r = 0;
-
         assert(i);
 
         log_debug("Running remove action for entry %c %s", (char) i->type, i->path);
 
         switch (i->type) {
 
-        case CREATE_FILE:
-        case TRUNCATE_FILE:
-        case CREATE_DIRECTORY:
-        case CREATE_SUBVOLUME:
-        case CREATE_SUBVOLUME_INHERIT_QUOTA:
-        case CREATE_SUBVOLUME_NEW_QUOTA:
-        case CREATE_FIFO:
-        case CREATE_SYMLINK:
-        case CREATE_CHAR_DEVICE:
-        case CREATE_BLOCK_DEVICE:
-        case IGNORE_PATH:
-        case IGNORE_DIRECTORY_PATH:
-        case ADJUST_MODE:
-        case RELABEL_PATH:
-        case RECURSIVE_RELABEL_PATH:
-        case WRITE_FILE:
-        case COPY_FILES:
-        case SET_XATTR:
-        case RECURSIVE_SET_XATTR:
-        case SET_ACL:
-        case RECURSIVE_SET_ACL:
-        case SET_ATTRIBUTE:
-        case RECURSIVE_SET_ATTRIBUTE:
-                break;
-
         case REMOVE_PATH:
         case TRUNCATE_DIRECTORY:
         case RECURSIVE_REMOVE_PATH:
-                r = glob_item(i, remove_item_instance, false);
-                break;
-        }
+                return glob_item(i, remove_item_instance, false);
 
-        return r;
+        default:
+                return 0;
+        }
 }
 
 static int clean_item_instance(Item *i, const char* instance) {
@@ -1581,13 +1575,12 @@ static int clean_item_instance(Item *i, const char* instance) {
 
         d = opendir_nomod(instance);
         if (!d) {
-                if (errno == ENOENT || errno == ENOTDIR) {
+                if (IN_SET(errno, ENOENT, ENOTDIR)) {
                         log_debug_errno(errno, "Directory \"%s\": %m", instance);
                         return 0;
                 }
 
-                log_error_errno(errno, "Failed to open directory %s: %m", instance);
-                return -errno;
+                return log_error_errno(errno, "Failed to open directory %s: %m", instance);
         }
 
         if (fstat(dirfd(d), &s) < 0)
@@ -1613,8 +1606,6 @@ static int clean_item_instance(Item *i, const char* instance) {
 }
 
 static int clean_item(Item *i) {
-        int r = 0;
-
         assert(i);
 
         log_debug("Running clean action for entry %c %s", (char) i->type, i->path);
@@ -1624,19 +1615,17 @@ static int clean_item(Item *i) {
         case CREATE_SUBVOLUME:
         case CREATE_SUBVOLUME_INHERIT_QUOTA:
         case CREATE_SUBVOLUME_NEW_QUOTA:
+        case EMPTY_DIRECTORY:
         case TRUNCATE_DIRECTORY:
         case IGNORE_PATH:
         case COPY_FILES:
                 clean_item_instance(i, i->path);
-                break;
+                return 0;
         case IGNORE_DIRECTORY_PATH:
-                r = glob_item(i, clean_item_instance, false);
-                break;
+                return glob_item(i, clean_item_instance, false);
         default:
-                break;
+                return 0;
         }
-
-        return r;
 }
 
 static int process_item_array(ItemArray *array);
@@ -1862,6 +1851,7 @@ static int parse_line(const char *fname, unsigned line, const char *buffer) {
         case CREATE_SUBVOLUME:
         case CREATE_SUBVOLUME_INHERIT_QUOTA:
         case CREATE_SUBVOLUME_NEW_QUOTA:
+        case EMPTY_DIRECTORY:
         case TRUNCATE_DIRECTORY:
         case CREATE_FIFO:
         case IGNORE_PATH:
@@ -2181,25 +2171,33 @@ static int parse_argv(int argc, char *argv[]) {
 }
 
 static int read_config_file(const char *fn, bool ignore_enoent) {
-        _cleanup_fclose_ FILE *f = NULL;
+        _cleanup_fclose_ FILE *_f = NULL;
+        FILE *f;
         char line[LINE_MAX];
         Iterator iterator;
         unsigned v = 0;
         Item *i;
-        int r;
+        int r = 0;
 
         assert(fn);
 
-        r = search_and_fopen_nulstr(fn, "re", arg_root, conf_file_dirs, &f);
-        if (r < 0) {
-                if (ignore_enoent && r == -ENOENT) {
-                        log_debug_errno(r, "Failed to open \"%s\": %m", fn);
-                        return 0;
-                }
+        if (streq(fn, "-")) {
+                log_debug("Reading config from stdin.");
+                fn = "<stdin>";
+                f = stdin;
+        } else {
+                r = search_and_fopen_nulstr(fn, "re", arg_root, conf_file_dirs, &_f);
+                if (r < 0) {
+                        if (ignore_enoent && r == -ENOENT) {
+                                log_debug_errno(r, "Failed to open \"%s\", ignoring: %m", fn);
+                                return 0;
+                        }
 
-                return log_error_errno(r, "Failed to open '%s', ignoring: %m", fn);
+                        return log_error_errno(r, "Failed to open '%s': %m", fn);
+                }
+                log_debug("Reading config file \"%s\".", fn);
+                f = _f;
         }
-        log_debug("Reading config file \"%s\".", fn);
 
         FOREACH_LINE(line, f, break) {
                 char *l;
@@ -2268,7 +2266,7 @@ int main(int argc, char *argv[]) {
 
         umask(0022);
 
-        mac_selinux_init(NULL);
+        mac_selinux_init();
 
         items = ordered_hashmap_new(&string_hash_ops);
         globs = ordered_hashmap_new(&string_hash_ops);

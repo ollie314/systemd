@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -30,6 +28,7 @@
 #include "logind-session-device.h"
 #include "logind-session.h"
 #include "logind.h"
+#include "signal-util.h"
 #include "strv.h"
 #include "util.h"
 
@@ -181,6 +180,24 @@ static int property_get_idle_since_hint(
         return sd_bus_message_append(reply, "t", u);
 }
 
+static int property_get_locked_hint(
+                sd_bus *bus,
+                const char *path,
+                const char *interface,
+                const char *property,
+                sd_bus_message *reply,
+                void *userdata,
+                sd_bus_error *error) {
+
+        Session *s = userdata;
+
+        assert(bus);
+        assert(reply);
+        assert(s);
+
+        return sd_bus_message_append(reply, "b", session_get_locked_hint(s) > 0);
+}
+
 int bus_session_method_terminate(sd_bus_message *message, void *userdata, sd_bus_error *error) {
         Session *s = userdata;
         int r;
@@ -252,7 +269,7 @@ int bus_session_method_lock(sd_bus_message *message, void *userdata, sd_bus_erro
 }
 
 static int method_set_idle_hint(sd_bus_message *message, void *userdata, sd_bus_error *error) {
-        _cleanup_bus_creds_unref_ sd_bus_creds *creds = NULL;
+        _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
         Session *s = userdata;
         uid_t uid;
         int r, b;
@@ -280,6 +297,35 @@ static int method_set_idle_hint(sd_bus_message *message, void *userdata, sd_bus_
         return sd_bus_reply_method_return(message, NULL);
 }
 
+static int method_set_locked_hint(sd_bus_message *message, void *userdata, sd_bus_error *error) {
+        _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
+        Session *s = userdata;
+        uid_t uid;
+        int r, b;
+
+        assert(message);
+        assert(s);
+
+        r = sd_bus_message_read(message, "b", &b);
+        if (r < 0)
+                return r;
+
+        r = sd_bus_query_sender_creds(message, SD_BUS_CREDS_EUID, &creds);
+        if (r < 0)
+                return r;
+
+        r = sd_bus_creds_get_euid(creds, &uid);
+        if (r < 0)
+                return r;
+
+        if (uid != 0 && uid != s->user->uid)
+                return sd_bus_error_setf(error, SD_BUS_ERROR_ACCESS_DENIED, "Only owner of session may set locked hint");
+
+        session_set_locked_hint(s, b);
+
+        return sd_bus_reply_method_return(message, NULL);
+}
+
 int bus_session_method_kill(sd_bus_message *message, void *userdata, sd_bus_error *error) {
         Session *s = userdata;
         const char *swho;
@@ -302,7 +348,7 @@ int bus_session_method_kill(sd_bus_message *message, void *userdata, sd_bus_erro
                         return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Invalid kill parameter '%s'", swho);
         }
 
-        if (signo <= 0 || signo >= _NSIG)
+        if (!SIGNAL_VALID(signo))
                 return sd_bus_error_setf(error, SD_BUS_ERROR_INVALID_ARGS, "Invalid signal %i", signo);
 
         r = bus_verify_polkit_async(
@@ -327,7 +373,7 @@ int bus_session_method_kill(sd_bus_message *message, void *userdata, sd_bus_erro
 }
 
 static int method_take_control(sd_bus_message *message, void *userdata, sd_bus_error *error) {
-        _cleanup_bus_creds_unref_ sd_bus_creds *creds = NULL;
+        _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
         Session *s = userdata;
         int r, force;
         uid_t uid;
@@ -488,12 +534,14 @@ const sd_bus_vtable session_vtable[] = {
         SD_BUS_PROPERTY("IdleHint", "b", property_get_idle_hint, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
         SD_BUS_PROPERTY("IdleSinceHint", "t", property_get_idle_since_hint, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
         SD_BUS_PROPERTY("IdleSinceHintMonotonic", "t", property_get_idle_since_hint, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
+        SD_BUS_PROPERTY("LockedHint", "b", property_get_locked_hint, 0, SD_BUS_VTABLE_PROPERTY_EMITS_CHANGE),
 
         SD_BUS_METHOD("Terminate", NULL, NULL, bus_session_method_terminate, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("Activate", NULL, NULL, bus_session_method_activate, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("Lock", NULL, NULL, bus_session_method_lock, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("Unlock", NULL, NULL, bus_session_method_lock, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("SetIdleHint", "b", NULL, method_set_idle_hint, SD_BUS_VTABLE_UNPRIVILEGED),
+        SD_BUS_METHOD("SetLockedHint", "b", NULL, method_set_locked_hint, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("Kill", "si", NULL, bus_session_method_kill, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("TakeControl", "b", NULL, method_take_control, SD_BUS_VTABLE_UNPRIVILEGED),
         SD_BUS_METHOD("ReleaseControl", NULL, NULL, method_release_control, SD_BUS_VTABLE_UNPRIVILEGED),
@@ -521,7 +569,7 @@ int session_object_find(sd_bus *bus, const char *path, const char *interface, vo
         assert(m);
 
         if (streq(path, "/org/freedesktop/login1/session/self")) {
-                _cleanup_bus_creds_unref_ sd_bus_creds *creds = NULL;
+                _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
                 sd_bus_message *message;
                 const char *name;
 
@@ -598,7 +646,7 @@ int session_node_enumerator(sd_bus *bus, const char *path, void *userdata, char 
 
         message = sd_bus_get_current_message(bus);
         if (message) {
-                _cleanup_bus_creds_unref_ sd_bus_creds *creds = NULL;
+                _cleanup_(sd_bus_creds_unrefp) sd_bus_creds *creds = NULL;
                 const char *name;
 
                 r = sd_bus_query_sender_creds(message, SD_BUS_CREDS_SESSION|SD_BUS_CREDS_AUGMENT, &creds);
@@ -692,7 +740,7 @@ int session_send_lock_all(Manager *m, bool lock) {
 }
 
 int session_send_create_reply(Session *s, sd_bus_error *error) {
-        _cleanup_bus_message_unref_ sd_bus_message *c = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *c = NULL;
         _cleanup_close_ int fifo_fd = -1;
         _cleanup_free_ char *p = NULL;
 

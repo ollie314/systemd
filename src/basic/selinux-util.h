@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -21,15 +19,17 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <sys/socket.h>
 #include <stdbool.h>
+#include <sys/socket.h>
+#include <sys/types.h>
 
 #include "macro.h"
 
 bool mac_selinux_use(void);
+bool mac_selinux_have(void);
 void mac_selinux_retest(void);
 
-int mac_selinux_init(const char *prefix);
+int mac_selinux_init(void);
 void mac_selinux_finish(void);
 
 int mac_selinux_fix(const char *path, bool ignore_enoent, bool ignore_erofs);

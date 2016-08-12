@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,11 +17,16 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include <errno.h>
+#include <stdarg.h>
+#include <stdio.h>
+
+#include "macro.h"
 #include "parse-util.h"
 #include "signal-util.h"
+#include "stdio-util.h"
 #include "string-table.h"
 #include "string-util.h"
-#include "util.h"
 
 int reset_all_signal_handlers(void) {
         static const struct sigaction sa = {
@@ -230,9 +233,9 @@ const char *signal_to_string(int signo) {
                 return name;
 
         if (signo >= SIGRTMIN && signo <= SIGRTMAX)
-                snprintf(buf, sizeof(buf), "RTMIN+%d", signo - SIGRTMIN);
+                xsprintf(buf, "RTMIN+%d", signo - SIGRTMIN);
         else
-                snprintf(buf, sizeof(buf), "%d", signo);
+                xsprintf(buf, "%d", signo);
 
         return buf;
 }
@@ -252,7 +255,7 @@ int signal_from_string(const char *s) {
         }
         if (safe_atou(s, &u) >= 0) {
                 signo = (int) u + offset;
-                if (signo > 0 && signo < _NSIG)
+                if (SIGNAL_VALID(signo))
                         return signo;
         }
         return -EINVAL;

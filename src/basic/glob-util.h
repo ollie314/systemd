@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -21,10 +19,11 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include <stdbool.h>
 #include <string.h>
 
 #include "macro.h"
-#include "util.h"
+#include "string-util.h"
 
 int glob_exists(const char *path);
 int glob_extend(char ***strv, const char *path);

@@ -13,12 +13,10 @@ ConditionPathIsSymbolicLink=!/tmp
 DefaultDependencies=no
 Conflicts=umount.target
 Before=local-fs.target umount.target
+After=swap.target
 
 [Mount]
 What=tmpfs
 Where=/tmp
 Type=tmpfs
-Options=mode=1777,strictatime
-m4_ifdef(`HAVE_SMACK',
-SmackFileSystemRootLabel=*
-)m4_dnl
+Options=mode=1777,strictatime,nosuid,nodev

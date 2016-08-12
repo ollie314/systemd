@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,14 +17,18 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <ctype.h>
+#include <errno.h>
+#include <limits.h>
+#include <stdio.h>
+#include <string.h>
 #include <sys/utsname.h>
+#include <unistd.h>
 
 #include "fd-util.h"
 #include "fileio.h"
 #include "hostname-util.h"
+#include "macro.h"
 #include "string-util.h"
-#include "util.h"
 
 bool hostname_is_set(void) {
         struct utsname u;
@@ -46,12 +48,41 @@ bool hostname_is_set(void) {
 char* gethostname_malloc(void) {
         struct utsname u;
 
+        /* This call tries to return something useful, either the actual hostname
+         * or it makes something up. The only reason it might fail is OOM.
+         * It might even return "localhost" if that's set. */
+
         assert_se(uname(&u) >= 0);
 
         if (isempty(u.nodename) || streq(u.nodename, "(none)"))
                 return strdup(u.sysname);
 
         return strdup(u.nodename);
+}
+
+int gethostname_strict(char **ret) {
+        struct utsname u;
+        char *k;
+
+        /* This call will rather fail than make up a name. It will not return "localhost" either. */
+
+        assert_se(uname(&u) >= 0);
+
+        if (isempty(u.nodename))
+                return -ENXIO;
+
+        if (streq(u.nodename, "(none)"))
+                return -ENXIO;
+
+        if (is_localhost(u.nodename))
+                return -ENXIO;
+
+        k = strdup(u.nodename);
+        if (!k)
+                return -ENOMEM;
+
+        *ret = k;
+        return 0;
 }
 
 static bool hostname_valid_char(char c) {
@@ -72,7 +103,7 @@ static bool hostname_valid_char(char c) {
  * allow_trailing_dot is true and at least two components are present
  * in the name. Note that due to the restricted charset and length
  * this call is substantially more conservative than
- * dns_domain_is_valid().
+ * dns_name_is_valid().
  */
 bool hostname_is_valid(const char *s, bool allow_trailing_dot) {
         unsigned n_dots = 0;
@@ -93,7 +124,7 @@ bool hostname_is_valid(const char *s, bool allow_trailing_dot) {
                                 return false;
 
                         dot = true;
-                        n_dots ++;
+                        n_dots++;
                 } else {
                         if (!hostname_valid_char(*p))
                                 return false;
@@ -119,6 +150,8 @@ char* hostname_cleanup(char *s) {
 
         assert(s);
 
+        strshorten(s, HOST_NAME_MAX);
+
         for (p = s, d = s, dot = true; *p; p++) {
                 if (*p == '.') {
                         if (dot)
@@ -138,8 +171,6 @@ char* hostname_cleanup(char *s) {
         else
                 *d = 0;
 
-        strshorten(s, HOST_NAME_MAX);
-
         return s;
 }
 
@@ -147,16 +178,16 @@ bool is_localhost(const char *hostname) {
         assert(hostname);
 
         /* This tries to identify local host and domain names
-         * described in RFC6761 plus the redhatism of .localdomain */
+         * described in RFC6761 plus the redhatism of localdomain */
 
         return strcaseeq(hostname, "localhost") ||
                strcaseeq(hostname, "localhost.") ||
-               strcaseeq(hostname, "localdomain.") ||
-               strcaseeq(hostname, "localdomain") ||
+               strcaseeq(hostname, "localhost.localdomain") ||
+               strcaseeq(hostname, "localhost.localdomain.") ||
                endswith_no_case(hostname, ".localhost") ||
                endswith_no_case(hostname, ".localhost.") ||
-               endswith_no_case(hostname, ".localdomain") ||
-               endswith_no_case(hostname, ".localdomain.");
+               endswith_no_case(hostname, ".localhost.localdomain") ||
+               endswith_no_case(hostname, ".localhost.localdomain.");
 }
 
 bool is_gateway_hostname(const char *hostname) {

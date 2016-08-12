@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -23,7 +21,10 @@
 
 typedef struct AddressPool AddressPool;
 
-#include "networkd.h"
+#include "in-addr-util.h"
+#include "list.h"
+
+typedef struct Manager Manager;
 
 struct AddressPool {
         Manager *manager;

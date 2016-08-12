@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,10 +17,16 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #include <linux/fs.h>
-#include <sys/statfs.h>
-
 #include "alloc-util.h"
 #include "btrfs-util.h"
 #include "chattr-util.h"
@@ -30,6 +34,10 @@
 #include "dirent-util.h"
 #include "fd-util.h"
 #include "fs-util.h"
+#include "hashmap.h"
+#include "lockfile-util.h"
+#include "log.h"
+#include "macro.h"
 #include "machine-image.h"
 #include "mkdir.h"
 #include "path-util.h"
@@ -37,7 +45,9 @@
 #include "string-table.h"
 #include "string-util.h"
 #include "strv.h"
+#include "time-util.h"
 #include "utf8.h"
+#include "util.h"
 #include "xattr-util.h"
 
 static const char image_search_path[] =
@@ -391,8 +401,7 @@ int image_remove(Image *i) {
 
         assert(i);
 
-        if (path_equal(i->path, "/") ||
-            path_startswith(i->path, "/usr"))
+        if (IMAGE_IS_VENDOR(i) || IMAGE_IS_HOST(i))
                 return -EROFS;
 
         settings = image_settings_path(i);
@@ -414,7 +423,7 @@ int image_remove(Image *i) {
 
         case IMAGE_DIRECTORY:
                 /* Allow deletion of read-only directories */
-                (void) chattr_path(i->path, false, FS_IMMUTABLE_FL);
+                (void) chattr_path(i->path, 0, FS_IMMUTABLE_FL);
                 r = rm_rf(i->path, REMOVE_ROOT|REMOVE_PHYSICAL|REMOVE_SUBVOLUME);
                 if (r < 0)
                         return r;
@@ -464,8 +473,7 @@ int image_rename(Image *i, const char *new_name) {
         if (!image_name_is_valid(new_name))
                 return -EINVAL;
 
-        if (path_equal(i->path, "/") ||
-            path_startswith(i->path, "/usr"))
+        if (IMAGE_IS_VENDOR(i) || IMAGE_IS_HOST(i))
                 return -EROFS;
 
         settings = image_settings_path(i);
@@ -479,7 +487,7 @@ int image_rename(Image *i, const char *new_name) {
 
         /* Make sure nobody takes the new name, between the time we
          * checked it is currently unused in all search paths, and the
-         * time we take possesion of it */
+         * time we take possession of it */
         r = image_name_lock(new_name, LOCK_EX|LOCK_NB, &name_lock);
         if (r < 0)
                 return r;
@@ -497,7 +505,7 @@ int image_rename(Image *i, const char *new_name) {
                 (void) read_attr_path(i->path, &file_attr);
 
                 if (file_attr & FS_IMMUTABLE_FL)
-                        (void) chattr_path(i->path, false, FS_IMMUTABLE_FL);
+                        (void) chattr_path(i->path, 0, FS_IMMUTABLE_FL);
 
                 /* fall through */
 
@@ -530,7 +538,7 @@ int image_rename(Image *i, const char *new_name) {
 
         /* Restore the immutable bit, if it was set before */
         if (file_attr & FS_IMMUTABLE_FL)
-                (void) chattr_path(new_path, true, FS_IMMUTABLE_FL);
+                (void) chattr_path(new_path, FS_IMMUTABLE_FL, FS_IMMUTABLE_FL);
 
         free(i->path);
         i->path = new_path;
@@ -580,7 +588,7 @@ int image_clone(Image *i, const char *new_name, bool read_only) {
 
         /* Make sure nobody takes the new name, between the time we
          * checked it is currently unused in all search paths, and the
-         * time we take possesion of it */
+         * time we take possession of it */
         r = image_name_lock(new_name, LOCK_EX|LOCK_NB, &name_lock);
         if (r < 0)
                 return r;
@@ -595,13 +603,21 @@ int image_clone(Image *i, const char *new_name, bool read_only) {
 
         case IMAGE_SUBVOLUME:
         case IMAGE_DIRECTORY:
+                /* If we can we'll always try to create a new btrfs subvolume here, even if the source is a plain
+                 * directory.*/
+
                 new_path = strjoina("/var/lib/machines/", new_name);
 
                 r = btrfs_subvol_snapshot(i->path, new_path, (read_only ? BTRFS_SNAPSHOT_READ_ONLY : 0) | BTRFS_SNAPSHOT_FALLBACK_COPY | BTRFS_SNAPSHOT_RECURSIVE | BTRFS_SNAPSHOT_QUOTA);
+                if (r == -EOPNOTSUPP) {
+                        /* No btrfs snapshots supported, create a normal directory then. */
 
-                /* Enable "subtree" quotas for the copy, if we didn't
-                 * copy any quota from the source. */
-                (void) btrfs_subvol_auto_qgroup(i->path, 0, true);
+                        r = copy_directory(i->path, new_path, false);
+                        if (r >= 0)
+                                (void) chattr_path(new_path, read_only ? FS_IMMUTABLE_FL : 0, FS_IMMUTABLE_FL);
+                } else if (r >= 0)
+                        /* Enable "subtree" quotas for the copy, if we didn't copy any quota from the source. */
+                        (void) btrfs_subvol_auto_qgroup(new_path, 0, true);
 
                 break;
 
@@ -632,8 +648,7 @@ int image_read_only(Image *i, bool b) {
         int r;
         assert(i);
 
-        if (path_equal(i->path, "/") ||
-            path_startswith(i->path, "/usr"))
+        if (IMAGE_IS_VENDOR(i) || IMAGE_IS_HOST(i))
                 return -EROFS;
 
         /* Make sure we don't interfere with a running nspawn */
@@ -663,7 +678,7 @@ int image_read_only(Image *i, bool b) {
                    a read-only subvolume, but at least something, and
                    we can read the value back.*/
 
-                r = chattr_path(i->path, b, FS_IMMUTABLE_FL);
+                r = chattr_path(i->path, b ? FS_IMMUTABLE_FL : 0, FS_IMMUTABLE_FL);
                 if (r < 0)
                         return r;
 
@@ -741,8 +756,7 @@ int image_path_lock(const char *path, int operation, LockFile *global, LockFile 
 int image_set_limit(Image *i, uint64_t referenced_max) {
         assert(i);
 
-        if (path_equal(i->path, "/") ||
-            path_startswith(i->path, "/usr"))
+        if (IMAGE_IS_VENDOR(i) || IMAGE_IS_HOST(i))
                 return -EROFS;
 
         if (i->type != IMAGE_SUBVOLUME)

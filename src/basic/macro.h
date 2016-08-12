@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -25,10 +23,15 @@
 #include <inttypes.h>
 #include <stdbool.h>
 #include <sys/param.h>
+#include <sys/sysmacros.h>
 #include <sys/types.h>
 
 #define _printf_(a,b) __attribute__ ((format (printf, a, b)))
-#define _alloc_(...) __attribute__ ((alloc_size(__VA_ARGS__)))
+#ifdef __clang__
+#  define _alloc_(...)
+#else
+#  define _alloc_(...) __attribute__ ((alloc_size(__VA_ARGS__)))
+#endif
 #define _sentinel_ __attribute__ ((sentinel))
 #define _unused_ __attribute__ ((unused))
 #define _destructor_ __attribute__ ((destructor))
@@ -85,6 +88,15 @@
 
 #define UNIQ_T(x, uniq) CONCATENATE(__unique_prefix_, CONCATENATE(x, uniq))
 #define UNIQ __COUNTER__
+
+/* builtins */
+#if __SIZEOF_INT__ == 4
+#define BUILTIN_FFS_U32(x) __builtin_ffs(x);
+#elif __SIZEOF_LONG__ == 4
+#define BUILTIN_FFS_U32(x) __builtin_ffsl(x);
+#else
+#error "neither int nor long are four bytes long?!?"
+#endif
 
 /* Rounds up */
 
@@ -226,7 +238,7 @@ static inline unsigned long ALIGN_POWER2(unsigned long u) {
 /* We override the glibc assert() here. */
 #undef assert
 #ifdef NDEBUG
-#define assert(expr) do {} while(false)
+#define assert(expr) do {} while (false)
 #else
 #define assert(expr) assert_message_se(expr, #expr)
 #endif
@@ -320,34 +332,54 @@ static inline unsigned long ALIGN_POWER2(unsigned long u) {
 #define SET_FLAG(v, flag, b) \
         (v) = (b) ? ((v) | (flag)) : ((v) & ~(flag))
 
-#define IN_SET(x, y, ...)                                               \
-        ({                                                              \
-                static const typeof(y) _array[] = { (y), __VA_ARGS__ }; \
-                const typeof(y) _x = (x);                               \
-                unsigned _i;                                            \
-                bool _found = false;                                    \
-                for (_i = 0; _i < ELEMENTSOF(_array); _i++)             \
-                        if (_array[_i] == _x) {                         \
-                                _found = true;                          \
-                                break;                                  \
-                        }                                               \
-                _found;                                                 \
+#define CASE_F(X) case X:
+#define CASE_F_1(CASE, X) CASE_F(X)
+#define CASE_F_2(CASE, X, ...)  CASE(X) CASE_F_1(CASE, __VA_ARGS__)
+#define CASE_F_3(CASE, X, ...)  CASE(X) CASE_F_2(CASE, __VA_ARGS__)
+#define CASE_F_4(CASE, X, ...)  CASE(X) CASE_F_3(CASE, __VA_ARGS__)
+#define CASE_F_5(CASE, X, ...)  CASE(X) CASE_F_4(CASE, __VA_ARGS__)
+#define CASE_F_6(CASE, X, ...)  CASE(X) CASE_F_5(CASE, __VA_ARGS__)
+#define CASE_F_7(CASE, X, ...)  CASE(X) CASE_F_6(CASE, __VA_ARGS__)
+#define CASE_F_8(CASE, X, ...)  CASE(X) CASE_F_7(CASE, __VA_ARGS__)
+#define CASE_F_9(CASE, X, ...)  CASE(X) CASE_F_8(CASE, __VA_ARGS__)
+#define CASE_F_10(CASE, X, ...) CASE(X) CASE_F_9(CASE, __VA_ARGS__)
+#define CASE_F_11(CASE, X, ...) CASE(X) CASE_F_10(CASE, __VA_ARGS__)
+#define CASE_F_12(CASE, X, ...) CASE(X) CASE_F_11(CASE, __VA_ARGS__)
+#define CASE_F_13(CASE, X, ...) CASE(X) CASE_F_12(CASE, __VA_ARGS__)
+#define CASE_F_14(CASE, X, ...) CASE(X) CASE_F_13(CASE, __VA_ARGS__)
+#define CASE_F_15(CASE, X, ...) CASE(X) CASE_F_14(CASE, __VA_ARGS__)
+#define CASE_F_16(CASE, X, ...) CASE(X) CASE_F_15(CASE, __VA_ARGS__)
+#define CASE_F_17(CASE, X, ...) CASE(X) CASE_F_16(CASE, __VA_ARGS__)
+#define CASE_F_18(CASE, X, ...) CASE(X) CASE_F_17(CASE, __VA_ARGS__)
+#define CASE_F_19(CASE, X, ...) CASE(X) CASE_F_18(CASE, __VA_ARGS__)
+#define CASE_F_20(CASE, X, ...) CASE(X) CASE_F_19(CASE, __VA_ARGS__)
+
+#define GET_CASE_F(_1,_2,_3,_4,_5,_6,_7,_8,_9,_10,_11,_12,_13,_14,_15,_16,_17,_18,_19,_20,NAME,...) NAME
+#define FOR_EACH_MAKE_CASE(...) \
+        GET_CASE_F(__VA_ARGS__,CASE_F_20,CASE_F_19,CASE_F_18,CASE_F_17,CASE_F_16,CASE_F_15,CASE_F_14,CASE_F_13,CASE_F_12,CASE_F_11, \
+                               CASE_F_10,CASE_F_9,CASE_F_8,CASE_F_7,CASE_F_6,CASE_F_5,CASE_F_4,CASE_F_3,CASE_F_2,CASE_F_1) \
+                   (CASE_F,__VA_ARGS__)
+
+#define IN_SET(x, ...)                          \
+        ({                                      \
+                bool _found = false;            \
+                /* If the build breaks in the line below, you need to extend the case macros */ \
+                static _unused_ char _static_assert__macros_need_to_be_extended[20 - sizeof((int[]){__VA_ARGS__})/sizeof(int)]; \
+                switch(x) {                     \
+                FOR_EACH_MAKE_CASE(__VA_ARGS__) \
+                        _found = true;          \
+                        break;                  \
+                default:                        \
+                        break;                  \
+                }                               \
+                _found;                         \
         })
 
-/* Return a nulstr for a standard cascade of configuration directories,
- * suitable to pass to conf_files_list_nulstr or config_parse_many. */
-#define CONF_DIRS_NULSTR(n) \
-        "/etc/" n ".d\0" \
-        "/run/" n ".d\0" \
-        "/usr/local/lib/" n ".d\0" \
-        "/usr/lib/" n ".d\0" \
-        CONF_DIR_SPLIT_USR(n)
-
-#ifdef HAVE_SPLIT_USR
-#define CONF_DIR_SPLIT_USR(n) "/lib/" n ".d\0"
-#else
-#define CONF_DIR_SPLIT_USR(n)
-#endif
+#define SWAP_TWO(x, y) do {                        \
+                typeof(x) _t = (x);                \
+                (x) = (y);                         \
+                (y) = (_t);                        \
+        } while (false)
 
 /* Define C11 thread_local attribute even on older gcc compiler
  * version */

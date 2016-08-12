@@ -97,16 +97,12 @@
     <filename>foo@.service</filename> must exist from which services
     are instantiated for each incoming connection.</para>
 
-    <para>Unless <varname>DefaultDependencies=</varname> is set to
-    <option>false</option>, socket units will implicitly have
-    dependencies of type <varname>Requires=</varname> and
-    <varname>After=</varname> on <filename>sysinit.target</filename>
-    as well as dependencies of type <varname>Conflicts=</varname> and
-    <varname>Before=</varname> on
-    <filename>shutdown.target</filename>. These ensure that socket
-    units pull in basic system initialization, and are terminated
-    cleanly prior to system shutdown. Only sockets involved with early
-    boot or late system shutdown should disable this option.</para>
+    <para>Unless <varname>DefaultDependencies=</varname> in the <literal>[Unit]</literal> section is set to
+    <option>false</option>, socket units will implicitly have dependencies of type <varname>Requires=</varname> and
+    <varname>After=</varname> on <filename>sysinit.target</filename> as well as dependencies of type
+    <varname>Conflicts=</varname> and <varname>Before=</varname> on <filename>shutdown.target</filename>. These ensure
+    that socket units pull in basic system initialization, and are terminated cleanly prior to system shutdown. Only
+    sockets involved with early boot or late system shutdown should disable this option.</para>
 
     <para>Socket units will have a <varname>Before=</varname>
     dependency on the service which they trigger added implicitly. No
@@ -131,6 +127,40 @@
     socket passing (i.e. sockets passed in via standard input and
     output, using <varname>StandardInput=socket</varname> in the
     service file).</para>
+  </refsect1>
+
+  <refsect1>
+    <title>Automatic Dependencies</title>
+
+    <para>Socket units automatically gain a <varname>Before=</varname>
+    dependency on the service units they activate.</para>
+
+    <para>Socket units referring to file system paths (such as AF_UNIX
+    sockets or FIFOs) implicitly gain <varname>Requires=</varname> and
+    <varname>After=</varname> dependencies on all mount units
+    necessary to access those paths.</para>
+
+    <para>Socket units using the <varname>BindToDevice=</varname>
+    setting automatically gain a <varname>BindsTo=</varname> and
+    <varname>After=</varname> dependency on the device unit
+    encapsulating the specified network interface.</para>
+
+    <para>If <varname>DefaultDependencies=yes</varname> is set (the
+    default), socket units automatically gain a
+    <varname>Before=</varname> dependency on
+    <filename>sockets.target</filename>. They also gain a pair of
+    <varname>After=</varname> and <varname>Requires=</varname>
+    dependency on <filename>sysinit.target</filename>, and a pair of
+    <varname>Before=</varname> and <varname>Conflicts=</varname>
+    dependencies on <filename>shutdown.target</filename>. These
+    dependencies ensure that the socket unit is started before normal
+    services at boot, and is stopped on shutdown.</para>
+
+    <para>Additional implicit dependencies may be added as result of
+    execution and resource control parameters as documented in
+    <citerefentry><refentrytitle>systemd.exec</refentrytitle><manvolnum>5</manvolnum></citerefentry>
+    and
+    <citerefentry><refentrytitle>systemd.resource-control</refentrytitle><manvolnum>5</manvolnum></citerefentry>.</para>
   </refsect1>
 
   <refsect1>
@@ -194,7 +224,7 @@
         refers to TCP sockets, <constant>SOCK_DGRAM</constant> (i.e.
         <varname>ListenDatagram=</varname>) to UDP.</para>
 
-        <para>These options may be specified more than once in which
+        <para>These options may be specified more than once, in which
         case incoming traffic on any of the sockets will trigger
         service activation, and all listed sockets will be passed to
         the service, regardless of whether there is incoming traffic
@@ -268,12 +298,21 @@
         implementation of USB gadget functions. This expects an
         absolute file system path as the argument. Behavior otherwise
         is very similar to the <varname>ListenFIFO=</varname>
-        directive above. Use this to open FunctionFS endpoint
+        directive above. Use this to open the FunctionFS endpoint
         <filename>ep0</filename>. When using this option, the
         activated service has to have the
         <varname>USBFunctionDescriptors=</varname> and
         <varname>USBFunctionStrings=</varname> options set.
         </para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>SocketProtocol=</varname></term>
+        <listitem><para>Takes a one of <option>udplite</option>
+        or <option>sctp</option>. Specifies a socket protocol
+        (<constant>IPPROTO_UDPLITE</constant>) UDP-Lite
+        (<constant>IPPROTO_SCTP</constant>) SCTP socket respectively. </para>
+        </listitem>
       </varlistentry>
 
       <varlistentry>
@@ -309,12 +348,14 @@
         <listitem><para>Specifies a network interface name to bind
         this socket to. If set, traffic will only be accepted from the
         specified network interfaces. This controls the
-        SO_BINDTODEVICE socket option (see
-        <citerefentry project='man-pages'><refentrytitle>socket</refentrytitle><manvolnum>7</manvolnum></citerefentry>
+        SO_BINDTODEVICE socket option (see <citerefentry
+        project='man-pages'><refentrytitle>socket</refentrytitle><manvolnum>7</manvolnum></citerefentry>
         for details). If this option is used, an automatic dependency
         from this socket unit on the network interface device unit
         (<citerefentry><refentrytitle>systemd.device</refentrytitle><manvolnum>5</manvolnum></citerefentry>
-        is created.</para></listitem>
+        is created. Note that setting this parameter might result in
+        additional dependencies to be added to the unit (see
+        above).</para></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -375,10 +416,10 @@
         to work unmodified with systemd socket
         activation.</para>
 
-        <para>For IPv4 and IPv6 connections the <varname>REMOTE_ADDR</varname>
-        environment variable will contain the remote IP, and <varname>REMOTE_PORT</varname>
+        <para>For IPv4 and IPv6 connections, the <varname>REMOTE_ADDR</varname>
+        environment variable will contain the remote IP address, and <varname>REMOTE_PORT</varname>
         will contain the remote port. This is the same as the format used by CGI.
-        For SOCK_RAW the port is the IP protocol.</para></listitem>
+        For SOCK_RAW, the port is the IP protocol.</para></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -386,7 +427,7 @@
         <listitem><para>Takes a boolean argument. May only be used in
         conjunction with <varname>ListenSpecial=</varname>. If true,
         the specified special file is opened in read-write mode, if
-        false in read-only mode. Defaults to false.</para></listitem>
+        false, in read-only mode. Defaults to false.</para></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -402,6 +443,14 @@
       </varlistentry>
 
       <varlistentry>
+        <term><varname>MaxConnectionsPerSource=</varname></term>
+        <listitem><para>The maximum number of connections for a service per source IP address.
+        This is is very similar to the <varname>MaxConnections=</varname> directive
+        above. Disabled by default.</para>
+        </listitem>
+      </varlistentry>
+
+       <varlistentry>
         <term><varname>KeepAlive=</varname></term>
         <listitem><para>Takes a boolean argument. If true, the TCP/IP
         stack will send a keep alive message after 2h (depending on
@@ -418,7 +467,7 @@
 
       <varlistentry>
         <term><varname>KeepAliveTimeSec=</varname></term>
-        <listitem><para>Takes time (in seconds) as argument . The connection needs to remain
+        <listitem><para>Takes time (in seconds) as argument. The connection needs to remain
         idle before TCP starts sending keepalive probes. This controls the TCP_KEEPIDLE
         socket option (see
         <citerefentry project='man-pages'><refentrytitle>socket</refentrytitle><manvolnum>7</manvolnum></citerefentry>
@@ -432,7 +481,7 @@
         <term><varname>KeepAliveIntervalSec=</varname></term>
         <listitem><para>Takes time (in seconds) as argument between
         individual keepalive probes, if the socket option SO_KEEPALIVE
-        has been set on this socket seconds as argument. This controls
+        has been set on this socket. This controls
         the TCP_KEEPINTVL socket option (see
         <citerefentry project='man-pages'><refentrytitle>socket</refentrytitle><manvolnum>7</manvolnum></citerefentry>
         and the <ulink
@@ -443,7 +492,7 @@
 
       <varlistentry>
         <term><varname>KeepAliveProbes=</varname></term>
-        <listitem><para>Takes integer as argument. It's the number of
+        <listitem><para>Takes an integer as argument. It is the number of
         unacknowledged probes to send before considering the
         connection dead and notifying the application layer. This
         controls the TCP_KEEPCNT socket option (see
@@ -719,7 +768,9 @@
         with <varname>Accept=no</varname>. It defaults to the service
         that bears the same name as the socket (with the suffix
         replaced). In most cases, it should not be necessary to use
-        this option.</para></listitem>
+        this option. Note that setting this parameter might result in
+        additional dependencies to be added to the unit (see
+        above).</para></listitem>
       </varlistentry>
 
       <varlistentry>
@@ -752,16 +803,33 @@
         <term><varname>FileDescriptorName=</varname></term>
         <listitem><para>Assigns a name to all file descriptors this
         socket unit encapsulates. This is useful to help activated
-        services to identify specific file descriptors, if multiple
+        services identify specific file descriptors, if multiple fds
         are passed. Services may use the
         <citerefentry><refentrytitle>sd_listen_fds_with_names</refentrytitle><manvolnum>3</manvolnum></citerefentry>
         call to acquire the names configured for the received file
         descriptors. Names may contain any ASCII character, but must
-        exclude control characters or <literal>:</literal>, and must
+        exclude control characters and <literal>:</literal>, and must
         be at most 255 characters in length. If this setting is not
-        used the file descriptor name defaults to the name of the
+        used, the file descriptor name defaults to the name of the
         socket unit, including its <filename>.socket</filename>
         suffix.</para></listitem>
+      </varlistentry>
+
+      <varlistentry>
+        <term><varname>TriggerLimitIntervalSec=</varname></term>
+        <term><varname>TriggerLimitBurst=</varname></term>
+
+        <listitem><para>Configures a limit on how often this socket unit my be activated within a specific time
+        interval. The <varname>TriggerLimitIntervalSec=</varname> may be used to configure the length of the time
+        interval in the usual time units <literal>us</literal>, <literal>ms</literal>, <literal>s</literal>,
+        <literal>min</literal>, <literal>h</literal>, … and defaults to 2s (See
+        <citerefentry><refentrytitle>systemd.time</refentrytitle><manvolnum>7</manvolnum></citerefentry> for details on
+        the various time units understood). The <varname>TriggerLimitBurst=</varname> setting takes a positive integer
+        value and specifies the number of permitted activations per time interval, and defaults to 200 for
+        <varname>Accept=yes</varname> sockets (thus by default permitting 200 activations per 2s), and 20 otherwise (20
+        activations per 2s). Set either to 0 to disable any form of trigger rate limiting. If the limit is hit, the
+        socket unit is placed into a failure mode, and will not be connectible anymore until restarted. Note that this
+        limit is enforced before the service activation is enqueued.</para></listitem>
       </varlistentry>
 
     </variablelist>

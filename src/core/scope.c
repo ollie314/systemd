@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -52,9 +50,7 @@ static void scope_init(Unit *u) {
         assert(u->load_state == UNIT_STUB);
 
         s->timeout_stop_usec = u->manager->default_timeout_stop_usec;
-
-        UNIT(s)->ignore_on_isolate = true;
-        UNIT(s)->ignore_on_snapshot = true;
+        u->ignore_on_isolate = true;
 }
 
 static void scope_done(Unit *u) {
@@ -67,29 +63,27 @@ static void scope_done(Unit *u) {
         s->timer_event_source = sd_event_source_unref(s->timer_event_source);
 }
 
-static int scope_arm_timer(Scope *s) {
+static int scope_arm_timer(Scope *s, usec_t usec) {
         int r;
 
         assert(s);
 
-        if (s->timeout_stop_usec <= 0) {
-                s->timer_event_source = sd_event_source_unref(s->timer_event_source);
-                return 0;
-        }
-
         if (s->timer_event_source) {
-                r = sd_event_source_set_time(s->timer_event_source, now(CLOCK_MONOTONIC) + s->timeout_stop_usec);
+                r = sd_event_source_set_time(s->timer_event_source, usec);
                 if (r < 0)
                         return r;
 
                 return sd_event_source_set_enabled(s->timer_event_source, SD_EVENT_ONESHOT);
         }
 
+        if (usec == USEC_INFINITY)
+                return 0;
+
         r = sd_event_add_time(
                         UNIT(s)->manager->event,
                         &s->timer_event_source,
                         CLOCK_MONOTONIC,
-                        now(CLOCK_MONOTONIC) + s->timeout_stop_usec, 0,
+                        usec, 0,
                         scope_dispatch_timer, s);
         if (r < 0)
                 return r;
@@ -123,6 +117,9 @@ static int scope_add_default_dependencies(Scope *s) {
 
         assert(s);
 
+        if (!UNIT(s)->default_dependencies)
+                return 0;
+
         /* Make sure scopes are unloaded on shutdown */
         r = unit_add_two_dependencies_by_name(
                         UNIT(s),
@@ -141,7 +138,7 @@ static int scope_verify(Scope *s) {
                 return 0;
 
         if (set_isempty(UNIT(s)->pids) &&
-            !manager_is_reloading_or_reexecuting(UNIT(s)->manager) &&
+            !MANAGER_IS_RELOADING(UNIT(s)->manager) &&
             !unit_has_name(UNIT(s), SPECIAL_INIT_SCOPE)) {
                 log_unit_error(UNIT(s), "Scope has no PIDs. Refusing.");
                 return -EINVAL;
@@ -157,24 +154,23 @@ static int scope_load(Unit *u) {
         assert(s);
         assert(u->load_state == UNIT_STUB);
 
-        if (!u->transient && !manager_is_reloading_or_reexecuting(u->manager))
+        if (!u->transient && !MANAGER_IS_RELOADING(u->manager))
+                /* Refuse to load non-transient scope units, but allow them while reloading. */
                 return -ENOENT;
 
-        u->load_state = UNIT_LOADED;
-
-        r = unit_load_dropin(u);
+        r = unit_load_fragment_and_dropin_optional(u);
         if (r < 0)
                 return r;
 
-        r = unit_patch_contexts(u);
-        if (r < 0)
-                return r;
+        if (u->load_state == UNIT_LOADED) {
+                r = unit_patch_contexts(u);
+                if (r < 0)
+                        return r;
 
-        r = unit_set_default_slice(u);
-        if (r < 0)
-                return r;
+                r = unit_set_default_slice(u);
+                if (r < 0)
+                        return r;
 
-        if (u->default_dependencies) {
                 r = scope_add_default_dependencies(s);
                 if (r < 0)
                         return r;
@@ -190,20 +186,19 @@ static int scope_coldplug(Unit *u) {
         assert(s);
         assert(s->state == SCOPE_DEAD);
 
-        if (s->deserialized_state != s->state) {
+        if (s->deserialized_state == s->state)
+                return 0;
 
-                if (IN_SET(s->deserialized_state, SCOPE_STOP_SIGKILL, SCOPE_STOP_SIGTERM)) {
-                        r = scope_arm_timer(s);
-                        if (r < 0)
-                                return r;
-                }
-
-                if (!IN_SET(s->deserialized_state, SCOPE_DEAD, SCOPE_FAILED))
-                        unit_watch_all_pids(UNIT(s));
-
-                scope_set_state(s, s->deserialized_state);
+        if (IN_SET(s->deserialized_state, SCOPE_STOP_SIGKILL, SCOPE_STOP_SIGTERM)) {
+                r = scope_arm_timer(s, usec_add(u->state_change_timestamp.monotonic, s->timeout_stop_usec));
+                if (r < 0)
+                        return r;
         }
 
+        if (!IN_SET(s->deserialized_state, SCOPE_DEAD, SCOPE_FAILED))
+                unit_watch_all_pids(UNIT(s));
+
+        scope_set_state(s, s->deserialized_state);
         return 0;
 }
 
@@ -226,7 +221,7 @@ static void scope_dump(Unit *u, FILE *f, const char *prefix) {
 static void scope_enter_dead(Scope *s, ScopeResult f) {
         assert(s);
 
-        if (f != SCOPE_SUCCESS)
+        if (s->result == SCOPE_SUCCESS)
                 s->result = f;
 
         scope_set_state(s, s->result != SCOPE_SUCCESS ? SCOPE_FAILED : SCOPE_DEAD);
@@ -238,14 +233,14 @@ static void scope_enter_signal(Scope *s, ScopeState state, ScopeResult f) {
 
         assert(s);
 
-        if (f != SCOPE_SUCCESS)
+        if (s->result == SCOPE_SUCCESS)
                 s->result = f;
 
         unit_watch_all_pids(UNIT(s));
 
         /* If we have a controller set let's ask the controller nicely
          * to terminate the scope, instead of us going directly into
-         * SIGTERM beserk mode */
+         * SIGTERM berserk mode */
         if (state == SCOPE_STOP_SIGTERM)
                 skip_signal = bus_scope_send_request_stop(s) > 0;
 
@@ -253,7 +248,9 @@ static void scope_enter_signal(Scope *s, ScopeState state, ScopeResult f) {
                 r = unit_kill_context(
                                 UNIT(s),
                                 &s->kill_context,
-                                state != SCOPE_STOP_SIGTERM ? KILL_KILL : KILL_TERMINATE,
+                                state != SCOPE_STOP_SIGTERM ? KILL_KILL :
+                                s->was_abandoned            ? KILL_TERMINATE_AND_LOG :
+                                                              KILL_TERMINATE,
                                 -1, -1, false);
                 if (r < 0)
                         goto fail;
@@ -261,7 +258,7 @@ static void scope_enter_signal(Scope *s, ScopeState state, ScopeResult f) {
                 r = 1;
 
         if (r > 0) {
-                r = scope_arm_timer(s);
+                r = scope_arm_timer(s, usec_add(now(CLOCK_MONOTONIC), s->timeout_stop_usec));
                 if (r < 0)
                         goto fail;
 
@@ -298,7 +295,7 @@ static int scope_start(Unit *u) {
 
         assert(s->state == SCOPE_DEAD);
 
-        if (!u->transient && !manager_is_reloading_or_reexecuting(u->manager))
+        if (!u->transient && !MANAGER_IS_RELOADING(u->manager))
                 return -ENOENT;
 
         (void) unit_realize_cgroup(u);
@@ -348,17 +345,21 @@ static int scope_kill(Unit *u, KillWho who, int signo, sd_bus_error *error) {
         return unit_kill_common(u, who, signo, -1, -1, error);
 }
 
-static int scope_get_timeout(Unit *u, uint64_t *timeout) {
+static int scope_get_timeout(Unit *u, usec_t *timeout) {
         Scope *s = SCOPE(u);
+        usec_t t;
         int r;
 
         if (!s->timer_event_source)
                 return 0;
 
-        r = sd_event_source_get_time(s->timer_event_source, timeout);
+        r = sd_event_source_get_time(s->timer_event_source, &t);
         if (r < 0)
                 return r;
+        if (t == USEC_INFINITY)
+                return 0;
 
+        *timeout = t;
         return 1;
 }
 
@@ -370,6 +371,7 @@ static int scope_serialize(Unit *u, FILE *f, FDSet *fds) {
         assert(fds);
 
         unit_serialize_item(u, f, "state", scope_state_to_string(s->state));
+        unit_serialize_item(u, f, "was-abandoned", yes_no(s->was_abandoned));
         return 0;
 }
 
@@ -390,6 +392,14 @@ static int scope_deserialize_item(Unit *u, const char *key, const char *value, F
                 else
                         s->deserialized_state = state;
 
+        } else if (streq(key, "was-abandoned")) {
+                int k;
+
+                k = parse_boolean(value);
+                if (k < 0)
+                        log_unit_debug(u, "Failed to parse boolean value: %s", value);
+                else
+                        s->was_abandoned = k;
         } else
                 log_unit_debug(u, "Unknown serialization key: %s", key);
 
@@ -402,15 +412,10 @@ static bool scope_check_gc(Unit *u) {
         /* Never clean up scopes that still have a process around,
          * even if the scope is formally dead. */
 
-        if (u->cgroup_path) {
-                int r;
+        if (!u->cgroup_path)
+                return false;
 
-                r = cg_is_empty_recursive(SYSTEMD_CGROUP_CONTROLLER, u->cgroup_path);
-                if (r <= 0)
-                        return true;
-        }
-
-        return false;
+        return cg_is_empty_recursive(SYSTEMD_CGROUP_CONTROLLER, u->cgroup_path) <= 0;
 }
 
 static void scope_notify_cgroup_empty_event(Unit *u) {
@@ -434,8 +439,9 @@ static void scope_sigchld_event(Unit *u, pid_t pid, int code, int status) {
         unit_tidy_watch_pids(u, 0, 0);
         unit_watch_all_pids(u);
 
-        /* If the PID set is empty now, then let's finish this off */
-        if (set_isempty(u->pids))
+        /* If the PID set is empty now, then let's finish this off
+           (On unified we use proper notifications) */
+        if (cg_unified() <= 0 && set_isempty(u->pids))
                 scope_notify_cgroup_empty_event(u);
 }
 
@@ -479,6 +485,7 @@ int scope_abandon(Scope *s) {
         if (!IN_SET(s->state, SCOPE_RUNNING, SCOPE_ABANDONED))
                 return -ESTALE;
 
+        s->was_abandoned = true;
         s->controller = mfree(s->controller);
 
         /* The client is no longer watching the remaining processes,
@@ -510,7 +517,7 @@ _pure_ static const char *scope_sub_state_to_string(Unit *u) {
         return scope_state_to_string(SCOPE(u)->state);
 }
 
-static int scope_enumerate(Manager *m) {
+static void scope_enumerate(Manager *m) {
         Unit *u;
         int r;
 
@@ -524,13 +531,16 @@ static int scope_enumerate(Manager *m) {
         u = manager_get_unit(m, SPECIAL_INIT_SCOPE);
         if (!u) {
                 u = unit_new(m, sizeof(Scope));
-                if (!u)
-                        return log_oom();
+                if (!u) {
+                        log_oom();
+                        return;
+                }
 
                 r = unit_add_name(u, SPECIAL_INIT_SCOPE);
                 if (r < 0)  {
                         unit_free(u);
-                        return log_error_errno(r, "Failed to add init.scope name");
+                        log_error_errno(r, "Failed to add init.scope name");
+                        return;
                 }
         }
 
@@ -551,8 +561,6 @@ static int scope_enumerate(Manager *m) {
 
         unit_add_to_load_queue(u);
         unit_add_to_dbus_queue(u);
-
-        return 0;
 }
 
 static const char* const scope_result_table[_SCOPE_RESULT_MAX] = {
@@ -574,8 +582,7 @@ const UnitVTable scope_vtable = {
                 "Install\0",
         .private_section = "Scope",
 
-        .no_alias = true,
-        .no_instances = true,
+        .can_transient = true,
 
         .init = scope_init,
         .load = scope_load,
@@ -609,8 +616,6 @@ const UnitVTable scope_vtable = {
         .bus_vtable = bus_scope_vtable,
         .bus_set_property = bus_scope_set_property,
         .bus_commit_properties = bus_scope_commit_properties,
-
-        .can_transient = true,
 
         .enumerate = scope_enumerate,
 };

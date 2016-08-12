@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
  This file is part of systemd.
 
@@ -20,7 +18,6 @@
 ***/
 
 #include <netinet/ether.h>
-#include <linux/netdevice.h>
 
 #include "sd-netlink.h"
 
@@ -354,14 +351,14 @@ static int get_mac(struct udev_device *device, bool want_random,
         if (want_random)
                 random_bytes(mac->ether_addr_octet, ETH_ALEN);
         else {
-                uint8_t result[8];
+                uint64_t result;
 
-                r = net_get_unique_predictable_data(device, result);
+                r = net_get_unique_predictable_data(device, &result);
                 if (r < 0)
                         return r;
 
                 assert_cc(ETH_ALEN <= sizeof(result));
-                memcpy(mac->ether_addr_octet, result, ETH_ALEN);
+                memcpy(mac->ether_addr_octet, &result, ETH_ALEN);
         }
 
         /* see eth_random_addr in the kernel */

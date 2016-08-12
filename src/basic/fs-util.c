@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,16 +17,32 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include <dirent.h>
+#include <errno.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <time.h>
+#include <unistd.h>
+
 #include "alloc-util.h"
 #include "dirent-util.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "fs-util.h"
+#include "log.h"
+#include "macro.h"
+#include "missing.h"
 #include "mkdir.h"
 #include "parse-util.h"
 #include "path-util.h"
+#include "stat-util.h"
+#include "stdio-util.h"
 #include "string-util.h"
 #include "strv.h"
+#include "time-util.h"
 #include "user-util.h"
 #include "util.h"
 
@@ -233,6 +247,26 @@ int readlink_and_canonicalize(const char *p, char **r) {
         return 0;
 }
 
+int readlink_and_make_absolute_root(const char *root, const char *path, char **ret) {
+        _cleanup_free_ char *target = NULL, *t = NULL;
+        const char *full;
+        int r;
+
+        full = prefix_roota(root, path);
+        r = readlink_malloc(full, &target);
+        if (r < 0)
+                return r;
+
+        t = file_in_same_dir(path, target);
+        if (!t)
+                return -ENOMEM;
+
+        *ret = t;
+        t = NULL;
+
+        return 0;
+}
+
 int chmod_and_chown(const char *path, mode_t mode, uid_t uid, gid_t gid) {
         assert(path);
 
@@ -246,24 +280,6 @@ int chmod_and_chown(const char *path, mode_t mode, uid_t uid, gid_t gid) {
 
         if (uid != UID_INVALID || gid != GID_INVALID)
                 if (chown(path, uid, gid) < 0)
-                        return -errno;
-
-        return 0;
-}
-
-int fchmod_and_fchown(int fd, mode_t mode, uid_t uid, gid_t gid) {
-        assert(fd >= 0);
-
-        /* Under the assumption that we are running privileged we
-         * first change the access mode and only then hand out
-         * ownership to avoid a window where access is too open. */
-
-        if (mode != MODE_INVALID)
-                if (fchmod(fd, mode) < 0)
-                        return -errno;
-
-        if (uid != UID_INVALID || gid != GID_INVALID)
-                if (fchown(fd, uid, gid) < 0)
                         return -errno;
 
         return 0;
@@ -307,11 +323,12 @@ int touch_file(const char *path, bool parents, usec_t stamp, uid_t uid, gid_t gi
         if (parents)
                 mkdir_parents(path, 0755);
 
-        fd = open(path, O_WRONLY|O_CREAT|O_CLOEXEC|O_NOCTTY, mode > 0 ? mode : 0644);
+        fd = open(path, O_WRONLY|O_CREAT|O_CLOEXEC|O_NOCTTY,
+                        (mode == 0 || mode == MODE_INVALID) ? 0644 : mode);
         if (fd < 0)
                 return -errno;
 
-        if (mode > 0) {
+        if (mode != MODE_INVALID) {
                 r = fchmod(fd, mode);
                 if (r < 0)
                         return -errno;
@@ -338,7 +355,7 @@ int touch_file(const char *path, bool parents, usec_t stamp, uid_t uid, gid_t gi
 }
 
 int touch(const char *path) {
-        return touch_file(path, false, USEC_INFINITY, UID_INVALID, GID_INVALID, 0);
+        return touch_file(path, false, USEC_INFINITY, UID_INVALID, GID_INVALID, MODE_INVALID);
 }
 
 int symlink_idempotent(const char *from, const char *to) {
@@ -447,7 +464,7 @@ int get_files_in_directory(const char *path, char ***list) {
 
                 errno = 0;
                 de = readdir(d);
-                if (!de && errno != 0)
+                if (!de && errno > 0)
                         return -errno;
                 if (!de)
                         break;
@@ -477,4 +494,106 @@ int get_files_in_directory(const char *path, char ***list) {
         }
 
         return n;
+}
+
+static int getenv_tmp_dir(const char **ret_path) {
+        const char *n;
+        int r, ret = 0;
+
+        assert(ret_path);
+
+        /* We use the same order of environment variables python uses in tempfile.gettempdir():
+         * https://docs.python.org/3/library/tempfile.html#tempfile.gettempdir */
+        FOREACH_STRING(n, "TMPDIR", "TEMP", "TMP") {
+                const char *e;
+
+                e = secure_getenv(n);
+                if (!e)
+                        continue;
+                if (!path_is_absolute(e)) {
+                        r = -ENOTDIR;
+                        goto next;
+                }
+                if (!path_is_safe(e)) {
+                        r = -EPERM;
+                        goto next;
+                }
+
+                r = is_dir(e, true);
+                if (r < 0)
+                        goto next;
+                if (r == 0) {
+                        r = -ENOTDIR;
+                        goto next;
+                }
+
+                *ret_path = e;
+                return 1;
+
+        next:
+                /* Remember first error, to make this more debuggable */
+                if (ret >= 0)
+                        ret = r;
+        }
+
+        if (ret < 0)
+                return ret;
+
+        *ret_path = NULL;
+        return ret;
+}
+
+static int tmp_dir_internal(const char *def, const char **ret) {
+        const char *e;
+        int r, k;
+
+        assert(def);
+        assert(ret);
+
+        r = getenv_tmp_dir(&e);
+        if (r > 0) {
+                *ret = e;
+                return 0;
+        }
+
+        k = is_dir(def, true);
+        if (k == 0)
+                k = -ENOTDIR;
+        if (k < 0)
+                return r < 0 ? r : k;
+
+        *ret = def;
+        return 0;
+}
+
+int var_tmp_dir(const char **ret) {
+
+        /* Returns the location for "larger" temporary files, that is backed by physical storage if available, and thus
+         * even might survive a boot: /var/tmp. If $TMPDIR (or related environment variables) are set, its value is
+         * returned preferably however. Note that both this function and tmp_dir() below are affected by $TMPDIR,
+         * making it a variable that overrides all temporary file storage locations. */
+
+        return tmp_dir_internal("/var/tmp", ret);
+}
+
+int tmp_dir(const char **ret) {
+
+        /* Similar to var_tmp_dir() above, but returns the location for "smaller" temporary files, which is usually
+         * backed by an in-memory file system: /tmp. */
+
+        return tmp_dir_internal("/tmp", ret);
+}
+
+int inotify_add_watch_fd(int fd, int what, uint32_t mask) {
+        char path[strlen("/proc/self/fd/") + DECIMAL_STR_MAX(int) + 1];
+        int r;
+
+        /* This is like inotify_add_watch(), except that the file to watch is not referenced by a path, but by an fd */
+        xsprintf(path, "/proc/self/fd/%i", what);
+
+        r = inotify_add_watch(fd, path, mask);
+        if (r < 0)
+                return -errno;
+
+        return r;
 }

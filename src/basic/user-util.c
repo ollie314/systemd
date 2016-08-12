@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,17 +17,30 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <pwd.h>
+#include <alloca.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <grp.h>
+#include <pwd.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
+#include <utmp.h>
 
+#include "missing.h"
 #include "alloc-util.h"
 #include "fd-util.h"
+#include "formats-util.h"
 #include "macro.h"
 #include "parse-util.h"
 #include "path-util.h"
 #include "string-util.h"
 #include "user-util.h"
-#include "util.h"
+#include "utf8.h"
 
 bool uid_is_valid(uid_t uid) {
 
@@ -58,7 +69,7 @@ int parse_uid(const char *s, uid_t *ret) {
         if (!uid_is_valid(uid))
                 return -ENXIO; /* we return ENXIO instead of EINVAL
                                 * here, to make it easy to distuingish
-                                * invalid numeric uids invalid
+                                * invalid numeric uids from invalid
                                 * strings. */
 
         if (ret)
@@ -449,7 +460,7 @@ int take_etc_passwd_lock(const char *root) {
          *
          * Note that shadow-utils also takes per-database locks in
          * addition to lckpwdf(). However, we don't given that they
-         * are redundant as they they invoke lckpwdf() first and keep
+         * are redundant as they invoke lckpwdf() first and keep
          * it during everything they do. The per-database locks are
          * awfully racy, and thus we just won't do them. */
 
@@ -469,4 +480,95 @@ int take_etc_passwd_lock(const char *root) {
         }
 
         return fd;
+}
+
+bool valid_user_group_name(const char *u) {
+        const char *i;
+        long sz;
+
+        /* Checks if the specified name is a valid user/group name. */
+
+        if (isempty(u))
+                return false;
+
+        if (!(u[0] >= 'a' && u[0] <= 'z') &&
+            !(u[0] >= 'A' && u[0] <= 'Z') &&
+            u[0] != '_')
+                return false;
+
+        for (i = u+1; *i; i++) {
+                if (!(*i >= 'a' && *i <= 'z') &&
+                    !(*i >= 'A' && *i <= 'Z') &&
+                    !(*i >= '0' && *i <= '9') &&
+                    *i != '_' &&
+                    *i != '-')
+                        return false;
+        }
+
+        sz = sysconf(_SC_LOGIN_NAME_MAX);
+        assert_se(sz > 0);
+
+        if ((size_t) (i-u) > (size_t) sz)
+                return false;
+
+        if ((size_t) (i-u) > UT_NAMESIZE - 1)
+                return false;
+
+        return true;
+}
+
+bool valid_user_group_name_or_id(const char *u) {
+
+        /* Similar as above, but is also fine with numeric UID/GID specifications, as long as they are in the right
+         * range, and not the invalid user ids. */
+
+        if (isempty(u))
+                return false;
+
+        if (valid_user_group_name(u))
+                return true;
+
+        return parse_uid(u, NULL) >= 0;
+}
+
+bool valid_gecos(const char *d) {
+
+        if (!d)
+                return false;
+
+        if (!utf8_is_valid(d))
+                return false;
+
+        if (string_has_cc(d, NULL))
+                return false;
+
+        /* Colons are used as field separators, and hence not OK */
+        if (strchr(d, ':'))
+                return false;
+
+        return true;
+}
+
+bool valid_home(const char *p) {
+
+        if (isempty(p))
+                return false;
+
+        if (!utf8_is_valid(p))
+                return false;
+
+        if (string_has_cc(p, NULL))
+                return false;
+
+        if (!path_is_absolute(p))
+                return false;
+
+        if (!path_is_safe(p))
+                return false;
+
+        /* Colons are used as field separators, and hence not OK */
+        if (strchr(p, ':'))
+                return false;
+
+        return true;
 }

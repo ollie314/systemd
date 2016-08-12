@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -21,8 +19,9 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <sys/types.h>
 #include <stdbool.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 bool uid_is_valid(uid_t uid);
 
@@ -65,3 +64,12 @@ int take_etc_passwd_lock(const char *root);
 
 #define PTR_TO_GID(p) ((gid_t) (((uintptr_t) (p))-1))
 #define GID_TO_PTR(u) ((void*) (((uintptr_t) (u))+1))
+
+static inline bool userns_supported(void) {
+        return access("/proc/self/uid_map", F_OK) >= 0;
+}
+
+bool valid_user_group_name(const char *u);
+bool valid_user_group_name_or_id(const char *u);
+bool valid_gecos(const char *d);
+bool valid_home(const char *p);

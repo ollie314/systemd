@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -25,14 +23,12 @@
 
 #include "list.h"
 #include "time-util.h"
-
-/* Maximum value for fixed (manual) net class ID assignment,
- * and also the value at which the range of automatic assignments starts
- */
-#define CGROUP_NETCLASS_FIXED_MAX UINT32_C(65535)
+#include "cgroup-util.h"
 
 typedef struct CGroupContext CGroupContext;
 typedef struct CGroupDeviceAllow CGroupDeviceAllow;
+typedef struct CGroupIODeviceWeight CGroupIODeviceWeight;
+typedef struct CGroupIODeviceLimit CGroupIODeviceLimit;
 typedef struct CGroupBlockIODeviceWeight CGroupBlockIODeviceWeight;
 typedef struct CGroupBlockIODeviceBandwidth CGroupBlockIODeviceBandwidth;
 
@@ -52,23 +48,24 @@ typedef enum CGroupDevicePolicy {
         _CGROUP_DEVICE_POLICY_INVALID = -1
 } CGroupDevicePolicy;
 
-typedef enum CGroupNetClassType {
-        /* Default - do not assign a net class */
-        CGROUP_NETCLASS_TYPE_NONE,
-
-        /* Automatically assign a net class */
-        CGROUP_NETCLASS_TYPE_AUTO,
-
-        /* Assign the net class that was provided by the user */
-        CGROUP_NETCLASS_TYPE_FIXED,
-} CGroupNetClassType;
-
 struct CGroupDeviceAllow {
         LIST_FIELDS(CGroupDeviceAllow, device_allow);
         char *path;
         bool r:1;
         bool w:1;
         bool m:1;
+};
+
+struct CGroupIODeviceWeight {
+        LIST_FIELDS(CGroupIODeviceWeight, device_weights);
+        char *path;
+        uint64_t weight;
+};
+
+struct CGroupIODeviceLimit {
+        LIST_FIELDS(CGroupIODeviceLimit, device_limits);
+        char *path;
+        uint64_t limits[_CGROUP_IO_LIMIT_TYPE_MAX];
 };
 
 struct CGroupBlockIODeviceWeight {
@@ -80,16 +77,28 @@ struct CGroupBlockIODeviceWeight {
 struct CGroupBlockIODeviceBandwidth {
         LIST_FIELDS(CGroupBlockIODeviceBandwidth, device_bandwidths);
         char *path;
-        uint64_t bandwidth;
-        bool read;
+        uint64_t rbps;
+        uint64_t wbps;
 };
 
 struct CGroupContext {
         bool cpu_accounting;
+        bool io_accounting;
         bool blockio_accounting;
         bool memory_accounting;
         bool tasks_accounting;
 
+        /* For unified hierarchy */
+        uint64_t io_weight;
+        uint64_t startup_io_weight;
+        LIST_HEAD(CGroupIODeviceWeight, io_device_weights);
+        LIST_HEAD(CGroupIODeviceLimit, io_device_limits);
+
+        uint64_t memory_low;
+        uint64_t memory_high;
+        uint64_t memory_max;
+
+        /* For legacy hierarchies */
         uint64_t cpu_shares;
         uint64_t startup_cpu_shares;
         usec_t cpu_quota_per_sec_usec;
@@ -104,25 +113,23 @@ struct CGroupContext {
         CGroupDevicePolicy device_policy;
         LIST_HEAD(CGroupDeviceAllow, device_allow);
 
-        CGroupNetClassType netclass_type;
-        uint32_t netclass_id;
-
+        /* Common */
         uint64_t tasks_max;
 
         bool delegate;
 };
 
 #include "unit.h"
-#include "cgroup-util.h"
 
 void cgroup_context_init(CGroupContext *c);
 void cgroup_context_done(CGroupContext *c);
 void cgroup_context_dump(CGroupContext *c, FILE* f, const char *prefix);
-void cgroup_context_apply(CGroupContext *c, CGroupMask mask, const char *path, uint32_t netclass_id, ManagerState state);
 
 CGroupMask cgroup_context_get_mask(CGroupContext *c);
 
 void cgroup_context_free_device_allow(CGroupContext *c, CGroupDeviceAllow *a);
+void cgroup_context_free_io_device_weight(CGroupContext *c, CGroupIODeviceWeight *w);
+void cgroup_context_free_io_device_limit(CGroupContext *c, CGroupIODeviceLimit *l);
 void cgroup_context_free_blockio_device_weight(CGroupContext *c, CGroupBlockIODeviceWeight *w);
 void cgroup_context_free_blockio_device_bandwidth(CGroupContext *c, CGroupBlockIODeviceBandwidth *b);
 
@@ -145,9 +152,6 @@ void unit_prune_cgroup(Unit *u);
 int unit_watch_cgroup(Unit *u);
 
 int unit_attach_pids_to_cgroup(Unit *u);
-
-int unit_add_to_netclass_cgroup(Unit *u);
-int unit_remove_from_netclass_cgroup(Unit *u);
 
 int manager_setup_cgroup(Manager *m);
 void manager_shutdown_cgroup(Manager *m, bool delete);

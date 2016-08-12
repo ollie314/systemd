@@ -1,4 +1,4 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
+#pragma once
 
 /***
   This file is part of systemd.
@@ -19,14 +19,11 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#pragma once
-
-typedef struct Dummy Dummy;
-
 #include "networkd-netdev.h"
 
-struct Dummy {
+typedef struct Dummy {
         NetDev meta;
-};
+} Dummy;
 
+DEFINE_NETDEV_CAST(DUMMY, Dummy);
 extern const NetDevVTable dummy_vtable;

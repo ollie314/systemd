@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,8 +17,8 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <stdlib.h>
 #include <math.h>
+#include <stdlib.h>
 
 #ifdef HAVE_GLIB
 #include <gio/gio.h>
@@ -38,8 +36,8 @@
 #include "bus-message.h"
 #include "bus-util.h"
 #include "fd-util.h"
-#include "log.h"
 #include "hexdecoct.h"
+#include "log.h"
 #include "util.h"
 
 static void test_bus_path_encode_unique(void) {
@@ -123,7 +121,7 @@ static void test_bus_label_escape(void) {
 }
 
 int main(int argc, char *argv[]) {
-        _cleanup_bus_message_unref_ sd_bus_message *m = NULL, *copy = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL, *copy = NULL;
         int r, boolean;
         const char *x, *x2, *y, *z, *a, *b, *c, *d, *a_signature;
         uint8_t u, v;
@@ -135,7 +133,7 @@ int main(int argc, char *argv[]) {
         _cleanup_free_ char *first = NULL, *second = NULL, *third = NULL;
         _cleanup_fclose_ FILE *ms = NULL;
         size_t first_size = 0, second_size = 0, third_size = 0;
-        _cleanup_bus_unref_ sd_bus *bus = NULL;
+        _cleanup_(sd_bus_unrefp) sd_bus *bus = NULL;
         double dbl;
         uint64_t u64;
 
@@ -246,6 +244,8 @@ int main(int argc, char *argv[]) {
                         log_error("%s", error.message);
                 else
                         dbus_message_unref(w);
+
+                dbus_error_free(&error);
         }
 #endif
 

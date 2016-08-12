@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -36,10 +34,13 @@
 #define BUS_ERROR_TRANSACTION_ORDER_IS_CYCLIC "org.freedesktop.systemd1.TransactionOrderIsCyclic"
 #define BUS_ERROR_TRANSACTION_IS_DESTRUCTIVE "org.freedesktop.systemd1.TransactionIsDestructive"
 #define BUS_ERROR_UNIT_MASKED "org.freedesktop.systemd1.UnitMasked"
+#define BUS_ERROR_UNIT_GENERATED "org.freedesktop.systemd1.UnitGenerated"
+#define BUS_ERROR_UNIT_LINKED "org.freedesktop.systemd1.UnitLinked"
 #define BUS_ERROR_JOB_TYPE_NOT_APPLICABLE "org.freedesktop.systemd1.JobTypeNotApplicable"
 #define BUS_ERROR_NO_ISOLATION "org.freedesktop.systemd1.NoIsolation"
 #define BUS_ERROR_SHUTTING_DOWN "org.freedesktop.systemd1.ShuttingDown"
 #define BUS_ERROR_SCOPE_NOT_RUNNING "org.freedesktop.systemd1.ScopeNotRunning"
+#define BUS_ERROR_NO_SUCH_DYNAMIC_USER "org.freedesktop.systemd1.NoSuchDynamicUser"
 
 #define BUS_ERROR_NO_SUCH_MACHINE "org.freedesktop.machine1.NoSuchMachine"
 #define BUS_ERROR_NO_SUCH_IMAGE "org.freedesktop.machine1.NoSuchImage"
@@ -69,9 +70,15 @@
 #define BUS_ERROR_NO_NAME_SERVERS "org.freedesktop.resolve1.NoNameServers"
 #define BUS_ERROR_INVALID_REPLY "org.freedesktop.resolve1.InvalidReply"
 #define BUS_ERROR_NO_SUCH_RR "org.freedesktop.resolve1.NoSuchRR"
-#define BUS_ERROR_NO_RESOURCES "org.freedesktop.resolve1.NoResources"
 #define BUS_ERROR_CNAME_LOOP "org.freedesktop.resolve1.CNameLoop"
 #define BUS_ERROR_ABORTED "org.freedesktop.resolve1.Aborted"
+#define BUS_ERROR_NO_SUCH_SERVICE "org.freedesktop.resolve1.NoSuchService"
+#define BUS_ERROR_DNSSEC_FAILED "org.freedesktop.resolve1.DnssecFailed"
+#define BUS_ERROR_NO_TRUST_ANCHOR "org.freedesktop.resolve1.NoTrustAnchor"
+#define BUS_ERROR_RR_TYPE_UNSUPPORTED "org.freedesktop.resolve1.ResourceRecordTypeUnsupported"
+#define BUS_ERROR_NO_SUCH_LINK "org.freedesktop.resolve1.NoSuchLink"
+#define BUS_ERROR_LINK_BUSY "org.freedesktop.resolve1.LinkBusy"
+#define BUS_ERROR_NETWORK_DOWN "org.freedesktop.resolve1.NetworkDown"
 #define _BUS_ERROR_DNS "org.freedesktop.resolve1.DnsError."
 
 #define BUS_ERROR_NO_SUCH_TRANSFER "org.freedesktop.import1.NoSuchTransfer"

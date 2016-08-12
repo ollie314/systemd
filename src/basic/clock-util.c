@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -21,6 +19,9 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <stdbool.h>
+#include <time.h>
 #include <linux/rtc.h>
 #include <stdio.h>
 #include <sys/ioctl.h>
@@ -68,8 +69,11 @@ int clock_set_hwclock(const struct tm *tm) {
         return 0;
 }
 
-int clock_is_localtime(void) {
+int clock_is_localtime(const char* adjtime_path) {
         _cleanup_fclose_ FILE *f;
+
+        if (adjtime_path == NULL)
+                adjtime_path = "/etc/adjtime";
 
         /*
          * The third line of adjtime is "UTC" or "LOCAL" or nothing.
@@ -78,7 +82,7 @@ int clock_is_localtime(void) {
          *   0
          *   UTC
          */
-        f = fopen("/etc/adjtime", "re");
+        f = fopen(adjtime_path, "re");
         if (f) {
                 char line[LINE_MAX];
                 bool b;
@@ -87,7 +91,8 @@ int clock_is_localtime(void) {
                         fgets(line, sizeof(line), f) &&
                         fgets(line, sizeof(line), f);
                 if (!b)
-                        return -EIO;
+                        /* less than three lines -> default to UTC */
+                        return 0;
 
                 truncate_nl(line);
                 return streq(line, "LOCAL");
@@ -95,6 +100,7 @@ int clock_is_localtime(void) {
         } else if (errno != ENOENT)
                 return -errno;
 
+        /* adjtime not present -> default to UTC */
         return 0;
 }
 
@@ -119,7 +125,8 @@ int clock_set_timezone(int *min) {
          * have read from the RTC.
          */
         if (settimeofday(tv_null, &tz) < 0)
-                return -errno;
+                return negative_errno();
+
         if (min)
                 *min = minutesdelta;
         return 0;
@@ -141,4 +148,18 @@ int clock_reset_timewarp(void) {
                 return -errno;
 
         return 0;
+}
+
+#define TIME_EPOCH_USEC ((usec_t) TIME_EPOCH * USEC_PER_SEC)
+
+int clock_apply_epoch(void) {
+        struct timespec ts;
+
+        if (now(CLOCK_REALTIME) >= TIME_EPOCH_USEC)
+                return 0;
+
+        if (clock_settime(CLOCK_REALTIME, timespec_store(&ts, TIME_EPOCH_USEC)) < 0)
+                return -errno;
+
+        return 1;
 }

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -21,9 +19,6 @@
 
 #include <fcntl.h>
 #include <getopt.h>
-#ifdef HAVE_GNUTLS
-#include <gnutls/gnutls.h>
-#endif
 #include <microhttpd.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,9 +40,12 @@
 #include "sigbus.h"
 #include "util.h"
 
+#define JOURNAL_WAIT_TIMEOUT (10*USEC_PER_SEC)
+
 static char *arg_key_pem = NULL;
 static char *arg_cert_pem = NULL;
 static char *arg_trust_pem = NULL;
+static char *arg_directory = NULL;
 
 typedef struct RequestMeta {
         sd_journal *journal;
@@ -118,16 +116,21 @@ static int open_journal(RequestMeta *m) {
         if (m->journal)
                 return 0;
 
-        return sd_journal_open(&m->journal, SD_JOURNAL_LOCAL_ONLY|SD_JOURNAL_SYSTEM);
+        if (arg_directory)
+                return sd_journal_open_directory(&m->journal, arg_directory, 0);
+        else
+                return sd_journal_open(&m->journal, SD_JOURNAL_LOCAL_ONLY|SD_JOURNAL_SYSTEM);
 }
 
 static int request_meta_ensure_tmp(RequestMeta *m) {
+        assert(m);
+
         if (m->tmp)
                 rewind(m->tmp);
         else {
                 int fd;
 
-                fd = open_tmpfile("/tmp", O_RDWR|O_CLOEXEC);
+                fd = open_tmpfile_unlinkable("/tmp", O_RDWR|O_CLOEXEC);
                 if (fd < 0)
                         return fd;
 
@@ -181,11 +184,13 @@ static ssize_t request_reader_entries(
                 } else if (r == 0) {
 
                         if (m->follow) {
-                                r = sd_journal_wait(m->journal, (uint64_t) -1);
+                                r = sd_journal_wait(m->journal, (uint64_t) JOURNAL_WAIT_TIMEOUT);
                                 if (r < 0) {
                                         log_error_errno(r, "Couldn't wait for journal event: %m");
                                         return MHD_CONTENT_READER_END_WITH_ERROR;
                                 }
+                                if (r == SD_JOURNAL_NOP)
+                                        break;
 
                                 continue;
                         }
@@ -235,12 +240,17 @@ static ssize_t request_reader_entries(
                 m->size = (uint64_t) sz;
         }
 
+        if (m->tmp == NULL && m->follow)
+                return 0;
+
         if (fseeko(m->tmp, pos, SEEK_SET) < 0) {
                 log_error_errno(errno, "Failed to seek to position: %m");
                 return MHD_CONTENT_READER_END_WITH_ERROR;
         }
 
         n = m->size - pos;
+        if (n < 1)
+                return 0;
         if (n > max)
                 n = max;
 
@@ -694,7 +704,7 @@ static int request_handler_file(
         if (fstat(fd, &st) < 0)
                 return mhd_respondf(connection, MHD_HTTP_INTERNAL_SERVER_ERROR, "Failed to stat file: %m\n");
 
-        response = MHD_create_response_from_fd_at_offset(st.st_size, fd, 0);
+        response = MHD_create_response_from_fd_at_offset64(st.st_size, fd, 0);
         if (!response)
                 return respond_oom(connection);
 
@@ -709,7 +719,7 @@ static int request_handler_file(
 }
 
 static int get_virtualization(char **v) {
-        _cleanup_bus_unref_ sd_bus *bus = NULL;
+        _cleanup_(sd_bus_unrefp) sd_bus *bus = NULL;
         char *b = NULL;
         int r;
 
@@ -834,7 +844,7 @@ static int request_handler(
         assert(method);
 
         if (!streq(method, "GET"))
-                return mhd_respond(connection, MHD_HTTP_METHOD_NOT_ACCEPTABLE,
+                return mhd_respond(connection, MHD_HTTP_NOT_ACCEPTABLE,
                                    "Unsupported method.\n");
 
 
@@ -875,7 +885,8 @@ static void help(void) {
                "     --version        Show package version\n"
                "     --cert=CERT.PEM  Server certificate in PEM format\n"
                "     --key=KEY.PEM    Server key in PEM format\n"
-               "     --trust=CERT.PEM Certificat authority certificate in PEM format\n",
+               "     --trust=CERT.PEM Certificate authority certificate in PEM format\n"
+               "  -D --directory=PATH Serve journal files in directory\n",
                program_invocation_short_name);
 }
 
@@ -890,11 +901,12 @@ static int parse_argv(int argc, char *argv[]) {
         int r, c;
 
         static const struct option options[] = {
-                { "help",    no_argument,       NULL, 'h'         },
-                { "version", no_argument,       NULL, ARG_VERSION },
-                { "key",     required_argument, NULL, ARG_KEY     },
-                { "cert",    required_argument, NULL, ARG_CERT    },
-                { "trust",   required_argument, NULL, ARG_TRUST   },
+                { "help",      no_argument,       NULL, 'h'           },
+                { "version",   no_argument,       NULL, ARG_VERSION   },
+                { "key",       required_argument, NULL, ARG_KEY       },
+                { "cert",      required_argument, NULL, ARG_CERT      },
+                { "trust",     required_argument, NULL, ARG_TRUST     },
+                { "directory", required_argument, NULL, 'D' },
                 {}
         };
 
@@ -948,6 +960,9 @@ static int parse_argv(int argc, char *argv[]) {
 #else
                         log_error("Option --trust is not available.");
 #endif
+                case 'D':
+                        arg_directory = optarg;
+                        break;
 
                 case '?':
                         return -EINVAL;

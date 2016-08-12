@@ -15,15 +15,15 @@
  * along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
 
-#include <stdio.h>
-#include <stddef.h>
-#include <string.h>
 #include <errno.h>
-#include <signal.h>
 #include <getopt.h>
-#include <time.h>
-#include <sys/time.h>
+#include <signal.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
 #include <sys/epoll.h>
+#include <sys/time.h>
+#include <time.h>
 
 #include "fd-util.h"
 #include "formats-util.h"
@@ -40,7 +40,7 @@ static void sig_handler(int signum) {
 static void print_device(struct udev_device *device, const char *source, int prop) {
         struct timespec ts;
 
-        clock_gettime(CLOCK_MONOTONIC, &ts);
+        assert_se(clock_gettime(CLOCK_MONOTONIC, &ts) == 0);
         printf("%-6s[%"PRI_TIME".%06ld] %-8s %s (%s)\n",
                source,
                ts.tv_sec, ts.tv_nsec/1000,
@@ -100,7 +100,7 @@ static int adm_monitor(struct udev *udev, int argc, char *argv[]) {
         udev_list_init(udev, &subsystem_match_list, true);
         udev_list_init(udev, &tag_match_list, true);
 
-        while((c = getopt_long(argc, argv, "pekus:t:h", options, NULL)) >= 0)
+        while ((c = getopt_long(argc, argv, "pekus:t:h", options, NULL)) >= 0)
                 switch (c) {
                 case 'p':
                 case 'e':
@@ -150,6 +150,9 @@ static int adm_monitor(struct udev *udev, int argc, char *argv[]) {
         sigaddset(&mask, SIGINT);
         sigaddset(&mask, SIGTERM);
         sigprocmask(SIG_UNBLOCK, &mask, NULL);
+
+        /* Callers are expecting to see events as they happen: Line buffering */
+        setlinebuf(stdout);
 
         fd_ep = epoll_create1(EPOLL_CLOEXEC);
         if (fd_ep < 0) {

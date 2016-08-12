@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -127,18 +125,16 @@ int import_fork_tar_x(const char *path, pid_t *ret) {
                 if (null_fd != STDOUT_FILENO)
                         null_fd = safe_close(null_fd);
 
-                fd_cloexec(STDIN_FILENO, false);
-                fd_cloexec(STDOUT_FILENO, false);
-                fd_cloexec(STDERR_FILENO, false);
+                stdio_unset_cloexec();
 
                 if (unshare(CLONE_NEWNET) < 0)
                         log_error_errno(errno, "Failed to lock tar into network namespace, ignoring: %m");
 
-                r = capability_bounding_set_drop(~retain, true);
+                r = capability_bounding_set_drop(retain, true);
                 if (r < 0)
                         log_error_errno(r, "Failed to drop capabilities, ignoring: %m");
 
-                execlp("tar", "tar", "--numeric-owner", "-C", path, "-px", NULL);
+                execlp("tar", "tar", "--numeric-owner", "-C", path, "-px", "--xattrs", "--xattrs-include=*", NULL);
                 log_error_errno(errno, "Failed to execute tar: %m");
                 _exit(EXIT_FAILURE);
         }
@@ -201,18 +197,16 @@ int import_fork_tar_c(const char *path, pid_t *ret) {
                 if (null_fd != STDIN_FILENO)
                         null_fd = safe_close(null_fd);
 
-                fd_cloexec(STDIN_FILENO, false);
-                fd_cloexec(STDOUT_FILENO, false);
-                fd_cloexec(STDERR_FILENO, false);
+                stdio_unset_cloexec();
 
                 if (unshare(CLONE_NEWNET) < 0)
                         log_error_errno(errno, "Failed to lock tar into network namespace, ignoring: %m");
 
-                r = capability_bounding_set_drop(~retain, true);
+                r = capability_bounding_set_drop(retain, true);
                 if (r < 0)
                         log_error_errno(r, "Failed to drop capabilities, ignoring: %m");
 
-                execlp("tar", "tar", "-C", path, "-c", ".", NULL);
+                execlp("tar", "tar", "-C", path, "-c", "--xattrs", "--xattrs-include=*", ".", NULL);
                 log_error_errno(errno, "Failed to execute tar: %m");
                 _exit(EXIT_FAILURE);
         }

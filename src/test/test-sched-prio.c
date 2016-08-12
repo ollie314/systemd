@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -21,10 +19,14 @@
 
 #include <sched.h>
 
-#include "manager.h"
 #include "macro.h"
+#include "manager.h"
+#include "rm-rf.h"
+#include "test-helper.h"
+#include "tests.h"
 
 int main(int argc, char *argv[]) {
+        _cleanup_(rm_rf_physical_and_freep) char *runtime_dir = NULL;
         Manager *m = NULL;
         Unit *idle_ok, *idle_bad, *rr_ok, *rr_bad, *rr_sched;
         Service *ser;
@@ -32,11 +34,13 @@ int main(int argc, char *argv[]) {
         FDSet *fdset = NULL;
         int r;
 
+        assert_se(runtime_dir = setup_fake_runtime_dir());
+
         /* prepare the test */
         assert_se(set_unit_path(TEST_DIR) >= 0);
-        r = manager_new(MANAGER_USER, true, &m);
-        if (IN_SET(r, -EPERM, -EACCES, -EADDRINUSE, -EHOSTDOWN, -ENOENT, -ENOEXEC)) {
-                printf("Skipping test: manager_new: %s", strerror(-r));
+        r = manager_new(UNIT_FILE_USER, true, &m);
+        if (MANAGER_SKIP_TEST(r)) {
+                printf("Skipping test: manager_new: %s\n", strerror(-r));
                 return EXIT_TEST_SKIP;
         }
         assert_se(r >= 0);

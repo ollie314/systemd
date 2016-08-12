@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -23,6 +21,7 @@
 
 #include <inttypes.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <sys/types.h>
 
 int copy_file_fd(const char *from, int to, bool try_reflink);
@@ -31,6 +30,7 @@ int copy_file_atomic(const char *from, const char *to, mode_t mode, bool replace
 int copy_tree(const char *from, const char *to, bool merge);
 int copy_tree_at(int fdf, const char *from, int fdt, const char *to, bool merge);
 int copy_directory_fd(int dirfd, const char *to, bool merge);
+int copy_directory(const char *from, const char *to, bool merge);
 int copy_bytes(int fdf, int fdt, uint64_t max_bytes, bool try_reflink);
 int copy_times(int fdf, int fdt);
 int copy_xattr(int fdf, int fdt);

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -36,7 +34,7 @@
 #include "util.h"
 
 #define GET_CONTAINER(m, i) ((i) < (m)->n_containers ? (struct rtattr*)((uint8_t*)(m)->hdr + (m)->containers[i].offset) : NULL)
-#define PUSH_CONTAINER(m, new) (m)->container_offsets[(m)->n_containers ++] = (uint8_t*)(new) - (uint8_t*)(m)->hdr;
+#define PUSH_CONTAINER(m, new) (m)->container_offsets[(m)->n_containers++] = (uint8_t*)(new) - (uint8_t*)(m)->hdr;
 
 #define RTA_TYPE(rta) ((rta)->rta_type & NLA_TYPE_MASK)
 #define RTA_FLAGS(rta) ((rta)->rta_type & ~NLA_TYPE_MASK)
@@ -65,7 +63,7 @@ int message_new_empty(sd_netlink *rtnl, sd_netlink_message **ret) {
 }
 
 int message_new(sd_netlink *rtnl, sd_netlink_message **ret, uint16_t type) {
-        _cleanup_netlink_message_unref_ sd_netlink_message *m = NULL;
+        _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *m = NULL;
         const NLType *nl_type;
         size_t size;
         int r;
@@ -109,10 +107,7 @@ int sd_netlink_message_request_dump(sd_netlink_message *m, int dump) {
                       m->hdr->nlmsg_type == RTM_GETNEIGH,
                       -EINVAL);
 
-        if (dump)
-                m->hdr->nlmsg_flags |= NLM_F_DUMP;
-        else
-                m->hdr->nlmsg_flags &= ~NLM_F_DUMP;
+        SET_FLAG(m->hdr->nlmsg_flags, NLM_F_DUMP, dump);
 
         return 0;
 }
@@ -125,7 +120,9 @@ sd_netlink_message *sd_netlink_message_ref(sd_netlink_message *m) {
 }
 
 sd_netlink_message *sd_netlink_message_unref(sd_netlink_message *m) {
-        if (m && REFCNT_DEC(m->n_ref) == 0) {
+        sd_netlink_message *t;
+
+        while (m && REFCNT_DEC(m->n_ref) == 0) {
                 unsigned i;
 
                 free(m->hdr);
@@ -133,9 +130,9 @@ sd_netlink_message *sd_netlink_message_unref(sd_netlink_message *m) {
                 for (i = 0; i <= m->n_containers; i++)
                         free(m->containers[i].attributes);
 
-                sd_netlink_message_unref(m->next);
-
-                free(m);
+                t = m;
+                m = m->next;
+                free(t);
         }
 
         return NULL;
@@ -212,11 +209,11 @@ static int add_rtattr(sd_netlink_message *m, unsigned short type, const void *da
                  * and gives us too little data (so don't do that)
                  */
                 padding = mempcpy(RTA_DATA(rta), data, data_length);
-        else {
+
+        else
                 /* if no data was passed, make sure we still initialize the padding
                    note that we can have data_length > 0 (used by some containers) */
                 padding = RTA_DATA(rta);
-        }
 
         /* make sure also the padding at the end of the message is initialized */
         padding_length = (uint8_t*)m->hdr + message_length - (uint8_t*)padding;
@@ -342,6 +339,19 @@ int sd_netlink_message_append_u32(sd_netlink_message *m, unsigned short type, ui
         return 0;
 }
 
+int sd_netlink_message_append_data(sd_netlink_message *m, unsigned short type, const void *data, size_t len) {
+        int r;
+
+        assert_return(m, -EINVAL);
+        assert_return(!m->sealed, -EPERM);
+
+        r = add_rtattr(m, type, data, len);
+        if (r < 0)
+                return r;
+
+        return 0;
+}
+
 int sd_netlink_message_append_in_addr(sd_netlink_message *m, unsigned short type, const struct in_addr *data) {
         int r;
 
@@ -456,7 +466,7 @@ int sd_netlink_message_open_container(sd_netlink_message *m, unsigned short type
         if (r < 0)
                 return r;
 
-        m->containers[m->n_containers ++].offset = r;
+        m->containers[m->n_containers++].offset = r;
 
         return 0;
 }
@@ -487,7 +497,7 @@ int sd_netlink_message_open_container_union(sd_netlink_message *m, unsigned shor
         if (r < 0)
                 return r;
 
-        m->containers[m->n_containers ++].offset = r;
+        m->containers[m->n_containers++].offset = r;
 
         return 0;
 }
@@ -499,7 +509,7 @@ int sd_netlink_message_close_container(sd_netlink_message *m) {
         assert_return(m->n_containers > 0, -EINVAL);
 
         m->containers[m->n_containers].type_system = NULL;
-        m->n_containers --;
+        m->n_containers--;
 
         return 0;
 }
@@ -517,7 +527,7 @@ static int netlink_message_read_internal(sd_netlink_message *m, unsigned short t
 
         attribute = &m->containers[m->n_containers].attributes[type];
 
-        if(!attribute->offset)
+        if (!attribute->offset)
                 return -ENODATA;
 
         rta = (struct rtattr*)((uint8_t *) m->hdr + attribute->offset);
@@ -724,7 +734,7 @@ static int netlink_container_parse(sd_netlink_message *m,
         _cleanup_free_ struct netlink_attribute *attributes = NULL;
 
         attributes = new0(struct netlink_attribute, count);
-        if(!attributes)
+        if (!attributes)
                 return -ENOMEM;
 
         for (; RTA_OK(rta, rt_len); rta = RTA_NEXT(rta, rt_len)) {
@@ -831,7 +841,7 @@ int sd_netlink_message_enter_container(sd_netlink_message *m, unsigned short typ
         else
                 size = (size_t)r;
 
-        m->n_containers ++;
+        m->n_containers++;
 
         r = netlink_container_parse(m,
                                     &m->containers[m->n_containers],
@@ -839,7 +849,7 @@ int sd_netlink_message_enter_container(sd_netlink_message *m, unsigned short typ
                                     container,
                                     size);
         if (r < 0) {
-                m->n_containers --;
+                m->n_containers--;
                 return r;
         }
 
@@ -856,7 +866,7 @@ int sd_netlink_message_exit_container(sd_netlink_message *m) {
         m->containers[m->n_containers].attributes = mfree(m->containers[m->n_containers].attributes);
         m->containers[m->n_containers].type_system = NULL;
 
-        m->n_containers --;
+        m->n_containers--;
 
         return 0;
 }

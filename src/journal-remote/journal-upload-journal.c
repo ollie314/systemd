@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,15 +17,15 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <stdbool.h>
-
 #include <curl/curl.h>
+#include <stdbool.h>
 
 #include "alloc-util.h"
 #include "journal-upload.h"
 #include "log.h"
 #include "utf8.h"
 #include "util.h"
+#include "sd-daemon.h"
 
 /**
  * Write up to size bytes to buf. Return negative on error, and number of
@@ -55,7 +53,7 @@ static ssize_t write_entry(char *buf, size_t size, Uploader *u) {
                                 /* not enough space */
                                 return pos;
 
-                        u->entry_state ++;
+                        u->entry_state++;
 
                         if (pos + r == size) {
                                 /* exactly one character short, but we don't need it */
@@ -79,7 +77,7 @@ static ssize_t write_entry(char *buf, size_t size, Uploader *u) {
                                 /* not enough space */
                                 return pos;
 
-                        u->entry_state ++;
+                        u->entry_state++;
 
                         if (r + pos == size) {
                                 /* exactly one character short, but we don't need it */
@@ -104,7 +102,7 @@ static ssize_t write_entry(char *buf, size_t size, Uploader *u) {
                                 /* not enough space */
                                 return pos;
 
-                        u->entry_state ++;
+                        u->entry_state++;
 
                         if (r + pos == size) {
                                 /* exactly one character short, but we don't need it */
@@ -129,7 +127,7 @@ static ssize_t write_entry(char *buf, size_t size, Uploader *u) {
                                 /* not enough space */
                                 return pos;
 
-                        u->entry_state ++;
+                        u->entry_state++;
 
                         if (r + pos == size) {
                                 /* exactly one character short, but we don't need it */
@@ -159,7 +157,7 @@ static ssize_t write_entry(char *buf, size_t size, Uploader *u) {
                                 continue;
                         }
 
-                        u->entry_state ++;
+                        u->entry_state++;
                 }       /* fall through */
 
                 case ENTRY_TEXT_FIELD:
@@ -209,7 +207,7 @@ static ssize_t write_entry(char *buf, size_t size, Uploader *u) {
                         pos += len + 1;
 
                         u->field_pos = len + 1;
-                        u->entry_state ++;
+                        u->entry_state++;
                 }       /* fall through */
 
                 case ENTRY_BINARY_FIELD_SIZE: {
@@ -223,7 +221,7 @@ static ssize_t write_entry(char *buf, size_t size, Uploader *u) {
                         memcpy(buf + pos, &le64, 8);
                         pos += 8;
 
-                        u->entry_state ++;
+                        u->entry_state++;
                         continue;
                 }
 
@@ -233,8 +231,8 @@ static ssize_t write_entry(char *buf, size_t size, Uploader *u) {
                                 return pos;
 
                         buf[pos++] = '\n';
-                        u->entry_state ++;
-                        u->entries_sent ++;
+                        u->entry_state++;
+                        u->entries_sent++;
 
                         return pos;
 
@@ -243,6 +241,22 @@ static ssize_t write_entry(char *buf, size_t size, Uploader *u) {
                 }
         }
         assert_not_reached("WTF?");
+}
+
+static inline void check_update_watchdog(Uploader *u) {
+        usec_t after;
+        usec_t elapsed_time;
+
+        if (u->watchdog_usec <= 0)
+                return;
+
+        after = now(CLOCK_MONOTONIC);
+        elapsed_time = usec_sub(after, u->watchdog_timestamp);
+        if (elapsed_time > u->watchdog_usec / 2) {
+                log_debug("Update watchdog timer");
+                sd_notify(false, "WATCHDOG=1");
+                u->watchdog_timestamp = after;
+        }
 }
 
 static size_t journal_input_callback(void *buf, size_t size, size_t nmemb, void *userp) {
@@ -254,6 +268,8 @@ static size_t journal_input_callback(void *buf, size_t size, size_t nmemb, void 
 
         assert(u);
         assert(nmemb <= SSIZE_MAX / size);
+
+        check_update_watchdog(u);
 
         j = u->journal;
 
@@ -313,6 +329,9 @@ void close_journal_input(Uploader *u) {
 static int process_journal_input(Uploader *u, int skip) {
         int r;
 
+        if (u->uploading)
+                return 0;
+
         r = sd_journal_next_skip(u->journal, skip);
         if (r < 0)
                 return log_error_errno(r, "Failed to skip to next entry: %m");
@@ -350,10 +369,8 @@ static int dispatch_journal_input(sd_event_source *event,
 
         assert(u);
 
-        if (u->uploading) {
-                log_warning("dispatch_journal_input called when uploading, ignoring.");
+        if (u->uploading)
                 return 0;
-        }
 
         log_debug("Detected journal input, checking for new data.");
         return check_journal_input(u);

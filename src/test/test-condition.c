@@ -25,6 +25,7 @@
 #include "audit-util.h"
 #include "condition.h"
 #include "hostname-util.h"
+#include "id128-util.h"
 #include "ima-util.h"
 #include "log.h"
 #include "macro.h"
@@ -142,9 +143,14 @@ static void test_condition_test_host(void) {
         hostname = gethostname_malloc();
         assert_se(hostname);
 
-        condition = condition_new(CONDITION_HOST, hostname, false, false);
-        assert_se(condition_test(condition));
-        condition_free(condition);
+        /* if hostname looks like an id128 then skip testing it */
+        if (id128_is_valid(hostname))
+                log_notice("hostname is an id128, skipping test");
+        else {
+                condition = condition_new(CONDITION_HOST, hostname, false, false);
+                assert_se(condition_test(condition));
+                condition_free(condition);
+        }
 }
 
 static void test_condition_test_architecture(void) {
@@ -159,15 +165,15 @@ static void test_condition_test_architecture(void) {
         assert_se(sa);
 
         condition = condition_new(CONDITION_ARCHITECTURE, sa, false, false);
-        assert_se(condition_test(condition));
+        assert_se(condition_test(condition) > 0);
         condition_free(condition);
 
         condition = condition_new(CONDITION_ARCHITECTURE, "garbage value", false, false);
-        assert_se(condition_test(condition) < 0);
+        assert_se(condition_test(condition) == 0);
         condition_free(condition);
 
         condition = condition_new(CONDITION_ARCHITECTURE, sa, false, true);
-        assert_se(!condition_test(condition));
+        assert_se(condition_test(condition) == 0);
         condition_free(condition);
 }
 
@@ -203,7 +209,7 @@ static void test_condition_test_security(void) {
         condition_free(condition);
 
         condition = condition_new(CONDITION_SECURITY, "selinux", false, true);
-        assert_se(condition_test(condition) != mac_selinux_use());
+        assert_se(condition_test(condition) != mac_selinux_have());
         condition_free(condition);
 
         condition = condition_new(CONDITION_SECURITY, "ima", false, false);

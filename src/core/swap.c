@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -155,34 +153,34 @@ static void swap_done(Unit *u) {
         exec_command_done_array(s->exec_command, _SWAP_EXEC_COMMAND_MAX);
         s->control_command = NULL;
 
+        dynamic_creds_unref(&s->dynamic_creds);
+
         swap_unwatch_control_pid(s);
 
         s->timer_event_source = sd_event_source_unref(s->timer_event_source);
 }
 
-static int swap_arm_timer(Swap *s) {
+static int swap_arm_timer(Swap *s, usec_t usec) {
         int r;
 
         assert(s);
 
-        if (s->timeout_usec <= 0) {
-                s->timer_event_source = sd_event_source_unref(s->timer_event_source);
-                return 0;
-        }
-
         if (s->timer_event_source) {
-                r = sd_event_source_set_time(s->timer_event_source, now(CLOCK_MONOTONIC) + s->timeout_usec);
+                r = sd_event_source_set_time(s->timer_event_source, usec);
                 if (r < 0)
                         return r;
 
                 return sd_event_source_set_enabled(s->timer_event_source, SD_EVENT_ONESHOT);
         }
 
+        if (usec == USEC_INFINITY)
+                return 0;
+
         r = sd_event_add_time(
                         UNIT(s)->manager->event,
                         &s->timer_event_source,
                         CLOCK_MONOTONIC,
-                        now(CLOCK_MONOTONIC) + s->timeout_usec, 0,
+                        usec, 0,
                         swap_dispatch_timer, s);
         if (r < 0)
                 return r;
@@ -202,7 +200,7 @@ static int swap_add_device_links(Swap *s) {
                 return 0;
 
         if (is_device_path(s->what))
-                return unit_add_node_link(UNIT(s), s->what, UNIT(s)->manager->running_as == MANAGER_SYSTEM);
+                return unit_add_node_link(UNIT(s), s->what, MANAGER_IS_SYSTEM(UNIT(s)->manager), UNIT_BINDS_TO);
         else
                 /* File based swap devices need to be ordered after
                  * systemd-remount-fs.service, since they might need a
@@ -211,13 +209,24 @@ static int swap_add_device_links(Swap *s) {
 }
 
 static int swap_add_default_dependencies(Swap *s) {
+        int r;
+
         assert(s);
 
-        if (UNIT(s)->manager->running_as != MANAGER_SYSTEM)
+        if (!UNIT(s)->default_dependencies)
+                return 0;
+
+        if (!MANAGER_IS_SYSTEM(UNIT(s)->manager))
                 return 0;
 
         if (detect_container() > 0)
                 return 0;
+
+        /* swap units generated for the swap dev links are missing the
+         * ordering dep against the swap target. */
+        r = unit_add_dependency_by_name(UNIT(s), UNIT_BEFORE, SPECIAL_SWAP_TARGET, NULL, true);
+        if (r < 0)
+                return r;
 
         return unit_add_two_dependencies_by_name(UNIT(s), UNIT_BEFORE, UNIT_CONFLICTS, SPECIAL_UMOUNT_TARGET, NULL, true);
 }
@@ -331,11 +340,9 @@ static int swap_load(Unit *u) {
                 if (r < 0)
                         return r;
 
-                if (UNIT(s)->default_dependencies) {
-                        r = swap_add_default_dependencies(s);
-                        if (r < 0)
-                                return r;
-                }
+                r = swap_add_default_dependencies(s);
+                if (r < 0)
+                        return r;
         }
 
         return swap_verify(s);
@@ -543,10 +550,13 @@ static int swap_coldplug(Unit *u) {
                 if (r < 0)
                         return r;
 
-                r = swap_arm_timer(s);
+                r = swap_arm_timer(s, usec_add(u->state_change_timestamp.monotonic, s->timeout_usec));
                 if (r < 0)
                         return r;
         }
+
+        if (!IN_SET(new_state, SWAP_DEAD, SWAP_FAILED))
+                (void) unit_setup_dynamic_creds(u);
 
         swap_set_state(s, new_state);
         return 0;
@@ -601,13 +611,10 @@ static int swap_spawn(Swap *s, ExecCommand *c, pid_t *_pid) {
         pid_t pid;
         int r;
         ExecParameters exec_params = {
-                .apply_permissions = true,
-                .apply_chroot      = true,
-                .apply_tty_stdin   = true,
-                .bus_endpoint_fd   = -1,
-                .stdin_fd          = -1,
-                .stdout_fd         = -1,
-                .stderr_fd         = -1,
+                .flags     = EXEC_APPLY_PERMISSIONS|EXEC_APPLY_CHROOT|EXEC_APPLY_TTY_STDIN,
+                .stdin_fd  = -1,
+                .stdout_fd = -1,
+                .stderr_fd = -1,
         };
 
         assert(s);
@@ -624,12 +631,16 @@ static int swap_spawn(Swap *s, ExecCommand *c, pid_t *_pid) {
         if (r < 0)
                 goto fail;
 
-        r = swap_arm_timer(s);
+        r = unit_setup_dynamic_creds(UNIT(s));
+        if (r < 0)
+                return r;
+
+        r = swap_arm_timer(s, usec_add(now(CLOCK_MONOTONIC), s->timeout_usec));
         if (r < 0)
                 goto fail;
 
         exec_params.environment = UNIT(s)->manager->environment;
-        exec_params.confirm_spawn = UNIT(s)->manager->confirm_spawn;
+        exec_params.flags |= UNIT(s)->manager->confirm_spawn ? EXEC_CONFIRM_SPAWN : 0;
         exec_params.cgroup_supported = UNIT(s)->manager->cgroup_supported;
         exec_params.cgroup_path = UNIT(s)->cgroup_path;
         exec_params.cgroup_delegate = s->cgroup_context.delegate;
@@ -640,6 +651,7 @@ static int swap_spawn(Swap *s, ExecCommand *c, pid_t *_pid) {
                        &s->exec_context,
                        &exec_params,
                        s->exec_runtime,
+                       &s->dynamic_creds,
                        &pid);
         if (r < 0)
                 goto fail;
@@ -661,21 +673,23 @@ fail:
 static void swap_enter_dead(Swap *s, SwapResult f) {
         assert(s);
 
-        if (f != SWAP_SUCCESS)
+        if (s->result == SWAP_SUCCESS)
                 s->result = f;
+
+        swap_set_state(s, s->result != SWAP_SUCCESS ? SWAP_FAILED : SWAP_DEAD);
 
         exec_runtime_destroy(s->exec_runtime);
         s->exec_runtime = exec_runtime_unref(s->exec_runtime);
 
         exec_context_destroy_runtime_directory(&s->exec_context, manager_get_runtime_prefix(UNIT(s)->manager));
 
-        swap_set_state(s, s->result != SWAP_SUCCESS ? SWAP_FAILED : SWAP_DEAD);
+        dynamic_creds_destroy(&s->dynamic_creds);
 }
 
 static void swap_enter_active(Swap *s, SwapResult f) {
         assert(s);
 
-        if (f != SWAP_SUCCESS)
+        if (s->result == SWAP_SUCCESS)
                 s->result = f;
 
         swap_set_state(s, SWAP_ACTIVE);
@@ -686,7 +700,7 @@ static void swap_enter_signal(Swap *s, SwapState state, SwapResult f) {
 
         assert(s);
 
-        if (f != SWAP_SUCCESS)
+        if (s->result == SWAP_SUCCESS)
                 s->result = f;
 
         r = unit_kill_context(
@@ -701,7 +715,7 @@ static void swap_enter_signal(Swap *s, SwapState state, SwapResult f) {
                 goto fail;
 
         if (r > 0) {
-                r = swap_arm_timer(s);
+                r = swap_arm_timer(s, usec_add(now(CLOCK_MONOTONIC), s->timeout_usec));
                 if (r < 0)
                         goto fail;
 
@@ -810,6 +824,7 @@ fail:
 
 static int swap_start(Unit *u) {
         Swap *s = SWAP(u), *other;
+        int r;
 
         assert(s);
 
@@ -837,6 +852,12 @@ static int swap_start(Unit *u) {
         LIST_FOREACH_OTHERS(same_devnode, other, s)
                 if (UNIT(other)->job && UNIT(other)->job->state == JOB_RUNNING)
                         return -EAGAIN;
+
+        r = unit_start_limit_test(u);
+        if (r < 0) {
+                swap_enter_dead(s, SWAP_FAILURE_START_LIMIT_HIT);
+                return r;
+        }
 
         s->result = SWAP_SUCCESS;
         s->reset_cpu_usage = true;
@@ -976,7 +997,7 @@ static void swap_sigchld_event(Unit *u, pid_t pid, int code, int status) {
         else
                 assert_not_reached("Unknown code");
 
-        if (f != SWAP_SUCCESS)
+        if (s->result == SWAP_SUCCESS)
                 s->result = f;
 
         if (s->control_command) {
@@ -1206,7 +1227,7 @@ static Unit *swap_following(Unit *u) {
                 if (other->from_fragment)
                         return UNIT(other);
 
-        /* Otherwise make everybody follow the unit that's named after
+        /* Otherwise, make everybody follow the unit that's named after
          * the swap device in the kernel */
 
         if (streq_ptr(s->what, s->devnode))
@@ -1268,26 +1289,36 @@ static void swap_shutdown(Manager *m) {
         m->swaps_by_devnode = hashmap_free(m->swaps_by_devnode);
 }
 
-static int swap_enumerate(Manager *m) {
+static void swap_enumerate(Manager *m) {
         int r;
 
         assert(m);
 
         if (!m->proc_swaps) {
                 m->proc_swaps = fopen("/proc/swaps", "re");
-                if (!m->proc_swaps)
-                        return errno == ENOENT ? 0 : -errno;
+                if (!m->proc_swaps) {
+                        if (errno == ENOENT)
+                                log_debug("Not swap enabled, skipping enumeration");
+                        else
+                                log_error_errno(errno, "Failed to open /proc/swaps: %m");
+
+                        return;
+                }
 
                 r = sd_event_add_io(m->event, &m->swap_event_source, fileno(m->proc_swaps), EPOLLPRI, swap_dispatch_io, m);
-                if (r < 0)
+                if (r < 0) {
+                        log_error_errno(r, "Failed to watch /proc/swaps: %m");
                         goto fail;
+                }
 
                 /* Dispatch this before we dispatch SIGCHLD, so that
                  * we always get the events from /proc/swaps before
                  * the SIGCHLD of /sbin/swapon. */
                 r = sd_event_source_set_priority(m->swap_event_source, -10);
-                if (r < 0)
+                if (r < 0) {
+                        log_error_errno(r, "Failed to change /proc/swaps priority: %m");
                         goto fail;
+                }
 
                 (void) sd_event_source_set_description(m->swap_event_source, "swap-proc");
         }
@@ -1296,11 +1327,10 @@ static int swap_enumerate(Manager *m) {
         if (r < 0)
                 goto fail;
 
-        return 0;
+        return;
 
 fail:
         swap_shutdown(m);
-        return r;
 }
 
 int swap_process_device_new(Manager *m, struct udev_device *dev) {
@@ -1380,17 +1410,21 @@ static int swap_kill(Unit *u, KillWho who, int signo, sd_bus_error *error) {
         return unit_kill_common(u, who, signo, -1, SWAP(u)->control_pid, error);
 }
 
-static int swap_get_timeout(Unit *u, uint64_t *timeout) {
+static int swap_get_timeout(Unit *u, usec_t *timeout) {
         Swap *s = SWAP(u);
+        usec_t t;
         int r;
 
         if (!s->timer_event_source)
                 return 0;
 
-        r = sd_event_source_get_time(s->timer_event_source, timeout);
+        r = sd_event_source_get_time(s->timer_event_source, &t);
         if (r < 0)
                 return r;
+        if (t == USEC_INFINITY)
+                return 0;
 
+        *timeout = t;
         return 1;
 }
 
@@ -1409,6 +1443,14 @@ static bool swap_supported(void) {
         return supported;
 }
 
+static int swap_control_pid(Unit *u) {
+        Swap *s = SWAP(u);
+
+        assert(s);
+
+        return s->control_pid;
+}
+
 static const char* const swap_exec_command_table[_SWAP_EXEC_COMMAND_MAX] = {
         [SWAP_EXEC_ACTIVATE] = "ExecActivate",
         [SWAP_EXEC_DEACTIVATE] = "ExecDeactivate",
@@ -1422,7 +1464,8 @@ static const char* const swap_result_table[_SWAP_RESULT_MAX] = {
         [SWAP_FAILURE_TIMEOUT] = "timeout",
         [SWAP_FAILURE_EXIT_CODE] = "exit-code",
         [SWAP_FAILURE_SIGNAL] = "signal",
-        [SWAP_FAILURE_CORE_DUMP] = "core-dump"
+        [SWAP_FAILURE_CORE_DUMP] = "core-dump",
+        [SWAP_FAILURE_START_LIMIT_HIT] = "start-limit-hit",
 };
 
 DEFINE_STRING_TABLE_LOOKUP(swap_result, SwapResult);
@@ -1433,15 +1476,13 @@ const UnitVTable swap_vtable = {
         .cgroup_context_offset = offsetof(Swap, cgroup_context),
         .kill_context_offset = offsetof(Swap, kill_context),
         .exec_runtime_offset = offsetof(Swap, exec_runtime),
+        .dynamic_creds_offset = offsetof(Swap, dynamic_creds),
 
         .sections =
                 "Unit\0"
                 "Swap\0"
                 "Install\0",
         .private_section = "Swap",
-
-        .no_alias = true,
-        .no_instances = true,
 
         .init = swap_init,
         .load = swap_load,
@@ -1469,6 +1510,8 @@ const UnitVTable swap_vtable = {
         .sigchld_event = swap_sigchld_event,
 
         .reset_failed = swap_reset_failed,
+
+        .control_pid = swap_control_pid,
 
         .bus_vtable = bus_swap_vtable,
         .bus_set_property = bus_swap_set_property,

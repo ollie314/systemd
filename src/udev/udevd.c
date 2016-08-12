@@ -47,7 +47,6 @@
 #include "cgroup-util.h"
 #include "cpu-set-util.h"
 #include "dev-setup.h"
-#include "event-util.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "formats-util.h"
@@ -191,7 +190,7 @@ static void worker_free(struct worker *worker) {
 
         assert(worker->manager);
 
-        hashmap_remove(worker->manager->workers, UINT_TO_PTR(worker->pid));
+        hashmap_remove(worker->manager->workers, PID_TO_PTR(worker->pid));
         udev_monitor_unref(worker->monitor);
         event_free(worker->event);
 
@@ -234,7 +233,7 @@ static int worker_new(struct worker **ret, Manager *manager, struct udev_monitor
         if (r < 0)
                 return r;
 
-        r = hashmap_put(manager->workers, UINT_TO_PTR(pid), worker);
+        r = hashmap_put(manager->workers, PID_TO_PTR(pid), worker);
         if (r < 0)
                 return r;
 
@@ -350,7 +349,7 @@ static void worker_spawn(Manager *manager, struct event *event) {
         switch (pid) {
         case 0: {
                 struct udev_device *dev = NULL;
-                _cleanup_netlink_unref_ sd_netlink *rtnl = NULL;
+                _cleanup_(sd_netlink_unrefp) sd_netlink *rtnl = NULL;
                 int fd_monitor;
                 _cleanup_close_ int fd_signal = -1, fd_ep = -1;
                 struct epoll_event ep_signal = { .events = EPOLLIN };
@@ -369,7 +368,6 @@ static void worker_spawn(Manager *manager, struct event *event) {
                 manager->monitor = udev_monitor_unref(manager->monitor);
                 manager->ctrl_conn_blocking = udev_ctrl_connection_unref(manager->ctrl_conn_blocking);
                 manager->ctrl = udev_ctrl_unref(manager->ctrl);
-                manager->ctrl_conn_blocking = udev_ctrl_connection_unref(manager->ctrl_conn_blocking);
                 manager->worker_watch[READ_END] = safe_close(manager->worker_watch[READ_END]);
 
                 manager->ctrl_event = sd_event_source_unref(manager->ctrl_event);
@@ -401,10 +399,11 @@ static void worker_spawn(Manager *manager, struct event *event) {
                         goto out;
                 }
 
-                /* request TERM signal if parent exits */
-                prctl(PR_SET_PDEATHSIG, SIGTERM);
+                /* Request TERM signal if parent exits.
+                   Ignore error, not much we can do in that case. */
+                (void) prctl(PR_SET_PDEATHSIG, SIGTERM);
 
-                /* reset OOM score, we only protect the main daemon */
+                /* Reset OOM score, we only protect the main daemon. */
                 write_string_file("/proc/self/oom_score_adj", "0", 0);
 
                 for (;;) {
@@ -891,7 +890,7 @@ static int on_worker(sd_event_source *s, int fd, uint32_t revents, void *userdat
                 }
 
                 /* lookup worker who sent the signal */
-                worker = hashmap_get(manager->workers, UINT_TO_PTR(ucred->pid));
+                worker = hashmap_get(manager->workers, PID_TO_PTR(ucred->pid));
                 if (!worker) {
                         log_debug("worker ["PID_FMT"] returned, but is no longer tracked", ucred->pid);
                         continue;
@@ -1195,7 +1194,7 @@ static int on_sigchld(sd_event_source *s, const struct signalfd_siginfo *si, voi
                 if (pid <= 0)
                         break;
 
-                worker = hashmap_get(manager->workers, UINT_TO_PTR(pid));
+                worker = hashmap_get(manager->workers, PID_TO_PTR(pid));
                 if (!worker) {
                         log_warning("worker ["PID_FMT"] is unknown, ignoring", pid);
                         continue;
@@ -1257,7 +1256,7 @@ static int on_post(sd_event_source *s, void *userdata) {
                                         return r;
                         } else if (manager->cgroup)
                                 /* cleanup possible left-over processes in our cgroup */
-                                cg_kill(SYSTEMD_CGROUP_CONTROLLER, manager->cgroup, SIGKILL, false, true, NULL);
+                                cg_kill(SYSTEMD_CGROUP_CONTROLLER, manager->cgroup, SIGKILL, CGROUP_IGNORE_SELF, NULL, NULL, NULL);
                 }
         }
 
@@ -1558,7 +1557,7 @@ static int manager_new(Manager **ret, int fd_ctrl, int fd_uevent, const char *cg
 
         r = sd_event_default(&manager->event);
         if (r < 0)
-                return log_error_errno(errno, "could not allocate event loop: %m");
+                return log_error_errno(r, "could not allocate event loop: %m");
 
         r = sd_event_add_signal(manager->event, NULL, SIGINT, on_sigterm, manager);
         if (r < 0)
@@ -1651,7 +1650,8 @@ exit:
 
 int main(int argc, char *argv[]) {
         _cleanup_free_ char *cgroup = NULL;
-        int r, fd_ctrl, fd_uevent;
+        int fd_ctrl = -1, fd_uevent = -1;
+        int r;
 
         log_set_target(LOG_TARGET_AUTO);
         log_parse_environment();
@@ -1695,7 +1695,7 @@ int main(int argc, char *argv[]) {
 
         umask(022);
 
-        r = mac_selinux_init("/dev");
+        r = mac_selinux_init();
         if (r < 0) {
                 log_error_errno(r, "could not initialize labelling: %m");
                 goto exit;
@@ -1715,7 +1715,7 @@ int main(int argc, char *argv[]) {
                    by PID1. otherwise we are not guaranteed to have a dedicated cgroup */
                 r = cg_pid_get_path(SYSTEMD_CGROUP_CONTROLLER, 0, &cgroup);
                 if (r < 0) {
-                        if (r == -ENOENT || r == -ENOEXEC)
+                        if (r == -ENOENT || r == -ENOMEDIUM)
                                 log_debug_errno(r, "did not find dedicated cgroup: %m");
                         else
                                 log_warning_errno(r, "failed to get cgroup: %m");

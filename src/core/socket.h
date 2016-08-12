@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -22,10 +20,11 @@
 ***/
 
 typedef struct Socket Socket;
+typedef struct SocketPeer SocketPeer;
 
-#include "socket-util.h"
 #include "mount.h"
 #include "service.h"
+#include "socket-util.h"
 
 typedef enum SocketExecCommand {
         SOCKET_EXEC_START_PRE,
@@ -54,7 +53,9 @@ typedef enum SocketResult {
         SOCKET_FAILURE_EXIT_CODE,
         SOCKET_FAILURE_SIGNAL,
         SOCKET_FAILURE_CORE_DUMP,
-        SOCKET_FAILURE_SERVICE_FAILED_PERMANENT,
+        SOCKET_FAILURE_START_LIMIT_HIT,
+        SOCKET_FAILURE_TRIGGER_LIMIT_HIT,
+        SOCKET_FAILURE_SERVICE_START_LIMIT_HIT,
         _SOCKET_RESULT_MAX,
         _SOCKET_RESULT_INVALID = -1
 } SocketResult;
@@ -79,9 +80,12 @@ struct Socket {
 
         LIST_HEAD(SocketPort, ports);
 
+        Set *peers_by_address;
+
         unsigned n_accepted;
         unsigned n_connections;
         unsigned max_connections;
+        unsigned max_connections_per_source;
 
         unsigned backlog;
         unsigned keep_alive_cnt;
@@ -94,7 +98,9 @@ struct Socket {
         ExecContext exec_context;
         KillContext kill_context;
         CGroupContext cgroup_context;
+
         ExecRuntime *exec_runtime;
+        DynamicCreds dynamic_creds;
 
         /* For Accept=no sockets refers to the one service we'll
         activate. For Accept=yes sockets is either NULL, or filled
@@ -119,6 +125,8 @@ struct Socket {
         bool accept;
         bool remove_on_stop;
         bool writable;
+
+        int socket_protocol;
 
         /* Socket options */
         bool keep_alive;
@@ -156,7 +164,15 @@ struct Socket {
         bool reset_cpu_usage:1;
 
         char *fdname;
+
+        RateLimit trigger_limit;
 };
+
+SocketPeer *socket_peer_ref(SocketPeer *p);
+SocketPeer *socket_peer_unref(SocketPeer *p);
+int socket_acquire_peer(Socket *s, int fd, SocketPeer **p);
+
+DEFINE_TRIVIAL_CLEANUP_FUNC(SocketPeer*, socket_peer_unref);
 
 /* Called from the service code when collecting fds */
 int socket_collect_fds(Socket *s, int **fds);

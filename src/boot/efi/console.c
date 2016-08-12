@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /*
  * This program is free software; you can redistribute it and/or modify it
  * under the terms of the GNU Lesser General Public License as published by
@@ -18,8 +16,8 @@
 #include <efi.h>
 #include <efilib.h>
 
-#include "util.h"
 #include "console.h"
+#include "util.h"
 
 #define EFI_SIMPLE_TEXT_INPUT_EX_PROTOCOL_GUID \
         { 0xdd9e7534, 0x7762, 0x4698, { 0x8c, 0x14, 0xf5, 0x85, 0x17, 0xa6, 0x25, 0xaa } }
@@ -95,12 +93,8 @@ EFI_STATUS console_key_read(UINT64 *key, BOOLEAN wait) {
         }
 
         /* wait until key is pressed */
-        if (wait) {
-                if (TextInputEx)
-                        uefi_call_wrapper(BS->WaitForEvent, 3, 1, &TextInputEx->WaitForKeyEx, &index);
-                else
-                        uefi_call_wrapper(BS->WaitForEvent, 3, 1, &ST->ConIn->WaitForKey, &index);
-        }
+        if (wait)
+                uefi_call_wrapper(BS->WaitForEvent, 3, 1, &ST->ConIn->WaitForKey, &index);
 
         if (TextInputEx) {
                 EFI_KEY_DATA keydata;

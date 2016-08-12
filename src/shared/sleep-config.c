@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,20 +17,28 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include <errno.h>
+#include <stdbool.h>
+#include <stddef.h>
 #include <stdio.h>
+#include <string.h>
+#include <syslog.h>
+#include <unistd.h>
 
 #include "alloc-util.h"
 #include "conf-parser.h"
+#include "def.h"
+#include "env-util.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "log.h"
+#include "macro.h"
+#include "parse-util.h"
 #include "sleep-config.h"
 #include "string-util.h"
 #include "strv.h"
-#include "util.h"
-#include "parse-util.h"
 
-#define USE(x, y) do{ (x) = (y); (y) = NULL; } while(0)
+#define USE(x, y) do { (x) = (y); (y) = NULL; } while (0)
 
 int parse_sleep_config(const char *verb, char ***_modes, char ***_states) {
 
@@ -53,7 +59,7 @@ int parse_sleep_config(const char *verb, char ***_modes, char ***_states) {
         };
 
         config_parse_many(PKGSYSCONFDIR "/sleep.conf",
-                          CONF_DIRS_NULSTR("systemd/sleep.conf"),
+                          CONF_PATHS_NULSTR("systemd/sleep.conf.d"),
                           "Sleep\0", config_item_table_lookup, items,
                           false, NULL);
 
@@ -225,6 +231,9 @@ static bool enough_memory_for_hibernation(void) {
         unsigned long long act = 0;
         size_t size = 0, used = 0;
         int r;
+
+        if (getenv_bool("SYSTEMD_BYPASS_HIBERNATION_MEMORY_CHECK") > 0)
+                return true;
 
         r = hibernation_partition_size(&size, &used);
         if (r < 0)

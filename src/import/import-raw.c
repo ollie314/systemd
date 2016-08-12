@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -199,7 +197,7 @@ static int raw_import_maybe_convert_qcow2(RawImport *i) {
 
         r = chattr_fd(converted_fd, FS_NOCOW_FL, FS_NOCOW_FL);
         if (r < 0)
-                log_warning_errno(errno, "Failed to set file attributes on %s: %m", t);
+                log_warning_errno(r, "Failed to set file attributes on %s: %m", t);
 
         log_info("Unpacking QCOW2 file.");
 
@@ -287,7 +285,7 @@ static int raw_import_open_disk(RawImport *i) {
 
         r = chattr_fd(i->output_fd, FS_NOCOW_FL, FS_NOCOW_FL);
         if (r < 0)
-                log_warning_errno(errno, "Failed to set file attributes on %s: %m", i->temp_path);
+                log_warning_errno(r, "Failed to set file attributes on %s: %m", i->temp_path);
 
         return 0;
 }

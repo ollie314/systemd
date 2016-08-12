@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -57,6 +55,8 @@ const NetDevVTable * const netdev_vtable[_NETDEV_KIND_MAX] = {
         [NETDEV_KIND_TUN] = &tun_vtable,
         [NETDEV_KIND_TAP] = &tap_vtable,
         [NETDEV_KIND_IP6TNL] = &ip6tnl_vtable,
+        [NETDEV_KIND_VRF] = &vrf_vtable,
+
 };
 
 static const char* const netdev_kind_table[_NETDEV_KIND_MAX] = {
@@ -80,13 +80,15 @@ static const char* const netdev_kind_table[_NETDEV_KIND_MAX] = {
         [NETDEV_KIND_TUN] = "tun",
         [NETDEV_KIND_TAP] = "tap",
         [NETDEV_KIND_IP6TNL] = "ip6tnl",
+        [NETDEV_KIND_VRF] = "vrf",
+
 };
 
 DEFINE_STRING_TABLE_LOOKUP(netdev_kind, NetDevKind);
 DEFINE_CONFIG_PARSE_ENUM(config_parse_netdev_kind, netdev_kind, NetDevKind, "Failed to parse netdev kind");
 
 static void netdev_cancel_callbacks(NetDev *netdev) {
-        _cleanup_netlink_message_unref_ sd_netlink_message *m = NULL;
+        _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *m = NULL;
         netdev_join_callback *callback;
 
         if (!netdev)
@@ -193,14 +195,14 @@ static int netdev_enter_failed(NetDev *netdev) {
 }
 
 static int netdev_enslave_ready(NetDev *netdev, Link* link, sd_netlink_message_handler_t callback) {
-        _cleanup_netlink_message_unref_ sd_netlink_message *req = NULL;
+        _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *req = NULL;
         int r;
 
         assert(netdev);
         assert(netdev->state == NETDEV_STATE_READY);
         assert(netdev->manager);
         assert(netdev->manager->rtnl);
-        assert(IN_SET(netdev->kind, NETDEV_KIND_BRIDGE, NETDEV_KIND_BOND));
+        assert(IN_SET(netdev->kind, NETDEV_KIND_BRIDGE, NETDEV_KIND_BOND, NETDEV_KIND_VRF));
         assert(link);
         assert(callback);
 
@@ -283,14 +285,14 @@ int netdev_enslave(NetDev *netdev, Link *link, sd_netlink_message_handler_t call
         assert(netdev);
         assert(netdev->manager);
         assert(netdev->manager->rtnl);
-        assert(IN_SET(netdev->kind, NETDEV_KIND_BRIDGE, NETDEV_KIND_BOND));
+        assert(IN_SET(netdev->kind, NETDEV_KIND_BRIDGE, NETDEV_KIND_BOND, NETDEV_KIND_VRF));
 
         if (netdev->state == NETDEV_STATE_READY) {
                 r = netdev_enslave_ready(netdev, link, callback);
                 if (r < 0)
                         return r;
         } else if (IN_SET(netdev->state, NETDEV_STATE_LINGER, NETDEV_STATE_FAILED)) {
-                _cleanup_netlink_message_unref_ sd_netlink_message *m = NULL;
+                _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *m = NULL;
 
                 r = rtnl_message_new_synthetic_error(-ENODEV, 0, &m);
                 if (r >= 0)
@@ -411,7 +413,7 @@ int netdev_set_ifindex(NetDev *netdev, sd_netlink_message *message) {
 
 int netdev_get_mac(const char *ifname, struct ether_addr **ret) {
         _cleanup_free_ struct ether_addr *mac = NULL;
-        uint8_t result[8];
+        uint64_t result;
         size_t l, sz;
         uint8_t *v;
         int r;
@@ -438,10 +440,10 @@ int netdev_get_mac(const char *ifname, struct ether_addr **ret) {
 
         /* Let's hash the host machine ID plus the container name. We
          * use a fixed, but originally randomly created hash key here. */
-        siphash24(result, v, sz, HASH_KEY.bytes);
+        result = siphash24(v, sz, HASH_KEY.bytes);
 
         assert_cc(ETH_ALEN <= sizeof(result));
-        memcpy(mac->ether_addr_octet, result, ETH_ALEN);
+        memcpy(mac->ether_addr_octet, &result, ETH_ALEN);
 
         /* see eth_random_addr in the kernel */
         mac->ether_addr_octet[0] &= 0xfe;        /* clear multicast bit */
@@ -470,7 +472,7 @@ static int netdev_create(NetDev *netdev, Link *link,
 
                 log_netdev_debug(netdev, "Created");
         } else {
-                _cleanup_netlink_message_unref_ sd_netlink_message *m = NULL;
+                _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *m = NULL;
 
                 r = sd_rtnl_message_new_link(netdev->manager->rtnl, &m, RTM_NEWLINK, 0);
                 if (r < 0)
@@ -617,7 +619,7 @@ static int netdev_load_one(Manager *manager, const char *filename) {
                              NULL, NULL, NULL, NULL, NULL, NULL) <= 0)
                 return 0;
 
-        if (!NETDEV_VTABLE(netdev_raw)) {
+        if (netdev_raw->kind == _NETDEV_KIND_INVALID) {
                 log_warning("NetDev with invalid Kind configured in %s. Ignoring", filename);
                 return 0;
         }
@@ -658,7 +660,7 @@ static int netdev_load_one(Manager *manager, const char *filename) {
         if (!netdev->filename)
                 return log_oom();
 
-        if (!netdev->mac) {
+        if (!netdev->mac && netdev->kind != NETDEV_KIND_VLAN) {
                 r = netdev_get_mac(netdev->ifname, &netdev->mac);
                 if (r < 0)
                         return log_error_errno(r, "Failed to generate predictable MAC address for %s: %m", netdev->ifname);

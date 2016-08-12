@@ -1,3 +1,5 @@
+#pragma once
+
 /***
   This file is part of systemd.
 
@@ -17,8 +19,6 @@
   You should have received a copy of the GNU Lesser General Public License
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
-
-#pragma once
 
 #include "hashmap.h"
 #include "set.h"
@@ -76,6 +76,8 @@ struct sd_device {
 
         char *subsystem;
         bool subsystem_set; /* don't reread subsystem */
+        char *driver_subsystem; /* only set for the 'drivers' subsystem */
+        bool driver_subsystem_set; /* don't reread subsystem */
         char *driver;
         bool driver_set; /* don't reread driver */
 

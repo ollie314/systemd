@@ -29,6 +29,7 @@
 #include "fs-util.h"
 #include "selinux-util.h"
 #include "smack-util.h"
+#include "stdio-util.h"
 #include "string-util.h"
 #include "udev.h"
 
@@ -263,8 +264,7 @@ static int node_permissions_apply(struct udev_device *dev, bool apply,
                 mode |= S_IFCHR;
 
         if (lstat(devnode, &stats) != 0) {
-                err = -errno;
-                log_debug_errno(errno, "can not stat() node '%s' (%m)", devnode);
+                err = log_debug_errno(errno, "can not stat() node '%s' (%m)", devnode);
                 goto out;
         }
 
@@ -347,9 +347,10 @@ void udev_node_add(struct udev_device *dev, bool apply,
                 return;
 
         /* always add /dev/{block,char}/$major:$minor */
-        snprintf(filename, sizeof(filename), "/dev/%s/%u:%u",
+        xsprintf(filename, "/dev/%s/%u:%u",
                  streq(udev_device_get_subsystem(dev), "block") ? "block" : "char",
-                 major(udev_device_get_devnum(dev)), minor(udev_device_get_devnum(dev)));
+                 major(udev_device_get_devnum(dev)),
+                 minor(udev_device_get_devnum(dev)));
         node_symlink(dev, udev_device_get_devnode(dev), filename);
 
         /* create/update symlinks, add symlinks to name index */
@@ -366,8 +367,9 @@ void udev_node_remove(struct udev_device *dev) {
                 link_update(dev, udev_list_entry_get_name(list_entry), false);
 
         /* remove /dev/{block,char}/$major:$minor */
-        snprintf(filename, sizeof(filename), "/dev/%s/%u:%u",
+        xsprintf(filename, "/dev/%s/%u:%u",
                  streq(udev_device_get_subsystem(dev), "block") ? "block" : "char",
-                 major(udev_device_get_devnum(dev)), minor(udev_device_get_devnum(dev)));
+                 major(udev_device_get_devnum(dev)),
+                 minor(udev_device_get_devnum(dev)));
         unlink(filename);
 }

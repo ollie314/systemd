@@ -43,7 +43,7 @@
 #include "util.h"
 
 int device_new_aux(sd_device **ret) {
-        _cleanup_device_unref_ sd_device *device = NULL;
+        _cleanup_(sd_device_unrefp) sd_device *device = NULL;
 
         assert(ret);
 
@@ -75,6 +75,7 @@ _public_ sd_device *sd_device_unref(sd_device *device) {
                 free(device->devtype);
                 free(device->devname);
                 free(device->subsystem);
+                free(device->driver_subsystem);
                 free(device->driver);
                 free(device->id_filename);
                 free(device->properties_strv);
@@ -136,7 +137,7 @@ int device_add_property_aux(sd_device *device, const char *_key, const char *_va
         }
 
         if (!db) {
-                device->properties_generation ++;
+                device->properties_generation++;
                 device->properties_buf_outdated = true;
         }
 
@@ -196,7 +197,7 @@ int device_set_syspath(sd_device *device, const char *_syspath, bool verify) {
                                 return -errno;
                         }
                 } else {
-                        /* everything else just just needs to be a directory */
+                        /* everything else just needs to be a directory */
                         if (!is_dir(syspath, false))
                                 return -ENODEV;
                 }
@@ -222,7 +223,7 @@ int device_set_syspath(sd_device *device, const char *_syspath, bool verify) {
 }
 
 _public_ int sd_device_new_from_syspath(sd_device **ret, const char *syspath) {
-        _cleanup_device_unref_ sd_device *device = NULL;
+        _cleanup_(sd_device_unrefp) sd_device *device = NULL;
         int r;
 
         assert_return(ret, -EINVAL);
@@ -258,7 +259,8 @@ _public_ int sd_device_new_from_devnum(sd_device **ret, char type, dev_t devnum)
 }
 
 _public_ int sd_device_new_from_subsystem_sysname(sd_device **ret, const char *subsystem, const char *sysname) {
-        char *syspath;
+        char *name, *syspath;
+        size_t len = 0;
 
         assert_return(ret, -EINVAL);
         assert_return(subsystem, -EINVAL);
@@ -297,33 +299,29 @@ _public_ int sd_device_new_from_subsystem_sysname(sd_device **ret, const char *s
                         syspath = strjoina("/sys/bus/", subsys, "/drivers/", driver);
                         if (access(syspath, F_OK) >= 0)
                                 return sd_device_new_from_syspath(ret, syspath);
-                } else
-                        return -EINVAL;
-        } else {
-                char *name;
-                size_t len = 0;
-
-                /* translate sysname back to sysfs filename */
-                name = strdupa(sysname);
-                while (name[len] != '\0') {
-                        if (name[len] == '/')
-                                name[len] = '!';
-
-                        len ++;
                 }
-
-                syspath = strjoina("/sys/subsystem/", subsystem, "/devices/", name);
-                if (access(syspath, F_OK) >= 0)
-                        return sd_device_new_from_syspath(ret, syspath);
-
-                syspath = strjoina("/sys/bus/", subsystem, "/devices/", name);
-                if (access(syspath, F_OK) >= 0)
-                        return sd_device_new_from_syspath(ret, syspath);
-
-                syspath = strjoina("/sys/class/", subsystem, "/", name);
-                if (access(syspath, F_OK) >= 0)
-                        return sd_device_new_from_syspath(ret, syspath);
         }
+
+        /* translate sysname back to sysfs filename */
+        name = strdupa(sysname);
+        while (name[len] != '\0') {
+                if (name[len] == '/')
+                        name[len] = '!';
+
+                len++;
+        }
+
+        syspath = strjoina("/sys/subsystem/", subsystem, "/devices/", name);
+        if (access(syspath, F_OK) >= 0)
+                return sd_device_new_from_syspath(ret, syspath);
+
+        syspath = strjoina("/sys/bus/", subsystem, "/devices/", name);
+        if (access(syspath, F_OK) >= 0)
+                return sd_device_new_from_syspath(ret, syspath);
+
+        syspath = strjoina("/sys/class/", subsystem, "/", name);
+        if (access(syspath, F_OK) >= 0)
+                return sd_device_new_from_syspath(ret, syspath);
 
         return -ENODEV;
 }
@@ -356,12 +354,9 @@ int device_set_ifindex(sd_device *device, const char *_ifindex) {
         assert(device);
         assert(_ifindex);
 
-        r = safe_atoi(_ifindex, &ifindex);
+        r = parse_ifindex(_ifindex, &ifindex);
         if (r < 0)
                 return r;
-
-        if (ifindex <= 0)
-                return -EINVAL;
 
         r = device_add_property_internal(device, "IFINDEX", _ifindex);
         if (r < 0)
@@ -497,7 +492,7 @@ static int handle_uevent_line(sd_device *device, const char *key, const char *va
 
 int device_read_uevent_file(sd_device *device) {
         _cleanup_free_ char *uevent = NULL;
-        const char *syspath, *key, *value, *major = NULL, *minor = NULL;
+        const char *syspath, *key = NULL, *value = NULL, *major = NULL, *minor = NULL;
         char *path;
         size_t uevent_len;
         unsigned i;
@@ -536,7 +531,7 @@ int device_read_uevent_file(sd_device *device) {
                 return r;
         }
 
-        for (i = 0; i < uevent_len; i++) {
+        for (i = 0; i < uevent_len; i++)
                 switch (state) {
                 case PRE_KEY:
                         if (!strchr(NEWLINE, uevent[i])) {
@@ -561,10 +556,9 @@ int device_read_uevent_file(sd_device *device) {
                         break;
                 case PRE_VALUE:
                         value = &uevent[i];
-
                         state = VALUE;
 
-                        break;
+                        /* fall through to handle empty property */
                 case VALUE:
                         if (strchr(NEWLINE, uevent[i])) {
                                 uevent[i] = '\0';
@@ -580,7 +574,6 @@ int device_read_uevent_file(sd_device *device) {
                 default:
                         assert_not_reached("invalid state when parsing uevent file");
                 }
-        }
 
         if (major) {
                 r = device_set_devnum(device, major, minor);
@@ -627,16 +620,14 @@ _public_ int sd_device_new_from_device_id(sd_device **ret, const char *id) {
         }
         case 'n':
         {
-                _cleanup_device_unref_ sd_device *device = NULL;
+                _cleanup_(sd_device_unrefp) sd_device *device = NULL;
                 _cleanup_close_ int sk = -1;
                 struct ifreq ifr = {};
                 int ifindex;
 
-                r = safe_atoi(&id[1], &ifr.ifr_ifindex);
+                r = parse_ifindex(&id[1], &ifr.ifr_ifindex);
                 if (r < 0)
                         return r;
-                else if (ifr.ifr_ifindex <= 0)
-                        return -EINVAL;
 
                 sk = socket(PF_INET, SOCK_DGRAM, 0);
                 if (sk < 0)
@@ -674,7 +665,7 @@ _public_ int sd_device_new_from_device_id(sd_device **ret, const char *id) {
                         return -EINVAL;
 
                 sysname[0] = '\0';
-                sysname ++;
+                sysname++;
 
                 return sd_device_new_from_subsystem_sysname(ret, subsys, sysname);
         }
@@ -773,21 +764,45 @@ int device_set_subsystem(sd_device *device, const char *_subsystem) {
         return 0;
 }
 
+static int device_set_drivers_subsystem(sd_device *device, const char *_subsystem) {
+        _cleanup_free_ char *subsystem = NULL;
+        int r;
+
+        assert(device);
+        assert(_subsystem);
+        assert(*_subsystem);
+
+        subsystem = strdup(_subsystem);
+        if (!subsystem)
+                return -ENOMEM;
+
+        r = device_set_subsystem(device, "drivers");
+        if (r < 0)
+                return r;
+
+        free(device->driver_subsystem);
+        device->driver_subsystem = subsystem;
+        subsystem = NULL;
+
+        return 0;
+}
+
 _public_ int sd_device_get_subsystem(sd_device *device, const char **ret) {
+        const char *syspath, *drivers = NULL;
+        int r;
+
         assert_return(ret, -EINVAL);
         assert_return(device, -EINVAL);
 
+        r = sd_device_get_syspath(device, &syspath);
+        if (r < 0)
+                return r;
+
         if (!device->subsystem_set) {
                 _cleanup_free_ char *subsystem = NULL;
-                const char *syspath;
                 char *path;
-                int r;
 
                 /* read 'subsystem' link */
-                r = sd_device_get_syspath(device, &syspath);
-                if (r < 0)
-                        return r;
-
                 path = strjoina(syspath, "/subsystem");
                 r = readlink_value(path, &subsystem);
                 if (r >= 0)
@@ -795,16 +810,39 @@ _public_ int sd_device_get_subsystem(sd_device *device, const char **ret) {
                 /* use implicit names */
                 else if (path_startswith(device->devpath, "/module/"))
                         r = device_set_subsystem(device, "module");
-                else if (strstr(device->devpath, "/drivers/"))
-                        r = device_set_subsystem(device, "drivers");
-                else if (path_startswith(device->devpath, "/subsystem/") ||
-                         path_startswith(device->devpath, "/class/") ||
-                         path_startswith(device->devpath, "/bus/"))
+                else if (!(drivers = strstr(syspath, "/drivers/")) &&
+                         (path_startswith(device->devpath, "/subsystem/") ||
+                          path_startswith(device->devpath, "/class/") ||
+                          path_startswith(device->devpath, "/bus/")))
                         r = device_set_subsystem(device, "subsystem");
                 if (r < 0 && r != -ENOENT)
                         return log_debug_errno(r, "sd-device: could not set subsystem for %s: %m", device->devpath);
 
                 device->subsystem_set = true;
+        } else if (!device->driver_subsystem_set)
+                drivers = strstr(syspath, "/drivers/");
+
+        if (!device->driver_subsystem_set) {
+                if (drivers) {
+                        _cleanup_free_ char *subpath = NULL;
+
+                        subpath = strndup(syspath, drivers - syspath);
+                        if (!subpath)
+                                r = -ENOMEM;
+                        else {
+                                const char *subsys;
+
+                                subsys = strrchr(subpath, '/');
+                                if (!subsys)
+                                        r = -EINVAL;
+                                else
+                                        r = device_set_drivers_subsystem(device, subsys + 1);
+                        }
+                        if (r < 0 && r != -ENOENT)
+                                return log_debug_errno(r, "sd-device: could not set subsystem for driver %s: %m", device->devpath);
+                }
+
+                device->driver_subsystem_set = true;
         }
 
         if (!device->subsystem)
@@ -976,7 +1014,7 @@ static int device_set_sysname(sd_device *device) {
         pos = strrchr(device->devpath, '/');
         if (!pos)
                 return -EINVAL;
-        pos ++;
+        pos++;
 
         /* devpath is not a root directory */
         if (*pos == '\0' || pos <= device->devpath)
@@ -991,7 +1029,7 @@ static int device_set_sysname(sd_device *device) {
                 if (sysname[len] == '!')
                         sysname[len] = '/';
 
-                len ++;
+                len++;
         }
 
         /* trailing number */
@@ -1071,7 +1109,7 @@ int device_add_tag(sd_device *device, const char *tag) {
         if (r < 0)
                 return r;
 
-        device->tags_generation ++;
+        device->tags_generation++;
         device->property_tags_outdated = true;
 
         return 0;
@@ -1091,7 +1129,7 @@ int device_add_devlink(sd_device *device, const char *devlink) {
         if (r < 0)
                 return r;
 
-        device->devlinks_generation ++;
+        device->devlinks_generation++;
         device->property_devlinks_outdated = true;
 
         return 0;
@@ -1217,19 +1255,19 @@ int device_get_id_filename(sd_device *device, const char **ret) {
                 if (major(devnum) > 0) {
                         assert(subsystem);
 
-                        /* use dev_t -- b259:131072, c254:0 */
+                        /* use dev_t — b259:131072, c254:0 */
                         r = asprintf(&id, "%c%u:%u",
                                      streq(subsystem, "block") ? 'b' : 'c',
                                      major(devnum), minor(devnum));
                         if (r < 0)
                                 return -ENOMEM;
                 } else if (ifindex > 0) {
-                        /* use netdev ifindex -- n3 */
+                        /* use netdev ifindex — n3 */
                         r = asprintf(&id, "n%u", ifindex);
                         if (r < 0)
                                 return -ENOMEM;
                 } else {
-                        /* use $subsys:$sysname -- pci:0000:00:1f.2
+                        /* use $subsys:$sysname — pci:0000:00:1f.2
                          * sysname() has '!' translated, get it from devpath
                          */
                         const char *sysname;
@@ -1241,9 +1279,17 @@ int device_get_id_filename(sd_device *device, const char **ret) {
                         if (!subsystem)
                                 return -EINVAL;
 
-                        r = asprintf(&id, "+%s:%s", subsystem, sysname);
-                        if (r < 0)
-                                return -ENOMEM;
+                        if (streq(subsystem, "drivers")) {
+                                /* the 'drivers' pseudo-subsystem is special, and needs the real subsystem
+                                 * encoded as well */
+                                r = asprintf(&id, "+drivers:%s:%s", device->driver_subsystem, sysname);
+                                if (r < 0)
+                                        return -ENOMEM;
+                        } else {
+                                r = asprintf(&id, "+%s:%s", subsystem, sysname);
+                                if (r < 0)
+                                        return -ENOMEM;
+                        }
                 }
 
                 device->id_filename = id;
@@ -1402,7 +1448,7 @@ _public_ const char *sd_device_get_tag_first(sd_device *device) {
         device->tags_iterator_generation = device->tags_generation;
         device->tags_iterator = ITERATOR_FIRST;
 
-        set_iterate(device->tags, &device->tags_iterator, &v);
+        (void) set_iterate(device->tags, &device->tags_iterator, &v);
         return v;
 }
 
@@ -1416,7 +1462,7 @@ _public_ const char *sd_device_get_tag_next(sd_device *device) {
         if (device->tags_iterator_generation != device->tags_generation)
                 return NULL;
 
-        set_iterate(device->tags, &device->tags_iterator, &v);
+        (void) set_iterate(device->tags, &device->tags_iterator, &v);
         return v;
 }
 
@@ -1430,7 +1476,7 @@ _public_ const char *sd_device_get_devlink_first(sd_device *device) {
         device->devlinks_iterator_generation = device->devlinks_generation;
         device->devlinks_iterator = ITERATOR_FIRST;
 
-        set_iterate(device->devlinks, &device->devlinks_iterator, &v);
+        (void) set_iterate(device->devlinks, &device->devlinks_iterator, &v);
         return v;
 }
 
@@ -1444,7 +1490,7 @@ _public_ const char *sd_device_get_devlink_next(sd_device *device) {
         if (device->devlinks_iterator_generation != device->devlinks_generation)
                 return NULL;
 
-        set_iterate(device->devlinks, &device->devlinks_iterator, &v);
+        (void) set_iterate(device->devlinks, &device->devlinks_iterator, &v);
         return v;
 }
 
@@ -1462,15 +1508,20 @@ static int device_properties_prepare(sd_device *device) {
                 return r;
 
         if (device->property_devlinks_outdated) {
-                char *devlinks = NULL;
+                _cleanup_free_ char *devlinks = NULL;
+                size_t devlinks_allocated = 0, devlinks_len = 0;
                 const char *devlink;
 
-                devlink = sd_device_get_devlink_first(device);
-                if (devlink)
-                        devlinks = strdupa(devlink);
+                for (devlink = sd_device_get_devlink_first(device); devlink; devlink = sd_device_get_devlink_next(device)) {
+                        char *e;
 
-                while ((devlink = sd_device_get_devlink_next(device)))
-                        devlinks = strjoina(devlinks, " ", devlink);
+                        if (!GREEDY_REALLOC(devlinks, devlinks_allocated, devlinks_len + strlen(devlink) + 2))
+                                return -ENOMEM;
+                        if (devlinks_len > 0)
+                                stpcpy(devlinks + devlinks_len++, " ");
+                        e = stpcpy(devlinks + devlinks_len, devlink);
+                        devlinks_len = e - devlinks;
+                }
 
                 r = device_add_property_internal(device, "DEVLINKS", devlinks);
                 if (r < 0)
@@ -1480,17 +1531,23 @@ static int device_properties_prepare(sd_device *device) {
         }
 
         if (device->property_tags_outdated) {
-                char *tags = NULL;
+                _cleanup_free_ char *tags = NULL;
+                size_t tags_allocated = 0, tags_len = 0;
                 const char *tag;
 
-                tag = sd_device_get_tag_first(device);
-                if (tag)
-                        tags = strjoina(":", tag);
+                if (!GREEDY_REALLOC(tags, tags_allocated, 2))
+                        return -ENOMEM;
+                stpcpy(tags, ":");
+                tags_len++;
 
-                while ((tag = sd_device_get_tag_next(device)))
-                        tags = strjoina(tags, ":", tag);
+                for (tag = sd_device_get_tag_first(device); tag; tag = sd_device_get_tag_next(device)) {
+                        char *e;
 
-                tags = strjoina(tags, ":");
+                        if (!GREEDY_REALLOC(tags, tags_allocated, tags_len + strlen(tag) + 2))
+                                return -ENOMEM;
+                        e = stpcpy(stpcpy(tags + tags_len, tag), ":");
+                        tags_len = e - tags;
+                }
 
                 r = device_add_property_internal(device, "TAGS", tags);
                 if (r < 0)
@@ -1611,7 +1668,7 @@ _public_ const char *sd_device_get_sysattr_first(sd_device *device) {
 
         device->sysattrs_iterator = ITERATOR_FIRST;
 
-        set_iterate(device->sysattrs, &device->sysattrs_iterator, &v);
+        (void) set_iterate(device->sysattrs, &device->sysattrs_iterator, &v);
         return v;
 }
 
@@ -1623,7 +1680,7 @@ _public_ const char *sd_device_get_sysattr_next(sd_device *device) {
         if (!device->sysattrs_read)
                 return NULL;
 
-        set_iterate(device->sysattrs, &device->sysattrs_iterator, &v);
+        (void) set_iterate(device->sysattrs, &device->sysattrs_iterator, &v);
         return v;
 }
 

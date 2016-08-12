@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -23,6 +21,7 @@
 
 #include "capability-util.h"
 #include "networkd.h"
+#include "networkd-conf.h"
 #include "signal-util.h"
 #include "user-util.h"
 
@@ -91,6 +90,10 @@ int main(int argc, char *argv[]) {
                 goto out;
         }
 
+        r = manager_parse_config_file(m);
+        if (r < 0)
+                log_warning_errno(r, "Failed to parse configuration file: %m");
+
         r = manager_load_config(m);
         if (r < 0) {
                 log_error_errno(r, "Could not load configuration files: %m");
@@ -106,6 +109,12 @@ int main(int argc, char *argv[]) {
         r = manager_rtnl_enumerate_addresses(m);
         if (r < 0) {
                 log_error_errno(r, "Could not enumerate addresses: %m");
+                goto out;
+        }
+
+        r = manager_rtnl_enumerate_routes(m);
+        if (r < 0) {
+                log_error_errno(r, "Could not enumerate routes: %m");
                 goto out;
         }
 

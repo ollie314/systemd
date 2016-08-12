@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -21,16 +19,17 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include "macro.h"
+#include <stdbool.h>
+
 #include "hashmap.h"
+#include "macro.h"
 
 typedef struct Bitmap Bitmap;
 
 Bitmap *bitmap_new(void);
-
-void bitmap_free(Bitmap *b);
-
+Bitmap *bitmap_copy(Bitmap *b);
 int bitmap_ensure_allocated(Bitmap **b);
+void bitmap_free(Bitmap *b);
 
 int bitmap_set(Bitmap *b, unsigned n);
 void bitmap_unset(Bitmap *b, unsigned n);

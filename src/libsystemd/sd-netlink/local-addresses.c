@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -23,9 +21,9 @@
 #include "sd-netlink.h"
 
 #include "alloc-util.h"
-#include "netlink-util.h"
-#include "macro.h"
 #include "local-addresses.h"
+#include "macro.h"
+#include "netlink-util.h"
 
 static int address_compare(const void *_a, const void *_b) {
         const struct local_address *a = _a, *b = _b;
@@ -56,8 +54,8 @@ static int address_compare(const void *_a, const void *_b) {
 }
 
 int local_addresses(sd_netlink *context, int ifindex, int af, struct local_address **ret) {
-        _cleanup_netlink_message_unref_ sd_netlink_message *req = NULL, *reply = NULL;
-        _cleanup_netlink_unref_ sd_netlink *rtnl = NULL;
+        _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *req = NULL, *reply = NULL;
+        _cleanup_(sd_netlink_unrefp) sd_netlink *rtnl = NULL;
         _cleanup_free_ struct local_address *list = NULL;
         size_t n_list = 0, n_allocated = 0;
         sd_netlink_message *m;
@@ -157,8 +155,7 @@ int local_addresses(sd_netlink *context, int ifindex, int af, struct local_addre
                 n_list++;
         };
 
-        if (n_list > 0)
-                qsort(list, n_list, sizeof(struct local_address), address_compare);
+        qsort_safe(list, n_list, sizeof(struct local_address), address_compare);
 
         *ret = list;
         list = NULL;
@@ -167,8 +164,8 @@ int local_addresses(sd_netlink *context, int ifindex, int af, struct local_addre
 }
 
 int local_gateways(sd_netlink *context, int ifindex, int af, struct local_address **ret) {
-        _cleanup_netlink_message_unref_ sd_netlink_message *req = NULL, *reply = NULL;
-        _cleanup_netlink_unref_ sd_netlink *rtnl = NULL;
+        _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *req = NULL, *reply = NULL;
+        _cleanup_(sd_netlink_unrefp) sd_netlink *rtnl = NULL;
         _cleanup_free_ struct local_address *list = NULL;
         sd_netlink_message *m = NULL;
         size_t n_list = 0, n_allocated = 0;

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,15 +17,27 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include <errno.h>
+#include <limits.h>
+#include <signal.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/epoll.h>
 #include <sys/ioctl.h>
-#include <limits.h>
+#include <sys/time.h>
 #include <termios.h>
+#include <unistd.h>
+
+#include "sd-event.h"
 
 #include "alloc-util.h"
 #include "fd-util.h"
+#include "log.h"
+#include "macro.h"
 #include "ptyfwd.h"
-#include "util.h"
+#include "time-util.h"
 
 struct PTYForward {
         sd_event *event;
@@ -413,6 +423,7 @@ PTYForward *pty_forward_free(PTYForward *f) {
                 sd_event_source_unref(f->stdin_event_source);
                 sd_event_source_unref(f->stdout_event_source);
                 sd_event_source_unref(f->master_event_source);
+                sd_event_source_unref(f->sigwinch_event_source);
                 sd_event_unref(f->event);
 
                 if (f->saved_stdout)
@@ -450,10 +461,7 @@ int pty_forward_set_ignore_vhangup(PTYForward *f, bool b) {
         if (!!(f->flags & PTY_FORWARD_IGNORE_VHANGUP) == b)
                 return 0;
 
-        if (b)
-                f->flags |= PTY_FORWARD_IGNORE_VHANGUP;
-        else
-                f->flags &= ~PTY_FORWARD_IGNORE_VHANGUP;
+        SET_FLAG(f->flags, PTY_FORWARD_IGNORE_VHANGUP, b);
 
         if (!ignore_vhangup(f)) {
 

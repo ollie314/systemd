@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -29,6 +27,7 @@
 
 #include "alloc-util.h"
 #include "conf-parser.h"
+#include "def.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "formats-util.h"
@@ -76,7 +75,7 @@ static void close_fd_input(Uploader *u);
                                   curl_easy_strerror(code));            \
                         cmd;                                            \
                 }                                                       \
-        } while(0)
+        } while (0)
 
 static size_t output_callback(char *buf,
                               size_t size,
@@ -464,6 +463,8 @@ static int setup_uploader(Uploader *u, const char *url, const char *state_file) 
         if (r < 0)
                 return log_error_errno(r, "Failed to set up signals: %m");
 
+        (void) sd_watchdog_enabled(false, &u->watchdog_usec);
+
         return load_cursor_state(u);
 }
 
@@ -495,6 +496,7 @@ static int perform_upload(Uploader *u) {
 
         assert(u);
 
+        u->watchdog_timestamp = now(CLOCK_MONOTONIC);
         code = curl_easy_perform(u->easy);
         if (code) {
                 if (u->error[0])
@@ -541,7 +543,7 @@ static int parse_config(void) {
                 {}};
 
         return config_parse_many(PKGSYSCONFDIR "/journal-upload.conf",
-                                 CONF_DIRS_NULSTR("systemd/journal-upload.conf"),
+                                 CONF_PATHS_NULSTR("systemd/journal-upload.conf.d"),
                                  "Upload\0", config_item_table_lookup, items,
                                  false, NULL);
 }

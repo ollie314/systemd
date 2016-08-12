@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,97 +17,55 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <ctype.h>
+#include <alloca.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
-#include <grp.h>
-#include <langinfo.h>
-#include <libintl.h>
-#include <limits.h>
-#include <linux/magic.h>
-#include <linux/oom.h>
-#include <linux/sched.h>
-#include <locale.h>
-#include <poll.h>
-#include <pwd.h>
 #include <sched.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/file.h>
-#include <sys/ioctl.h>
 #include <sys/mman.h>
-#include <sys/mount.h>
-#include <sys/personality.h>
 #include <sys/prctl.h>
-#include <sys/stat.h>
-#include <sys/statvfs.h>
-#include <sys/time.h>
+#include <sys/statfs.h>
+#include <sys/sysmacros.h>
 #include <sys/types.h>
-#include <sys/utsname.h>
-#include <sys/vfs.h>
-#include <sys/wait.h>
-#include <syslog.h>
 #include <unistd.h>
-
-/* When we include libgen.h because we need dirname() we immediately
- * undefine basename() since libgen.h defines it as a macro to the
- * POSIX version which is really broken. We prefer GNU basename(). */
-#include <libgen.h>
-#undef basename
-
-#ifdef HAVE_SYS_AUXV_H
-#include <sys/auxv.h>
-#endif
-
-/* We include linux/fs.h as last of the system headers, as it
- * otherwise conflicts with sys/mount.h. Yay, Linux is great! */
-#include <linux/fs.h>
 
 #include "alloc-util.h"
 #include "build.h"
+#include "cgroup-util.h"
 #include "def.h"
-#include "device-nodes.h"
-#include "env-util.h"
-#include "escape.h"
-#include "exit-status.h"
+#include "dirent-util.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "formats-util.h"
-#include "gunicode.h"
 #include "hashmap.h"
 #include "hostname-util.h"
-#include "ioprio.h"
 #include "log.h"
 #include "macro.h"
 #include "missing.h"
-#include "mkdir.h"
-#include "hexdecoct.h"
 #include "parse-util.h"
 #include "path-util.h"
 #include "process-util.h"
-#include "random-util.h"
+#include "set.h"
 #include "signal-util.h"
-#include "sparse-endian.h"
-#include "string-table.h"
+#include "stat-util.h"
 #include "string-util.h"
 #include "strv.h"
-#include "terminal-util.h"
+#include "time-util.h"
+#include "umask-util.h"
 #include "user-util.h"
-#include "utf8.h"
 #include "util.h"
-#include "virt.h"
-#include "dirent-util.h"
-#include "stat-util.h"
 
 /* Put this test here for a lack of better place */
 assert_cc(EAGAIN == EWOULDBLOCK);
 
 int saved_argc = 0;
 char **saved_argv = NULL;
+static int saved_in_initrd = -1;
 
 size_t page_size(void) {
         static thread_local size_t pgsz = 0;
@@ -206,7 +162,7 @@ static int do_execute(char **directories, usec_t timeout, char *argv[]) {
 
                         log_debug("Spawned %s as " PID_FMT ".", path, pid);
 
-                        r = hashmap_put(pids, UINT_TO_PTR(pid), path);
+                        r = hashmap_put(pids, PID_TO_PTR(pid), path);
                         if (r < 0)
                                 return log_oom();
                         path = NULL;
@@ -224,10 +180,10 @@ static int do_execute(char **directories, usec_t timeout, char *argv[]) {
                 _cleanup_free_ char *path = NULL;
                 pid_t pid;
 
-                pid = PTR_TO_UINT(hashmap_first_key(pids));
+                pid = PTR_TO_PID(hashmap_first_key(pids));
                 assert(pid > 0);
 
-                path = hashmap_remove(pids, UINT_TO_PTR(pid));
+                path = hashmap_remove(pids, PID_TO_PTR(pid));
                 assert(path);
 
                 wait_for_terminate_and_warn(path, pid, true);
@@ -466,13 +422,17 @@ int fork_agent(pid_t *pid, const int except[], unsigned n_except, const char *pa
                         _exit(EXIT_FAILURE);
                 }
 
-                if (!stdout_is_tty)
-                        dup2(fd, STDOUT_FILENO);
+                if (!stdout_is_tty && dup2(fd, STDOUT_FILENO) < 0) {
+                        log_error_errno(errno, "Failed to dup2 /dev/tty: %m");
+                        _exit(EXIT_FAILURE);
+                }
 
-                if (!stderr_is_tty)
-                        dup2(fd, STDERR_FILENO);
+                if (!stderr_is_tty && dup2(fd, STDERR_FILENO) < 0) {
+                        log_error_errno(errno, "Failed to dup2 /dev/tty: %m");
+                        _exit(EXIT_FAILURE);
+                }
 
-                if (fd > 2)
+                if (fd > STDERR_FILENO)
                         close(fd);
         }
 
@@ -496,11 +456,10 @@ int fork_agent(pid_t *pid, const int except[], unsigned n_except, const char *pa
 }
 
 bool in_initrd(void) {
-        static int saved = -1;
         struct statfs s;
 
-        if (saved >= 0)
-                return saved;
+        if (saved_in_initrd >= 0)
+                return saved_in_initrd;
 
         /* We make two checks here:
          *
@@ -512,11 +471,15 @@ bool in_initrd(void) {
          * emptying when transititioning to the main systemd.
          */
 
-        saved = access("/etc/initrd-release", F_OK) >= 0 &&
-                statfs("/", &s) >= 0 &&
-                is_temporary_fs(&s);
+        saved_in_initrd = access("/etc/initrd-release", F_OK) >= 0 &&
+                          statfs("/", &s) >= 0 &&
+                          is_temporary_fs(&s);
 
-        return saved;
+        return saved_in_initrd;
+}
+
+void in_initrd_force(bool value) {
+        saved_in_initrd = value;
 }
 
 /* hey glibc, APIs with callbacks without a user pointer are so useless */
@@ -558,13 +521,13 @@ int on_ac_power(void) {
 
                 errno = 0;
                 de = readdir(d);
-                if (!de && errno != 0)
+                if (!de && errno > 0)
                         return -errno;
 
                 if (!de)
                         break;
 
-                if (hidden_file(de->d_name))
+                if (hidden_or_backup_file(de->d_name))
                         continue;
 
                 device = openat(dirfd(d), de->d_name, O_DIRECTORY|O_RDONLY|O_CLOEXEC|O_NOCTTY);
@@ -616,47 +579,6 @@ int on_ac_power(void) {
         }
 
         return found_online || !found_offline;
-}
-
-bool id128_is_valid(const char *s) {
-        size_t i, l;
-
-        l = strlen(s);
-        if (l == 32) {
-
-                /* Simple formatted 128bit hex string */
-
-                for (i = 0; i < l; i++) {
-                        char c = s[i];
-
-                        if (!(c >= '0' && c <= '9') &&
-                            !(c >= 'a' && c <= 'z') &&
-                            !(c >= 'A' && c <= 'Z'))
-                                return false;
-                }
-
-        } else if (l == 36) {
-
-                /* Formatted UUID */
-
-                for (i = 0; i < l; i++) {
-                        char c = s[i];
-
-                        if ((i == 8 || i == 13 || i == 18 || i == 23)) {
-                                if (c != '-')
-                                        return false;
-                        } else {
-                                if (!(c >= '0' && c <= '9') &&
-                                    !(c >= 'a' && c <= 'z') &&
-                                    !(c >= 'A' && c <= 'Z'))
-                                        return false;
-                        }
-                }
-
-        } else
-                return false;
-
-        return true;
 }
 
 int container_get_leader(const char *machine, pid_t *pid) {
@@ -809,26 +731,140 @@ int namespace_enter(int pidns_fd, int mntns_fd, int netns_fd, int userns_fd, int
 }
 
 uint64_t physical_memory(void) {
-        long mem;
+        _cleanup_free_ char *root = NULL, *value = NULL;
+        uint64_t mem, lim;
+        size_t ps;
+        long sc;
 
-        /* We return this as uint64_t in case we are running as 32bit
-         * process on a 64bit kernel with huge amounts of memory */
+        /* We return this as uint64_t in case we are running as 32bit process on a 64bit kernel with huge amounts of
+         * memory.
+         *
+         * In order to support containers nicely that have a configured memory limit we'll take the minimum of the
+         * physically reported amount of memory and the limit configured for the root cgroup, if there is any. */
 
-        mem = sysconf(_SC_PHYS_PAGES);
-        assert(mem > 0);
+        sc = sysconf(_SC_PHYS_PAGES);
+        assert(sc > 0);
 
-        return (uint64_t) mem * (uint64_t) page_size();
+        ps = page_size();
+        mem = (uint64_t) sc * (uint64_t) ps;
+
+        if (cg_get_root_path(&root) < 0)
+                return mem;
+
+        if (cg_get_attribute("memory", root, "memory.limit_in_bytes", &value))
+                return mem;
+
+        if (safe_atou64(value, &lim) < 0)
+                return mem;
+
+        /* Make sure the limit is a multiple of our own page size */
+        lim /= ps;
+        lim *= ps;
+
+        return MIN(mem, lim);
 }
 
-int update_reboot_param_file(const char *param) {
-        int r = 0;
+uint64_t physical_memory_scale(uint64_t v, uint64_t max) {
+        uint64_t p, m, ps, r;
 
-        if (param) {
-                r = write_string_file(REBOOT_PARAM_FILE, param, WRITE_STRING_FILE_CREATE);
+        assert(max > 0);
+
+        /* Returns the physical memory size, multiplied by v divided by max. Returns UINT64_MAX on overflow. On success
+         * the result is a multiple of the page size (rounds down). */
+
+        ps = page_size();
+        assert(ps > 0);
+
+        p = physical_memory() / ps;
+        assert(p > 0);
+
+        m = p * v;
+        if (m / p != v)
+                return UINT64_MAX;
+
+        m /= max;
+
+        r = m * ps;
+        if (r / ps != m)
+                return UINT64_MAX;
+
+        return r;
+}
+
+uint64_t system_tasks_max(void) {
+
+#if SIZEOF_PID_T == 4
+#define TASKS_MAX ((uint64_t) (INT32_MAX-1))
+#elif SIZEOF_PID_T == 2
+#define TASKS_MAX ((uint64_t) (INT16_MAX-1))
+#else
+#error "Unknown pid_t size"
+#endif
+
+        _cleanup_free_ char *value = NULL, *root = NULL;
+        uint64_t a = TASKS_MAX, b = TASKS_MAX;
+
+        /* Determine the maximum number of tasks that may run on this system. We check three sources to determine this
+         * limit:
+         *
+         * a) the maximum value for the pid_t type
+         * b) the cgroups pids_max attribute for the system
+         * c) the kernel's configure maximum PID value
+         *
+         * And then pick the smallest of the three */
+
+        if (read_one_line_file("/proc/sys/kernel/pid_max", &value) >= 0)
+                (void) safe_atou64(value, &a);
+
+        if (cg_get_root_path(&root) >= 0) {
+                value = mfree(value);
+
+                if (cg_get_attribute("pids", root, "pids.max", &value) >= 0)
+                        (void) safe_atou64(value, &b);
+        }
+
+        return MIN3(TASKS_MAX,
+                    a <= 0 ? TASKS_MAX : a,
+                    b <= 0 ? TASKS_MAX : b);
+}
+
+uint64_t system_tasks_max_scale(uint64_t v, uint64_t max) {
+        uint64_t t, m;
+
+        assert(max > 0);
+
+        /* Multiply the system's task value by the fraction v/max. Hence, if max==100 this calculates percentages
+         * relative to the system's maximum number of tasks. Returns UINT64_MAX on overflow. */
+
+        t = system_tasks_max();
+        assert(t > 0);
+
+        m = t * v;
+        if (m / t != v) /* overflow? */
+                return UINT64_MAX;
+
+        return m / max;
+}
+
+int update_reboot_parameter_and_warn(const char *param) {
+        int r;
+
+        if (isempty(param)) {
+                if (unlink("/run/systemd/reboot-param") < 0) {
+                        if (errno == ENOENT)
+                                return 0;
+
+                        return log_warning_errno(errno, "Failed to unlink reboot parameter file: %m");
+                }
+
+                return 0;
+        }
+
+        RUN_WITH_UMASK(0022) {
+                r = write_string_file("/run/systemd/reboot-param", param, WRITE_STRING_FILE_CREATE);
                 if (r < 0)
-                        return log_error_errno(r, "Failed to write reboot param to "REBOOT_PARAM_FILE": %m");
-        } else
-                (void) unlink(REBOOT_PARAM_FILE);
+                        return log_warning_errno(r, "Failed to write reboot parameter file: %m");
+        }
 
         return 0;
 }

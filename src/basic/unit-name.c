@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -20,22 +18,37 @@
 ***/
 
 #include <errno.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "alloc-util.h"
 #include "bus-label.h"
-#include "def.h"
+#include "glob-util.h"
 #include "hexdecoct.h"
+#include "macro.h"
 #include "path-util.h"
 #include "string-table.h"
 #include "string-util.h"
 #include "strv.h"
 #include "unit-name.h"
-#include "util.h"
 
+/* Characters valid in a unit name. */
 #define VALID_CHARS                             \
-        DIGITS LETTERS                          \
+        DIGITS                                  \
+        LETTERS                                 \
         ":-_.\\"
+
+/* The same, but also permits the single @ character that may appear */
+#define VALID_CHARS_WITH_AT                     \
+        "@"                                     \
+        VALID_CHARS
+
+/* All chars valid in a unit name glob */
+#define VALID_CHARS_GLOB                        \
+        VALID_CHARS_WITH_AT                     \
+        "[]!-*?"
 
 bool unit_name_is_valid(const char *n, UnitNameFlags flags) {
         const char *e, *i, *at;
@@ -597,7 +610,6 @@ const char* unit_dbus_interface_from_type(UnitType t) {
                 [UNIT_SOCKET] = "org.freedesktop.systemd1.Socket",
                 [UNIT_BUSNAME] = "org.freedesktop.systemd1.BusName",
                 [UNIT_TARGET] = "org.freedesktop.systemd1.Target",
-                [UNIT_SNAPSHOT] = "org.freedesktop.systemd1.Snapshot",
                 [UNIT_DEVICE] = "org.freedesktop.systemd1.Device",
                 [UNIT_MOUNT] = "org.freedesktop.systemd1.Mount",
                 [UNIT_AUTOMOUNT] = "org.freedesktop.systemd1.Automount",
@@ -636,7 +648,7 @@ static char *do_escape_mangle(const char *f, UnitNameMangle allow_globs, char *t
         /* We'll only escape the obvious characters here, to play
          * safe. */
 
-        valid_chars = allow_globs == UNIT_NAME_GLOB ? "@" VALID_CHARS "[]!-*?" : "@" VALID_CHARS;
+        valid_chars = allow_globs == UNIT_NAME_GLOB ? VALID_CHARS_GLOB : VALID_CHARS_WITH_AT;
 
         for (; *f; f++) {
                 if (*f == '/')
@@ -655,7 +667,7 @@ static char *do_escape_mangle(const char *f, UnitNameMangle allow_globs, char *t
  *  /blah/blah is converted to blah-blah.mount, anything else is left alone,
  *  except that @suffix is appended if a valid unit suffix is not present.
  *
- *  If @allow_globs, globs characters are preserved. Otherwise they are escaped.
+ *  If @allow_globs, globs characters are preserved. Otherwise, they are escaped.
  */
 int unit_name_mangle_with_suffix(const char *name, UnitNameMangle allow_globs, const char *suffix, char **ret) {
         char *s, *t;
@@ -671,15 +683,15 @@ int unit_name_mangle_with_suffix(const char *name, UnitNameMangle allow_globs, c
         if (!unit_suffix_is_valid(suffix))
                 return -EINVAL;
 
-        if (unit_name_is_valid(name, UNIT_NAME_ANY)) {
-                /* No mangling necessary... */
-                s = strdup(name);
-                if (!s)
-                        return -ENOMEM;
+        /* Already a fully valid unit name? If so, no mangling is necessary... */
+        if (unit_name_is_valid(name, UNIT_NAME_ANY))
+                goto good;
 
-                *ret = s;
-                return 0;
-        }
+        /* Already a fully valid globbing expression? If so, no mangling is necessary either... */
+        if (allow_globs == UNIT_NAME_GLOB &&
+            string_is_glob(name) &&
+            in_charset(name, VALID_CHARS_GLOB))
+                goto good;
 
         if (is_device_path(name)) {
                 r = unit_name_from_path(name, ".device", ret);
@@ -704,11 +716,21 @@ int unit_name_mangle_with_suffix(const char *name, UnitNameMangle allow_globs, c
         t = do_escape_mangle(name, allow_globs, s);
         *t = 0;
 
-        if (unit_name_to_type(s) < 0)
+        /* Append a suffix if it doesn't have any, but only if this is not a glob, so that we can allow "foo.*" as a
+         * valid glob. */
+        if ((allow_globs != UNIT_NAME_GLOB || !string_is_glob(s)) && unit_name_to_type(s) < 0)
                 strcpy(t, suffix);
 
         *ret = s;
         return 1;
+
+good:
+        s = strdup(name);
+        if (!s)
+                return -ENOMEM;
+
+        *ret = s;
+        return 0;
 }
 
 int slice_build_parent_slice(const char *slice, char **ret) {
@@ -819,7 +841,6 @@ static const char* const unit_type_table[_UNIT_TYPE_MAX] = {
         [UNIT_SOCKET] = "socket",
         [UNIT_BUSNAME] = "busname",
         [UNIT_TARGET] = "target",
-        [UNIT_SNAPSHOT] = "snapshot",
         [UNIT_DEVICE] = "device",
         [UNIT_MOUNT] = "mount",
         [UNIT_AUTOMOUNT] = "automount",
@@ -950,13 +971,6 @@ static const char* const slice_state_table[_SLICE_STATE_MAX] = {
 
 DEFINE_STRING_TABLE_LOOKUP(slice_state, SliceState);
 
-static const char* const snapshot_state_table[_SNAPSHOT_STATE_MAX] = {
-        [SNAPSHOT_DEAD] = "dead",
-        [SNAPSHOT_ACTIVE] = "active"
-};
-
-DEFINE_STRING_TABLE_LOOKUP(snapshot_state, SnapshotState);
-
 static const char* const socket_state_table[_SOCKET_STATE_MAX] = {
         [SOCKET_DEAD] = "dead",
         [SOCKET_START_PRE] = "start-pre",
@@ -1009,16 +1023,12 @@ DEFINE_STRING_TABLE_LOOKUP(timer_state, TimerState);
 
 static const char* const unit_dependency_table[_UNIT_DEPENDENCY_MAX] = {
         [UNIT_REQUIRES] = "Requires",
-        [UNIT_REQUIRES_OVERRIDABLE] = "RequiresOverridable",
         [UNIT_REQUISITE] = "Requisite",
-        [UNIT_REQUISITE_OVERRIDABLE] = "RequisiteOverridable",
         [UNIT_WANTS] = "Wants",
         [UNIT_BINDS_TO] = "BindsTo",
         [UNIT_PART_OF] = "PartOf",
         [UNIT_REQUIRED_BY] = "RequiredBy",
-        [UNIT_REQUIRED_BY_OVERRIDABLE] = "RequiredByOverridable",
         [UNIT_REQUISITE_OF] = "RequisiteOf",
-        [UNIT_REQUISITE_OF_OVERRIDABLE] = "RequisiteOfOverridable",
         [UNIT_WANTED_BY] = "WantedBy",
         [UNIT_BOUND_BY] = "BoundBy",
         [UNIT_CONSISTS_OF] = "ConsistsOf",

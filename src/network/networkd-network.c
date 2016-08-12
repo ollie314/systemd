@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -32,6 +30,7 @@
 #include "networkd-network.h"
 #include "networkd.h"
 #include "parse-util.h"
+#include "set.h"
 #include "stat-util.h"
 #include "string-table.h"
 #include "string-util.h"
@@ -52,8 +51,8 @@ static int network_load_one(Manager *manager, const char *filename) {
         if (!file) {
                 if (errno == ENOENT)
                         return 0;
-                else
-                        return -errno;
+
+                return -errno;
         }
 
         if (null_or_empty_fd(fileno(file))) {
@@ -104,29 +103,39 @@ static int network_load_one(Manager *manager, const char *filename) {
         *d = '\0';
 
         network->dhcp = ADDRESS_FAMILY_NO;
-        network->dhcp_ntp = true;
-        network->dhcp_dns = true;
-        network->dhcp_hostname = true;
-        network->dhcp_routes = true;
-        network->dhcp_sendhost = true;
+        network->dhcp_use_ntp = true;
+        network->dhcp_use_dns = true;
+        network->dhcp_use_hostname = true;
+        network->dhcp_use_routes = true;
+        network->dhcp_send_hostname = true;
         network->dhcp_route_metric = DHCP_ROUTE_METRIC;
         network->dhcp_client_identifier = DHCP_CLIENT_ID_DUID;
 
         network->dhcp_server_emit_dns = true;
         network->dhcp_server_emit_ntp = true;
+        network->dhcp_server_emit_router = true;
         network->dhcp_server_emit_timezone = true;
 
         network->use_bpdu = true;
         network->allow_port_to_be_root = true;
         network->unicast_flood = true;
 
+        network->lldp_mode = LLDP_MODE_ROUTERS_ONLY;
+
         network->llmnr = RESOLVE_SUPPORT_YES;
+        network->mdns = RESOLVE_SUPPORT_NO;
+        network->dnssec_mode = _DNSSEC_MODE_INVALID;
 
         network->link_local = ADDRESS_FAMILY_IPV6;
 
         network->ipv6_privacy_extensions = IPV6_PRIVACY_EXTENSIONS_NO;
         network->ipv6_accept_ra = -1;
         network->ipv6_dad_transmits = -1;
+        network->ipv6_hop_limit = -1;
+        network->duid.type = _DUID_TYPE_INVALID;
+        network->proxy_arp = -1;
+        network->arp = -1;
+        network->ipv6_accept_ra_use_dns = true;
 
         r = config_parse(NULL, filename, file,
                          "Match\0"
@@ -137,8 +146,10 @@ static int network_load_one(Manager *manager, const char *filename) {
                          "DHCP\0"
                          "DHCPv4\0" /* compat */
                          "DHCPServer\0"
+                         "IPv6AcceptRA\0"
                          "Bridge\0"
-                         "BridgeFDB\0",
+                         "BridgeFDB\0"
+                         "BridgeVLAN\0",
                          config_item_perf_lookup, network_network_gperf_lookup,
                          false, false, true, network);
         if (r < 0)
@@ -223,18 +234,19 @@ void network_free(Network *network) {
 
         free(network->description);
         free(network->dhcp_vendor_class_identifier);
-        free(network->hostname);
+        free(network->dhcp_hostname);
 
         free(network->mac);
 
         strv_free(network->ntp);
         strv_free(network->dns);
-        strv_free(network->domains);
+        strv_free(network->search_domains);
+        strv_free(network->route_domains);
         strv_free(network->bind_carrier);
 
         netdev_unref(network->bridge);
-
         netdev_unref(network->bond);
+        netdev_unref(network->vrf);
 
         HASHMAP_FOREACH(netdev, network->stacked_netdevs, i) {
                 hashmap_remove(network->stacked_netdevs, netdev->ifname);
@@ -273,6 +285,8 @@ void network_free(Network *network) {
         free(network->dhcp_server_timezone);
         free(network->dhcp_server_dns);
         free(network->dhcp_server_ntp);
+
+        set_free_free(network->dnssec_negative_trust_anchors);
 
         free(network);
 }
@@ -352,6 +366,10 @@ int network_get(Manager *manager, struct udev_device *device,
 int network_apply(Manager *manager, Network *network, Link *link) {
         int r;
 
+        assert(manager);
+        assert(network);
+        assert(link);
+
         link->network = network;
 
         if (network->ipv4ll_route) {
@@ -361,7 +379,7 @@ int network_apply(Manager *manager, Network *network, Link *link) {
                 if (r < 0)
                         return r;
 
-                r = inet_pton(AF_INET, "169.254.0.0", &route->dst_addr.in);
+                r = inet_pton(AF_INET, "169.254.0.0", &route->dst.in);
                 if (r == 0)
                         return -EINVAL;
                 if (r < 0)
@@ -370,16 +388,30 @@ int network_apply(Manager *manager, Network *network, Link *link) {
                 route->family = AF_INET;
                 route->dst_prefixlen = 16;
                 route->scope = RT_SCOPE_LINK;
-                route->metrics = IPV4LL_ROUTE_METRIC;
+                route->priority = IPV4LL_ROUTE_METRIC;
                 route->protocol = RTPROT_STATIC;
         }
 
-        if (network->dns || network->ntp || network->domains) {
-                manager_dirty(manager);
+        if (!strv_isempty(network->dns) ||
+            !strv_isempty(network->ntp) ||
+            !strv_isempty(network->search_domains) ||
+            !strv_isempty(network->route_domains))
                 link_dirty(link);
-        }
 
         return 0;
+}
+
+bool network_has_static_ipv6_addresses(Network *network) {
+        Address *address;
+
+        assert(network);
+
+        LIST_FOREACH(addresses, address, network->static_addresses) {
+                if (address->family == AF_INET6)
+                        return true;
+        }
+
+        return false;
 }
 
 int config_parse_netdev(const char *unit,
@@ -438,6 +470,10 @@ int config_parse_netdev(const char *unit,
                 network->bond = netdev;
 
                 break;
+        case NETDEV_KIND_VRF:
+                network->vrf = netdev;
+
+                break;
         case NETDEV_KIND_VLAN:
         case NETDEV_KIND_MACVLAN:
         case NETDEV_KIND_MACVTAP:
@@ -459,48 +495,84 @@ int config_parse_netdev(const char *unit,
         return 0;
 }
 
-int config_parse_domains(const char *unit,
-                         const char *filename,
-                         unsigned line,
-                         const char *section,
-                         unsigned section_line,
-                         const char *lvalue,
-                         int ltype,
-                         const char *rvalue,
-                         void *data,
-                         void *userdata) {
-        Network *network = userdata;
-        char ***domains = data;
-        char **domain;
+int config_parse_domains(
+                const char *unit,
+                const char *filename,
+                unsigned line,
+                const char *section,
+                unsigned section_line,
+                const char *lvalue,
+                int ltype,
+                const char *rvalue,
+                void *data,
+                void *userdata) {
+
+        const char *p;
+        Network *n = data;
         int r;
 
-        r = config_parse_strv(unit, filename, line, section, section_line,
-                              lvalue, ltype, rvalue, domains, userdata);
-        if (r < 0)
-                return r;
+        assert(n);
+        assert(lvalue);
+        assert(rvalue);
 
-        strv_uniq(*domains);
-        network->wildcard_domain = !!strv_find(*domains, "*");
+        if (isempty(rvalue)) {
+                n->search_domains = strv_free(n->search_domains);
+                n->route_domains = strv_free(n->route_domains);
+                return 0;
+        }
 
-        STRV_FOREACH(domain, *domains) {
-                if (is_localhost(*domain))
-                        log_syntax(unit, LOG_ERR, filename, line, 0, "'localhost' domain names may not be configured, ignoring assignment: %s", *domain);
-                else {
-                        r = dns_name_is_valid(*domain);
-                        if (r <= 0 && !streq(*domain, "*")) {
-                                if (r < 0)
-                                        log_error_errno(r, "Failed to validate domain name: %s: %m", *domain);
-                                if (r == 0)
-                                        log_warning("Domain name is not valid, ignoring assignment: %s", *domain);
-                        } else
+        p = rvalue;
+        for (;;) {
+                _cleanup_free_ char *w = NULL, *normalized = NULL;
+                const char *domain;
+                bool is_route;
+
+                r = extract_first_word(&p, &w, NULL, 0);
+                if (r < 0) {
+                        log_syntax(unit, LOG_ERR, filename, line, r, "Failed to extract search or route domain, ignoring: %s", rvalue);
+                        break;
+                }
+                if (r == 0)
+                        break;
+
+                is_route = w[0] == '~';
+                domain = is_route ? w + 1 : w;
+
+                if (dns_name_is_root(domain) || streq(domain, "*")) {
+                        /* If the root domain appears as is, or the special token "*" is found, we'll consider this as
+                         * routing domain, unconditionally. */
+                        is_route = true;
+                        domain = "."; /* make sure we don't allow empty strings, thus write the root domain as "." */
+
+                } else {
+                        r = dns_name_normalize(domain, &normalized);
+                        if (r < 0) {
+                                log_syntax(unit, LOG_ERR, filename, line, r, "'%s' is not a valid domain name, ignoring.", domain);
                                 continue;
+                        }
+
+                        domain = normalized;
+
+                        if (is_localhost(domain)) {
+                                log_syntax(unit, LOG_ERR, filename, line, 0, "'localhost' domain names may not be configure as search or route domains, ignoring assignment: %s", domain);
+                                continue;
+                        }
                 }
 
-                strv_remove(*domains, *domain);
+                if (is_route) {
+                        r = strv_extend(&n->route_domains, domain);
+                        if (r < 0)
+                                return log_oom();
 
-                /* We removed one entry, make sure we don't skip the next one */
-                domain--;
+                } else {
+                        r = strv_extend(&n->search_domains, domain);
+                        if (r < 0)
+                                return log_oom();
+                }
         }
+
+        strv_uniq(n->route_domains);
+        strv_uniq(n->search_domains);
 
         return 0;
 }
@@ -579,10 +651,7 @@ int config_parse_ipv4ll(
          * config_parse_address_family_boolean(), except that it
          * applies only to IPv4 */
 
-        if (parse_boolean(rvalue))
-                *link_local |= ADDRESS_FAMILY_IPV4;
-        else
-                *link_local &= ~ADDRESS_FAMILY_IPV4;
+        SET_FLAG(*link_local, ADDRESS_FAMILY_IPV4, parse_boolean(rvalue));
 
         return 0;
 }
@@ -903,3 +972,79 @@ int config_parse_dhcp_server_ntp(
                 n->dhcp_server_ntp = m;
         }
 }
+
+int config_parse_dnssec_negative_trust_anchors(
+                const char *unit,
+                const char *filename,
+                unsigned line,
+                const char *section,
+                unsigned section_line,
+                const char *lvalue,
+                int ltype,
+                const char *rvalue,
+                void *data,
+                void *userdata) {
+
+        const char *p = rvalue;
+        Network *n = data;
+        int r;
+
+        assert(n);
+        assert(lvalue);
+        assert(rvalue);
+
+        if (isempty(rvalue)) {
+                n->dnssec_negative_trust_anchors = set_free_free(n->dnssec_negative_trust_anchors);
+                return 0;
+        }
+
+        for (;;) {
+                _cleanup_free_ char *w = NULL;
+
+                r = extract_first_word(&p, &w, NULL, 0);
+                if (r < 0) {
+                        log_syntax(unit, LOG_ERR, filename, line, r, "Failed to extract negative trust anchor domain, ignoring: %s", rvalue);
+                        break;
+                }
+                if (r == 0)
+                        break;
+
+                r = dns_name_is_valid(w);
+                if (r <= 0) {
+                        log_syntax(unit, LOG_ERR, filename, line, r, "%s is not a valid domain name, ignoring.", w);
+                        continue;
+                }
+
+                r = set_ensure_allocated(&n->dnssec_negative_trust_anchors, &dns_name_hash_ops);
+                if (r < 0)
+                        return log_oom();
+
+                r = set_put(n->dnssec_negative_trust_anchors, w);
+                if (r < 0)
+                        return log_oom();
+                if (r > 0)
+                        w = NULL;
+        }
+
+        return 0;
+}
+
+DEFINE_CONFIG_PARSE_ENUM(config_parse_dhcp_use_domains, dhcp_use_domains, DHCPUseDomains, "Failed to parse DHCP use domains setting");
+
+static const char* const dhcp_use_domains_table[_DHCP_USE_DOMAINS_MAX] = {
+        [DHCP_USE_DOMAINS_NO] = "no",
+        [DHCP_USE_DOMAINS_ROUTE] = "route",
+        [DHCP_USE_DOMAINS_YES] = "yes",
+};
+
+DEFINE_STRING_TABLE_LOOKUP_WITH_BOOLEAN(dhcp_use_domains, DHCPUseDomains, DHCP_USE_DOMAINS_YES);
+
+DEFINE_CONFIG_PARSE_ENUM(config_parse_lldp_mode, lldp_mode, LLDPMode, "Failed to parse LLDP= setting.");
+
+static const char* const lldp_mode_table[_LLDP_MODE_MAX] = {
+        [LLDP_MODE_NO] = "no",
+        [LLDP_MODE_YES] = "yes",
+        [LLDP_MODE_ROUTERS_ONLY] = "routers-only",
+};
+
+DEFINE_STRING_TABLE_LOOKUP_WITH_BOOLEAN(lldp_mode, LLDPMode, LLDP_MODE_YES);

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -22,10 +20,12 @@
 ***/
 
 #include <fcntl.h>
+#include <limits.h>
+#include <stdbool.h>
+#include <stdint.h>
 #include <sys/inotify.h>
 #include <sys/types.h>
 #include <unistd.h>
-#include <limits.h>
 
 #include "time-util.h"
 
@@ -40,9 +40,9 @@ int readlink_malloc(const char *p, char **r);
 int readlink_value(const char *p, char **ret);
 int readlink_and_make_absolute(const char *p, char **r);
 int readlink_and_canonicalize(const char *p, char **r);
+int readlink_and_make_absolute_root(const char *root, const char *path, char **ret);
 
 int chmod_and_chown(const char *path, mode_t mode, uid_t uid, gid_t gid);
-int fchmod_and_fchown(int fd, mode_t mode, uid_t uid, gid_t gid);
 
 int fchmod_umask(int fd, mode_t mode);
 
@@ -61,6 +61,9 @@ int mkfifo_atomic(const char *path, mode_t mode);
 
 int get_files_in_directory(const char *path, char ***list);
 
+int tmp_dir(const char **ret);
+int var_tmp_dir(const char **ret);
+
 #define INOTIFY_EVENT_MAX (sizeof(struct inotify_event) + NAME_MAX + 1)
 
 #define FOREACH_INOTIFY_EVENT(e, buffer, sz) \
@@ -72,3 +75,5 @@ union inotify_event_buffer {
         struct inotify_event ev;
         uint8_t raw[INOTIFY_EVENT_MAX];
 };
+
+int inotify_add_watch_fd(int fd, int what, uint32_t mask);

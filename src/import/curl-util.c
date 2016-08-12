@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -48,9 +46,7 @@ static int curl_glue_on_io(sd_event_source *s, int fd, uint32_t revents, void *u
         assert(s);
         assert(g);
 
-        translated_fd = PTR_TO_INT(hashmap_get(g->translate_fds, INT_TO_PTR(fd+1)));
-        assert(translated_fd > 0);
-        translated_fd--;
+        translated_fd = PTR_TO_FD(hashmap_get(g->translate_fds, FD_TO_PTR(fd)));
 
         if ((revents & (EPOLLIN|EPOLLOUT)) == (EPOLLIN|EPOLLOUT))
                 action = CURL_POLL_INOUT;
@@ -79,7 +75,7 @@ static int curl_glue_socket_callback(CURLM *curl, curl_socket_t s, int action, v
         assert(curl);
         assert(g);
 
-        io = hashmap_get(g->ios, INT_TO_PTR(s+1));
+        io = hashmap_get(g->ios, FD_TO_PTR(s));
 
         if (action == CURL_POLL_REMOVE) {
                 if (io) {
@@ -91,8 +87,8 @@ static int curl_glue_socket_callback(CURLM *curl, curl_socket_t s, int action, v
                         sd_event_source_set_enabled(io, SD_EVENT_OFF);
                         sd_event_source_unref(io);
 
-                        hashmap_remove(g->ios, INT_TO_PTR(s+1));
-                        hashmap_remove(g->translate_fds, INT_TO_PTR(fd+1));
+                        hashmap_remove(g->ios, FD_TO_PTR(s));
+                        hashmap_remove(g->translate_fds, FD_TO_PTR(fd));
 
                         safe_close(fd);
                 }
@@ -141,19 +137,19 @@ static int curl_glue_socket_callback(CURLM *curl, curl_socket_t s, int action, v
                 if (sd_event_add_io(g->event, &io, fd, events, curl_glue_on_io, g) < 0)
                         return -1;
 
-                sd_event_source_set_description(io, "curl-io");
+                (void) sd_event_source_set_description(io, "curl-io");
 
-                r = hashmap_put(g->ios, INT_TO_PTR(s+1), io);
+                r = hashmap_put(g->ios, FD_TO_PTR(s), io);
                 if (r < 0) {
                         log_oom();
                         sd_event_source_unref(io);
                         return -1;
                 }
 
-                r = hashmap_put(g->translate_fds, INT_TO_PTR(fd+1), INT_TO_PTR(s+1));
+                r = hashmap_put(g->translate_fds, FD_TO_PTR(fd), FD_TO_PTR(s));
                 if (r < 0) {
                         log_oom();
-                        hashmap_remove(g->ios, INT_TO_PTR(s+1));
+                        hashmap_remove(g->ios, FD_TO_PTR(s));
                         sd_event_source_unref(io);
                         return -1;
                 }
@@ -208,7 +204,7 @@ static int curl_glue_timer_callback(CURLM *curl, long timeout_ms, void *userdata
                 if (sd_event_add_time(g->event, &g->timer, clock_boottime_or_monotonic(), usec, 0, curl_glue_on_timer, g) < 0)
                         return -1;
 
-                sd_event_source_set_description(g->timer, "curl-timer");
+                (void) sd_event_source_set_description(g->timer, "curl-timer");
         }
 
         return 0;
@@ -229,7 +225,7 @@ CurlGlue *curl_glue_unref(CurlGlue *g) {
                 fd = sd_event_source_get_io_fd(io);
                 assert(fd >= 0);
 
-                hashmap_remove(g->translate_fds, INT_TO_PTR(fd+1));
+                hashmap_remove(g->translate_fds, FD_TO_PTR(fd));
 
                 safe_close(fd);
                 sd_event_source_unref(io);

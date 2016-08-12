@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -24,8 +22,8 @@
 #include "alloc-util.h"
 #include "bus-control.h"
 #include "bus-objects.h"
-#include "string-util.h"
 #include "bus-slot.h"
+#include "string-util.h"
 
 sd_bus_slot *bus_slot_allocate(
                 sd_bus *bus,
@@ -57,7 +55,9 @@ sd_bus_slot *bus_slot_allocate(
 }
 
 _public_ sd_bus_slot* sd_bus_slot_ref(sd_bus_slot *slot) {
-        assert_return(slot, NULL);
+
+        if (!slot)
+                return NULL;
 
         assert(slot->n_ref > 0);
 
@@ -206,7 +206,7 @@ _public_ sd_bus_slot* sd_bus_slot_unref(sd_bus_slot *slot) {
         assert(slot->n_ref > 0);
 
         if (slot->n_ref > 1) {
-                slot->n_ref --;
+                slot->n_ref--;
                 return NULL;
         }
 

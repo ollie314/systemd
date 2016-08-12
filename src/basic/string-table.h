@@ -1,6 +1,4 @@
 
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -22,6 +20,7 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include <errno.h>
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
@@ -46,19 +45,21 @@ ssize_t string_table_lookup(const char * const *table, size_t len, const char *k
                 return (type) string_table_lookup(name##_table, ELEMENTSOF(name##_table), s); \
         }
 
-#define _DEFINE_STRING_TABLE_LOOKUP(name,type,scope)                    \
-        _DEFINE_STRING_TABLE_LOOKUP_TO_STRING(name,type,scope)          \
-        _DEFINE_STRING_TABLE_LOOKUP_FROM_STRING(name,type,scope)        \
-        struct __useless_struct_to_allow_trailing_semicolon__
+#define _DEFINE_STRING_TABLE_LOOKUP_FROM_STRING_WITH_BOOLEAN(name,type,yes,scope) \
+        scope type name##_from_string(const char *s) {                  \
+                int b;                                                  \
+                if (!s)                                                 \
+                        return -1;                                      \
+                b = parse_boolean(s);                                   \
+                if (b == 0)                                             \
+                        return (type) 0;                                \
+                else if (b > 0)                                         \
+                        return yes;                                     \
+                return (type) string_table_lookup(name##_table, ELEMENTSOF(name##_table), s); \
+        }
 
-#define DEFINE_STRING_TABLE_LOOKUP(name,type) _DEFINE_STRING_TABLE_LOOKUP(name,type,)
-#define DEFINE_PRIVATE_STRING_TABLE_LOOKUP(name,type) _DEFINE_STRING_TABLE_LOOKUP(name,type,static)
-#define DEFINE_PRIVATE_STRING_TABLE_LOOKUP_TO_STRING(name,type) _DEFINE_STRING_TABLE_LOOKUP_TO_STRING(name,type,static)
-#define DEFINE_PRIVATE_STRING_TABLE_LOOKUP_FROM_STRING(name,type) _DEFINE_STRING_TABLE_LOOKUP_FROM_STRING(name,type,static)
-
-/* For string conversions where numbers are also acceptable */
-#define DEFINE_STRING_TABLE_LOOKUP_WITH_FALLBACK(name,type,max)         \
-        int name##_to_string_alloc(type i, char **str) {                \
+#define _DEFINE_STRING_TABLE_LOOKUP_TO_STRING_FALLBACK(name,type,max,scope) \
+        scope int name##_to_string_alloc(type i, char **str) {          \
                 char *s;                                                \
                 if (i < 0 || i > max)                                   \
                         return -ERANGE;                                 \
@@ -72,7 +73,9 @@ ssize_t string_table_lookup(const char * const *table, size_t len, const char *k
                 }                                                       \
                 *str = s;                                               \
                 return 0;                                               \
-        }                                                               \
+        }
+
+#define _DEFINE_STRING_TABLE_LOOKUP_FROM_STRING_FALLBACK(name,type,max,scope) \
         type name##_from_string(const char *s) {                        \
                 type i;                                                 \
                 unsigned u = 0;                                         \
@@ -85,4 +88,32 @@ ssize_t string_table_lookup(const char * const *table, size_t len, const char *k
                         return (type) u;                                \
                 return (type) -1;                                       \
         }                                                               \
+
+
+#define _DEFINE_STRING_TABLE_LOOKUP(name,type,scope)                    \
+        _DEFINE_STRING_TABLE_LOOKUP_TO_STRING(name,type,scope)          \
+        _DEFINE_STRING_TABLE_LOOKUP_FROM_STRING(name,type,scope)        \
         struct __useless_struct_to_allow_trailing_semicolon__
+
+#define _DEFINE_STRING_TABLE_LOOKUP_WITH_BOOLEAN(name,type,yes,scope)   \
+        _DEFINE_STRING_TABLE_LOOKUP_TO_STRING(name,type,scope)          \
+        _DEFINE_STRING_TABLE_LOOKUP_FROM_STRING_WITH_BOOLEAN(name,type,yes,scope) \
+        struct __useless_struct_to_allow_trailing_semicolon__
+
+#define DEFINE_STRING_TABLE_LOOKUP(name,type) _DEFINE_STRING_TABLE_LOOKUP(name,type,)
+#define DEFINE_PRIVATE_STRING_TABLE_LOOKUP(name,type) _DEFINE_STRING_TABLE_LOOKUP(name,type,static)
+#define DEFINE_PRIVATE_STRING_TABLE_LOOKUP_TO_STRING(name,type) _DEFINE_STRING_TABLE_LOOKUP_TO_STRING(name,type,static)
+#define DEFINE_PRIVATE_STRING_TABLE_LOOKUP_FROM_STRING(name,type) _DEFINE_STRING_TABLE_LOOKUP_FROM_STRING(name,type,static)
+
+#define DEFINE_STRING_TABLE_LOOKUP_WITH_BOOLEAN(name,type,yes) _DEFINE_STRING_TABLE_LOOKUP_WITH_BOOLEAN(name,type,yes,)
+
+/* For string conversions where numbers are also acceptable */
+#define DEFINE_STRING_TABLE_LOOKUP_WITH_FALLBACK(name,type,max)         \
+        _DEFINE_STRING_TABLE_LOOKUP_TO_STRING_FALLBACK(name,type,max,)  \
+        _DEFINE_STRING_TABLE_LOOKUP_FROM_STRING_FALLBACK(name,type,max,) \
+        struct __useless_struct_to_allow_trailing_semicolon__
+
+#define DEFINE_PRIVATE_STRING_TABLE_LOOKUP_TO_STRING_FALLBACK(name,type,max) \
+        _DEFINE_STRING_TABLE_LOOKUP_TO_STRING_FALLBACK(name,type,max,static)
+#define DEFINE_PRIVATE_STRING_TABLE_LOOKUP_FROM_STRING_FALLBACK(name,type,max) \
+        _DEFINE_STRING_TABLE_LOOKUP_FROM_STRING_FALLBACK(name,type,max,static)

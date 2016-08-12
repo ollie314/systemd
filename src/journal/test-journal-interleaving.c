@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -20,8 +18,8 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <unistd.h>
 #include <fcntl.h>
+#include <unistd.h>
 
 #include "sd-journal.h"
 
@@ -54,12 +52,12 @@ noreturn static void log_assert_errno(const char *text, int eno, const char *fil
 
 static JournalFile *test_open(const char *name) {
         JournalFile *f;
-        assert_ret(journal_file_open(name, O_RDWR|O_CREAT, 0644, true, false, NULL, NULL, NULL, &f));
+        assert_ret(journal_file_open(-1, name, O_RDWR|O_CREAT, 0644, true, false, NULL, NULL, NULL, NULL, &f));
         return f;
 }
 
 static void test_close(JournalFile *f) {
-        journal_file_close (f);
+        (void) journal_file_close (f);
 }
 
 static void append_number(JournalFile *f, int n, uint64_t *seqnum) {
@@ -218,8 +216,8 @@ static void test_sequence_numbers(void) {
         assert_se(mkdtemp(t));
         assert_se(chdir(t) >= 0);
 
-        assert_se(journal_file_open("one.journal", O_RDWR|O_CREAT, 0644,
-                                    true, false, NULL, NULL, NULL, &one) == 0);
+        assert_se(journal_file_open(-1, "one.journal", O_RDWR|O_CREAT, 0644,
+                                    true, false, NULL, NULL, NULL, NULL, &one) == 0);
 
         append_number(one, 1, &seqnum);
         printf("seqnum=%"PRIu64"\n", seqnum);
@@ -235,8 +233,8 @@ static void test_sequence_numbers(void) {
 
         memcpy(&seqnum_id, &one->header->seqnum_id, sizeof(sd_id128_t));
 
-        assert_se(journal_file_open("two.journal", O_RDWR|O_CREAT, 0644,
-                                    true, false, NULL, NULL, one, &two) == 0);
+        assert_se(journal_file_open(-1, "two.journal", O_RDWR|O_CREAT, 0644,
+                                    true, false, NULL, NULL, NULL, one, &two) == 0);
 
         assert_se(two->header->state == STATE_ONLINE);
         assert_se(!sd_id128_equal(two->header->file_id, one->header->file_id));
@@ -266,8 +264,8 @@ static void test_sequence_numbers(void) {
         /* restart server */
         seqnum = 0;
 
-        assert_se(journal_file_open("two.journal", O_RDWR, 0,
-                                    true, false, NULL, NULL, NULL, &two) == 0);
+        assert_se(journal_file_open(-1, "two.journal", O_RDWR, 0,
+                                    true, false, NULL, NULL, NULL, NULL, &two) == 0);
 
         assert_se(sd_id128_equal(two->header->seqnum_id, seqnum_id));
 

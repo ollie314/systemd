@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -25,6 +23,7 @@ typedef struct BusName BusName;
 typedef struct BusNamePolicy BusNamePolicy;
 
 #include "unit.h"
+#include "bus-policy.h"
 
 typedef enum BusNameResult {
         BUSNAME_SUCCESS,
@@ -33,7 +32,8 @@ typedef enum BusNameResult {
         BUSNAME_FAILURE_EXIT_CODE,
         BUSNAME_FAILURE_SIGNAL,
         BUSNAME_FAILURE_CORE_DUMP,
-        BUSNAME_FAILURE_SERVICE_FAILED_PERMANENT,
+        BUSNAME_FAILURE_START_LIMIT_HIT,
+        BUSNAME_FAILURE_SERVICE_START_LIMIT_HIT,
         _BUSNAME_RESULT_MAX,
         _BUSNAME_RESULT_INVALID = -1
 } BusNameResult;

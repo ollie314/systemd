@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -112,16 +110,14 @@ int path_spec_watch(PathSpec *s, sd_event_io_handler_t handler) {
                 } else {
                         exists = true;
 
-                        /* Path exists, we don't need to watch parent
-                           too closely. */
+                        /* Path exists, we don't need to watch parent too closely. */
                         if (oldslash) {
                                 char *cut2 = oldslash + (oldslash == s->path);
                                 char tmp2 = *cut2;
                                 *cut2 = '\0';
 
-                                inotify_add_watch(s->inotify_fd, s->path, IN_MOVE_SELF);
-                                /* Error is ignored, the worst can happen is
-                                   we get spurious events. */
+                                (void) inotify_add_watch(s->inotify_fd, s->path, IN_MOVE_SELF);
+                                /* Error is ignored, the worst can happen is we get spurious events. */
 
                                 *cut2 = tmp2;
                         }
@@ -315,20 +311,20 @@ static int path_add_default_dependencies(Path *p) {
 
         assert(p);
 
-        r = unit_add_dependency_by_name(UNIT(p), UNIT_BEFORE,
-                                        SPECIAL_PATHS_TARGET, NULL, true);
+        if (!UNIT(p)->default_dependencies)
+                return 0;
+
+        r = unit_add_dependency_by_name(UNIT(p), UNIT_BEFORE, SPECIAL_PATHS_TARGET, NULL, true);
         if (r < 0)
                 return r;
 
-        if (UNIT(p)->manager->running_as == MANAGER_SYSTEM) {
-                r = unit_add_two_dependencies_by_name(UNIT(p), UNIT_AFTER, UNIT_REQUIRES,
-                                                      SPECIAL_SYSINIT_TARGET, NULL, true);
+        if (MANAGER_IS_SYSTEM(UNIT(p)->manager)) {
+                r = unit_add_two_dependencies_by_name(UNIT(p), UNIT_AFTER, UNIT_REQUIRES, SPECIAL_SYSINIT_TARGET, NULL, true);
                 if (r < 0)
                         return r;
         }
 
-        return unit_add_two_dependencies_by_name(UNIT(p), UNIT_BEFORE, UNIT_CONFLICTS,
-                                                 SPECIAL_SHUTDOWN_TARGET, NULL, true);
+        return unit_add_two_dependencies_by_name(UNIT(p), UNIT_BEFORE, UNIT_CONFLICTS, SPECIAL_SHUTDOWN_TARGET, NULL, true);
 }
 
 static int path_load(Unit *u) {
@@ -360,11 +356,9 @@ static int path_load(Unit *u) {
                 if (r < 0)
                         return r;
 
-                if (UNIT(p)->default_dependencies) {
-                        r = path_add_default_dependencies(p);
-                        if (r < 0)
-                                return r;
-                }
+                r = path_add_default_dependencies(p);
+                if (r < 0)
+                        return r;
         }
 
         return path_verify(p);
@@ -460,14 +454,15 @@ static int path_coldplug(Unit *u) {
 static void path_enter_dead(Path *p, PathResult f) {
         assert(p);
 
-        if (f != PATH_SUCCESS)
+        if (p->result == PATH_SUCCESS)
                 p->result = f;
 
         path_set_state(p, p->result != PATH_SUCCESS ? PATH_FAILED : PATH_DEAD);
 }
 
 static void path_enter_running(Path *p) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        Unit *trigger;
         int r;
 
         assert(p);
@@ -476,8 +471,14 @@ static void path_enter_running(Path *p) {
         if (unit_stop_pending(UNIT(p)))
                 return;
 
-        r = manager_add_job(UNIT(p)->manager, JOB_START, UNIT_TRIGGER(UNIT(p)),
-                            JOB_REPLACE, true, &error, NULL);
+        trigger = UNIT_TRIGGER(UNIT(p));
+        if (!trigger) {
+                log_unit_error(UNIT(p), "Unit to trigger vanished.");
+                path_enter_dead(p, PATH_FAILURE_RESOURCES);
+                return;
+        }
+
+        r = manager_add_job(UNIT(p)->manager, JOB_START, trigger, JOB_REPLACE, &error, NULL);
         if (r < 0)
                 goto fail;
 
@@ -558,12 +559,23 @@ static void path_mkdir(Path *p) {
 
 static int path_start(Unit *u) {
         Path *p = PATH(u);
+        Unit *trigger;
+        int r;
 
         assert(p);
         assert(p->state == PATH_DEAD || p->state == PATH_FAILED);
 
-        if (UNIT_TRIGGER(u)->load_state != UNIT_LOADED)
+        trigger = UNIT_TRIGGER(u);
+        if (!trigger || trigger->load_state != UNIT_LOADED) {
+                log_unit_error(u, "Refusing to start, unit to trigger not loaded.");
                 return -ENOENT;
+        }
+
+        r = unit_start_limit_test(u);
+        if (r < 0) {
+                path_enter_dead(p, PATH_FAILURE_START_LIMIT_HIT);
+                return r;
+        }
 
         path_mkdir(p);
 
@@ -734,6 +746,7 @@ DEFINE_STRING_TABLE_LOOKUP(path_type, PathType);
 static const char* const path_result_table[_PATH_RESULT_MAX] = {
         [PATH_SUCCESS] = "success",
         [PATH_FAILURE_RESOURCES] = "resources",
+        [PATH_FAILURE_START_LIMIT_HIT] = "start-limit-hit",
 };
 
 DEFINE_STRING_TABLE_LOOKUP(path_result, PathResult);

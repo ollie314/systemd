@@ -25,8 +25,7 @@ test_run() {
     else
         dwarn "can't run QEMU, skipping"
     fi
-    if check_nspawn; then
-        run_nspawn
+    if run_nspawn; then
         check_result_nspawn || return 1
     else
         dwarn "can't run systemd-nspawn, skipping"
@@ -63,7 +62,7 @@ EOF
         cp test-jobs.sh $initdir/
 
         setup_testsuite
-    )
+    ) || return 1
     setup_nspawn_root
 
     ddebug "umount $TESTDIR/root"

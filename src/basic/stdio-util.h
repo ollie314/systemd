@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -75,4 +73,4 @@ do {                                                                    \
                         assert_not_reached("Unknown format string argument."); \
                 }                                                       \
         }                                                               \
-} while(false)
+} while (false)

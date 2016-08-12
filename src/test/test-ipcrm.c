@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -25,9 +23,14 @@
 
 int main(int argc, char *argv[]) {
         uid_t uid;
+        int r;
+        const char* name = argv[1] ?: "nfsnobody";
 
-        assert_se(argc == 2);
-        assert_se(parse_uid(argv[1], &uid) >= 0);
+        r = get_user_creds(&name, &uid, NULL, NULL, NULL);
+        if (r < 0) {
+                log_error_errno(r, "Failed to resolve \"%s\": %m", name);
+                return EXIT_FAILURE;
+        }
 
         return clean_ipc(uid) < 0 ? EXIT_FAILURE : EXIT_SUCCESS;
 }

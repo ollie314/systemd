@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,12 +17,22 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
+#include <dirent.h>
+#include <errno.h>
+#include <fcntl.h>
 #include <langinfo.h>
+#include <libintl.h>
 #include <locale.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 
 #include "dirent-util.h"
 #include "fd-util.h"
+#include "hashmap.h"
 #include "locale-util.h"
 #include "path-util.h"
 #include "set.h"
@@ -32,7 +40,6 @@
 #include "string-util.h"
 #include "strv.h"
 #include "utf8.h"
-#include "util.h"
 
 static int add_locales_from_archive(Set *locales) {
         /* Stolen from glibc... */
@@ -145,6 +152,8 @@ static int add_locales_from_libdir (Set *locales) {
 
         FOREACH_DIRENT(entry, dir, return -errno) {
                 char *z;
+
+                dirent_ensure_type(dir, entry);
 
                 if (entry->d_type != DT_DIR)
                         continue;
@@ -262,34 +271,35 @@ out:
 }
 
 
-const char *draw_special_char(DrawSpecialChar ch) {
+const char *special_glyph(SpecialGlyph code) {
 
-        static const char *draw_table[2][_DRAW_SPECIAL_CHAR_MAX] = {
-
-                /* UTF-8 */ {
-                        [DRAW_TREE_VERTICAL]      = "\342\224\202 ",            /* │  */
-                        [DRAW_TREE_BRANCH]        = "\342\224\234\342\224\200", /* ├─ */
-                        [DRAW_TREE_RIGHT]         = "\342\224\224\342\224\200", /* └─ */
-                        [DRAW_TREE_SPACE]         = "  ",                       /*    */
-                        [DRAW_TRIANGULAR_BULLET]  = "\342\200\243",             /* ‣ */
-                        [DRAW_BLACK_CIRCLE]       = "\342\227\217",             /* ● */
-                        [DRAW_ARROW]              = "\342\206\222",             /* → */
-                        [DRAW_DASH]               = "\342\200\223",             /* – */
+        static const char* const draw_table[2][_SPECIAL_GLYPH_MAX] = {
+                /* ASCII fallback */
+                [false] = {
+                        [TREE_VERTICAL]      = "| ",
+                        [TREE_BRANCH]        = "|-",
+                        [TREE_RIGHT]         = "`-",
+                        [TREE_SPACE]         = "  ",
+                        [TRIANGULAR_BULLET]  = ">",
+                        [BLACK_CIRCLE]       = "*",
+                        [ARROW]              = "->",
+                        [MDASH]              = "-",
                 },
 
-                /* ASCII fallback */ {
-                        [DRAW_TREE_VERTICAL]      = "| ",
-                        [DRAW_TREE_BRANCH]        = "|-",
-                        [DRAW_TREE_RIGHT]         = "`-",
-                        [DRAW_TREE_SPACE]         = "  ",
-                        [DRAW_TRIANGULAR_BULLET]  = ">",
-                        [DRAW_BLACK_CIRCLE]       = "*",
-                        [DRAW_ARROW]              = "->",
-                        [DRAW_DASH]               = "-",
-                }
+                /* UTF-8 */
+                [ true ] = {
+                        [TREE_VERTICAL]      = "\342\224\202 ",            /* │  */
+                        [TREE_BRANCH]        = "\342\224\234\342\224\200", /* ├─ */
+                        [TREE_RIGHT]         = "\342\224\224\342\224\200", /* └─ */
+                        [TREE_SPACE]         = "  ",                       /*    */
+                        [TRIANGULAR_BULLET]  = "\342\200\243",             /* ‣ */
+                        [BLACK_CIRCLE]       = "\342\227\217",             /* ● */
+                        [ARROW]              = "\342\206\222",             /* → */
+                        [MDASH]              = "\342\200\223",             /* – */
+                },
         };
 
-        return draw_table[!is_locale_utf8()][ch];
+        return draw_table[is_locale_utf8()][code];
 }
 
 static const char * const locale_variable_table[_VARIABLE_LC_MAX] = {

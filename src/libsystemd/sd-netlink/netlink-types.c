@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -83,38 +81,60 @@ static const NLTypeSystem empty_type_system = {
         .types = empty_types,
 };
 
-static const NLType rtnl_link_info_data_veth_types[VETH_INFO_MAX + 1] = {
+static const NLType rtnl_link_info_data_veth_types[] = {
         [VETH_INFO_PEER]  = { .type = NETLINK_TYPE_NESTED, .type_system = &rtnl_link_type_system, .size = sizeof(struct ifinfomsg) },
 };
 
-static const NLType rtnl_link_info_data_ipvlan_types[IFLA_IPVLAN_MAX + 1] = {
+static const NLType rtnl_link_info_data_ipvlan_types[] = {
         [IFLA_IPVLAN_MODE]  = { .type = NETLINK_TYPE_U16 },
 };
 
-static const NLType rtnl_link_info_data_macvlan_types[IFLA_MACVLAN_MAX + 1] = {
+static const NLType rtnl_link_info_data_macvlan_types[] = {
         [IFLA_MACVLAN_MODE]  = { .type = NETLINK_TYPE_U32 },
         [IFLA_MACVLAN_FLAGS] = { .type = NETLINK_TYPE_U16 },
 };
 
-static const NLType rtnl_link_bridge_management_types[IFLA_BRIDGE_MAX + 1] = {
-        [IFLA_BRIDGE_FLAGS]     = { .type = NETLINK_TYPE_U16 },
-        [IFLA_BRIDGE_MODE]      = { .type = NETLINK_TYPE_U16 },
-/*
-        [IFLA_BRIDGE_VLAN_INFO] = { .type = NETLINK_TYPE_BINARY,
-                                    .len = sizeof(struct bridge_vlan_info), },
-*/
+static const NLType rtnl_link_info_data_bridge_types[] = {
+        [IFLA_BR_FORWARD_DELAY]              = { .type = NETLINK_TYPE_U32 },
+        [IFLA_BR_HELLO_TIME]                 = { .type = NETLINK_TYPE_U32 },
+        [IFLA_BR_MAX_AGE]                    = { .type = NETLINK_TYPE_U32 },
+        [IFLA_BR_AGEING_TIME]                = { .type = NETLINK_TYPE_U32 },
+        [IFLA_BR_STP_STATE]                  = { .type = NETLINK_TYPE_U32 },
+        [IFLA_BR_PRIORITY]                   = { .type = NETLINK_TYPE_U16 },
+        [IFLA_BR_VLAN_FILTERING]             = { .type = NETLINK_TYPE_U8 },
+        [IFLA_BR_VLAN_PROTOCOL]              = { .type = NETLINK_TYPE_U16 },
+        [IFLA_BR_GROUP_FWD_MASK]             = { .type = NETLINK_TYPE_U16 },
+        [IFLA_BR_ROOT_PORT]                  = { .type = NETLINK_TYPE_U16 },
+        [IFLA_BR_ROOT_PATH_COST]             = { .type = NETLINK_TYPE_U32 },
+        [IFLA_BR_TOPOLOGY_CHANGE]            = { .type = NETLINK_TYPE_U8 },
+        [IFLA_BR_TOPOLOGY_CHANGE_DETECTED]   = { .type = NETLINK_TYPE_U8 },
+        [IFLA_BR_HELLO_TIMER]                = { .type = NETLINK_TYPE_U16 },
+        [IFLA_BR_TCN_TIMER]                  = { .type = NETLINK_TYPE_U16 },
+        [IFLA_BR_TOPOLOGY_CHANGE_TIMER]      = { .type = NETLINK_TYPE_U16 },
+        [IFLA_BR_GC_TIMER]                   = { .type = NETLINK_TYPE_U64 },
+        [IFLA_BR_GROUP_ADDR]                 = { .type = NETLINK_TYPE_U16 },
+        [IFLA_BR_FDB_FLUSH]                  = { .type = NETLINK_TYPE_U16 },
+        [IFLA_BR_MCAST_ROUTER]               = { .type = NETLINK_TYPE_U8 },
+        [IFLA_BR_MCAST_SNOOPING]             = { .type = NETLINK_TYPE_U8 },
+        [IFLA_BR_MCAST_QUERY_USE_IFADDR]     = { .type = NETLINK_TYPE_U8 },
+        [IFLA_BR_MCAST_QUERIER]              = { .type = NETLINK_TYPE_U8 },
+        [IFLA_BR_MCAST_HASH_ELASTICITY]      = { .type = NETLINK_TYPE_U32 },
+        [IFLA_BR_MCAST_HASH_MAX]             = { .type = NETLINK_TYPE_U16 },
+        [IFLA_BR_MCAST_LAST_MEMBER_CNT]      = { .type = NETLINK_TYPE_U32 },
+        [IFLA_BR_MCAST_STARTUP_QUERY_CNT]    = { .type = NETLINK_TYPE_U16 },
+        [IFLA_BR_MCAST_LAST_MEMBER_INTVL]    = { .type = NETLINK_TYPE_U64 },
+        [IFLA_BR_MCAST_MEMBERSHIP_INTVL]     = { .type = NETLINK_TYPE_U64 },
+        [IFLA_BR_MCAST_QUERIER_INTVL]        = { .type = NETLINK_TYPE_U64 },
+        [IFLA_BR_MCAST_QUERY_INTVL]          = { .type = NETLINK_TYPE_U64 },
+        [IFLA_BR_MCAST_QUERY_RESPONSE_INTVL] = { .type = NETLINK_TYPE_U64 },
+        [IFLA_BR_MCAST_STARTUP_QUERY_INTVL]  = { .type = NETLINK_TYPE_U64 },
+        [IFLA_BR_NF_CALL_IPTABLES]           = { .type = NETLINK_TYPE_U8 },
+        [IFLA_BR_NF_CALL_IP6TABLES]          = { .type = NETLINK_TYPE_U8 },
+        [IFLA_BR_NF_CALL_ARPTABLES]          = { .type = NETLINK_TYPE_U8 },
+        [IFLA_BR_VLAN_DEFAULT_PVID]          = { .type = NETLINK_TYPE_U16 },
 };
 
-static const NLType rtnl_link_info_data_bridge_types[IFLA_BR_MAX + 1] = {
-        [IFLA_BR_FORWARD_DELAY]  = { .type = NETLINK_TYPE_U32 },
-        [IFLA_BR_HELLO_TIME]     = { .type = NETLINK_TYPE_U32 },
-        [IFLA_BR_MAX_AGE]        = { .type = NETLINK_TYPE_U32 },
-        [IFLA_BR_AGEING_TIME]    = { .type = NETLINK_TYPE_U32 },
-        [IFLA_BR_STP_STATE]      = { .type = NETLINK_TYPE_U32 },
-        [IFLA_BR_PRIORITY]       = { .type = NETLINK_TYPE_U16 },
-};
-
-static const NLType rtnl_link_info_data_vlan_types[IFLA_VLAN_MAX + 1] = {
+static const NLType rtnl_link_info_data_vlan_types[] = {
         [IFLA_VLAN_ID]          = { .type = NETLINK_TYPE_U16 },
 /*
         [IFLA_VLAN_FLAGS]       = { .len = sizeof(struct ifla_vlan_flags) },
@@ -124,7 +144,7 @@ static const NLType rtnl_link_info_data_vlan_types[IFLA_VLAN_MAX + 1] = {
         [IFLA_VLAN_PROTOCOL]    = { .type = NETLINK_TYPE_U16 },
 };
 
-static const NLType rtnl_link_info_data_vxlan_types[IFLA_VXLAN_MAX+1] = {
+static const NLType rtnl_link_info_data_vxlan_types[] = {
         [IFLA_VXLAN_ID]                = { .type = NETLINK_TYPE_U32 },
         [IFLA_VXLAN_GROUP]             = { .type = NETLINK_TYPE_IN_ADDR },
         [IFLA_VXLAN_LINK]              = { .type = NETLINK_TYPE_U32 },
@@ -151,7 +171,7 @@ static const NLType rtnl_link_info_data_vxlan_types[IFLA_VXLAN_MAX+1] = {
         [IFLA_VXLAN_REMCSUM_NOPARTIAL] = { .type = NETLINK_TYPE_FLAG },
 };
 
-static const NLType rtnl_bond_arp_target_types[BOND_ARP_TARGETS_MAX + 1] = {
+static const NLType rtnl_bond_arp_target_types[] = {
         [BOND_ARP_TARGETS_0]        = { .type = NETLINK_TYPE_U32 },
         [BOND_ARP_TARGETS_1]        = { .type = NETLINK_TYPE_U32 },
         [BOND_ARP_TARGETS_2]        = { .type = NETLINK_TYPE_U32 },
@@ -175,7 +195,7 @@ static const NLTypeSystem rtnl_bond_arp_type_system = {
         .types = rtnl_bond_arp_target_types,
 };
 
-static const NLType rtnl_link_info_data_bond_types[IFLA_BOND_MAX + 1] = {
+static const NLType rtnl_link_info_data_bond_types[] = {
         [IFLA_BOND_MODE]                = { .type = NETLINK_TYPE_U8 },
         [IFLA_BOND_ACTIVE_SLAVE]        = { .type = NETLINK_TYPE_U32 },
         [IFLA_BOND_MIIMON]              = { .type = NETLINK_TYPE_U32 },
@@ -201,7 +221,7 @@ static const NLType rtnl_link_info_data_bond_types[IFLA_BOND_MAX + 1] = {
         [IFLA_BOND_AD_INFO]             = { .type = NETLINK_TYPE_NESTED },
 };
 
-static const NLType rtnl_link_info_data_iptun_types[IFLA_IPTUN_MAX + 1] = {
+static const NLType rtnl_link_info_data_iptun_types[] = {
         [IFLA_IPTUN_LINK]                = { .type = NETLINK_TYPE_U32 },
         [IFLA_IPTUN_LOCAL]               = { .type = NETLINK_TYPE_IN_ADDR },
         [IFLA_IPTUN_REMOTE]              = { .type = NETLINK_TYPE_IN_ADDR },
@@ -220,7 +240,7 @@ static const NLType rtnl_link_info_data_iptun_types[IFLA_IPTUN_MAX + 1] = {
         [IFLA_IPTUN_ENCAP_DPORT]         = { .type = NETLINK_TYPE_U16 },
 };
 
-static  const NLType rtnl_link_info_data_ipgre_types[IFLA_GRE_MAX + 1] = {
+static  const NLType rtnl_link_info_data_ipgre_types[] = {
         [IFLA_GRE_LINK]         = { .type = NETLINK_TYPE_U32 },
         [IFLA_GRE_IFLAGS]       = { .type = NETLINK_TYPE_U16 },
         [IFLA_GRE_OFLAGS]       = { .type = NETLINK_TYPE_U16 },
@@ -239,7 +259,7 @@ static  const NLType rtnl_link_info_data_ipgre_types[IFLA_GRE_MAX + 1] = {
         [IFLA_GRE_ENCAP_DPORT]  = { .type = NETLINK_TYPE_U16 },
 };
 
-static const NLType rtnl_link_info_data_ipvti_types[IFLA_VTI_MAX + 1] = {
+static const NLType rtnl_link_info_data_ipvti_types[] = {
         [IFLA_VTI_LINK]         = { .type = NETLINK_TYPE_U32 },
         [IFLA_VTI_IKEY]         = { .type = NETLINK_TYPE_U32 },
         [IFLA_VTI_OKEY]         = { .type = NETLINK_TYPE_U32 },
@@ -247,7 +267,7 @@ static const NLType rtnl_link_info_data_ipvti_types[IFLA_VTI_MAX + 1] = {
         [IFLA_VTI_REMOTE]       = { .type = NETLINK_TYPE_IN_ADDR },
 };
 
-static const NLType rtnl_link_info_data_ip6tnl_types[IFLA_IPTUN_MAX + 1] = {
+static const NLType rtnl_link_info_data_ip6tnl_types[] = {
         [IFLA_IPTUN_LINK]                = { .type = NETLINK_TYPE_U32 },
         [IFLA_IPTUN_LOCAL]               = { .type = NETLINK_TYPE_IN_ADDR },
         [IFLA_IPTUN_REMOTE]              = { .type = NETLINK_TYPE_IN_ADDR },
@@ -258,8 +278,12 @@ static const NLType rtnl_link_info_data_ip6tnl_types[IFLA_IPTUN_MAX + 1] = {
         [IFLA_IPTUN_FLOWINFO]            = { .type = NETLINK_TYPE_U32 },
 };
 
+static const NLType rtnl_link_info_data_vrf_types[] = {
+        [IFLA_VRF_TABLE]                 = { .type = NETLINK_TYPE_U32 },
+};
+
 /* these strings must match the .kind entries in the kernel */
-static const char* const nl_union_link_info_data_table[_NL_UNION_LINK_INFO_DATA_MAX] = {
+static const char* const nl_union_link_info_data_table[] = {
         [NL_UNION_LINK_INFO_DATA_BOND] = "bond",
         [NL_UNION_LINK_INFO_DATA_BRIDGE] = "bridge",
         [NL_UNION_LINK_INFO_DATA_VLAN] = "vlan",
@@ -278,11 +302,12 @@ static const char* const nl_union_link_info_data_table[_NL_UNION_LINK_INFO_DATA_
         [NL_UNION_LINK_INFO_DATA_VTI_TUNNEL] = "vti",
         [NL_UNION_LINK_INFO_DATA_VTI6_TUNNEL] = "vti6",
         [NL_UNION_LINK_INFO_DATA_IP6TNL_TUNNEL] = "ip6tnl",
+        [NL_UNION_LINK_INFO_DATA_VRF] = "vrf",
 };
 
 DEFINE_STRING_TABLE_LOOKUP(nl_union_link_info_data, NLUnionLinkInfoData);
 
-static const NLTypeSystem rtnl_link_info_data_type_systems[_NL_UNION_LINK_INFO_DATA_MAX] = {
+static const NLTypeSystem rtnl_link_info_data_type_systems[] = {
         [NL_UNION_LINK_INFO_DATA_BOND] =        { .count = ELEMENTSOF(rtnl_link_info_data_bond_types),
                                                   .types = rtnl_link_info_data_bond_types },
         [NL_UNION_LINK_INFO_DATA_BRIDGE] =      { .count = ELEMENTSOF(rtnl_link_info_data_bridge_types),
@@ -318,6 +343,9 @@ static const NLTypeSystem rtnl_link_info_data_type_systems[_NL_UNION_LINK_INFO_D
         [NL_UNION_LINK_INFO_DATA_IP6TNL_TUNNEL] =  { .count = ELEMENTSOF(rtnl_link_info_data_ip6tnl_types),
                                                      .types = rtnl_link_info_data_ip6tnl_types },
 
+        [NL_UNION_LINK_INFO_DATA_VRF] =  { .count = ELEMENTSOF(rtnl_link_info_data_vrf_types),
+                                                     .types = rtnl_link_info_data_vrf_types },
+
 };
 
 static const NLTypeSystemUnion rtnl_link_info_data_type_system_union = {
@@ -328,7 +356,7 @@ static const NLTypeSystemUnion rtnl_link_info_data_type_system_union = {
         .match = IFLA_INFO_KIND,
 };
 
-static const NLType rtnl_link_info_types[IFLA_INFO_MAX + 1] = {
+static const NLType rtnl_link_info_types[] = {
         [IFLA_INFO_KIND]        = { .type = NETLINK_TYPE_STRING },
         [IFLA_INFO_DATA]        = { .type = NETLINK_TYPE_UNION, .type_system_union = &rtnl_link_info_data_type_system_union},
 /*
@@ -343,7 +371,7 @@ static const NLTypeSystem rtnl_link_info_type_system = {
         .types = rtnl_link_info_types,
 };
 
-static const struct NLType rtnl_prot_info_bridge_port_types[IFLA_BRPORT_MAX + 1] = {
+static const struct NLType rtnl_prot_info_bridge_port_types[] = {
         [IFLA_BRPORT_STATE]             = { .type = NETLINK_TYPE_U8 },
         [IFLA_BRPORT_COST]              = { .type = NETLINK_TYPE_U32 },
         [IFLA_BRPORT_PRIORITY]          = { .type = NETLINK_TYPE_U16 },
@@ -357,7 +385,7 @@ static const struct NLType rtnl_prot_info_bridge_port_types[IFLA_BRPORT_MAX + 1]
         [IFLA_BRPORT_LEARNING_SYNC]     = { .type = NETLINK_TYPE_U8 },
 };
 
-static const NLTypeSystem rtnl_prot_info_type_systems[AF_MAX] = {
+static const NLTypeSystem rtnl_prot_info_type_systems[] = {
         [AF_BRIDGE] =   { .count = ELEMENTSOF(rtnl_prot_info_bridge_port_types),
                           .types = rtnl_prot_info_bridge_port_types },
 };
@@ -368,7 +396,7 @@ static const NLTypeSystemUnion rtnl_prot_info_type_system_union = {
         .match_type = NL_MATCH_PROTOCOL,
 };
 
-static const struct NLType rtnl_af_spec_inet6_types[IFLA_INET6_MAX + 1] = {
+static const struct NLType rtnl_af_spec_inet6_types[] = {
         [IFLA_INET6_FLAGS]              = { .type = NETLINK_TYPE_U32 },
 /*
         IFLA_INET6_CONF,
@@ -386,7 +414,7 @@ static const NLTypeSystem rtnl_af_spec_inet6_type_system = {
         .types = rtnl_af_spec_inet6_types,
 };
 
-static const NLType rtnl_af_spec_types[AF_MAX + 1] = {
+static const NLType rtnl_af_spec_types[] = {
         [AF_INET6] =    { .type = NETLINK_TYPE_NESTED, .type_system = &rtnl_af_spec_inet6_type_system },
 };
 
@@ -395,7 +423,7 @@ static const NLTypeSystem rtnl_af_spec_type_system = {
         .types = rtnl_af_spec_types,
 };
 
-static const NLType rtnl_link_types[IFLA_MAX + 1 ] = {
+static const NLType rtnl_link_types[] = {
         [IFLA_ADDRESS]          = { .type = NETLINK_TYPE_ETHER_ADDR },
         [IFLA_BROADCAST]        = { .type = NETLINK_TYPE_ETHER_ADDR },
         [IFLA_IFNAME]           = { .type = NETLINK_TYPE_STRING, .size = IFNAMSIZ - 1 },
@@ -454,7 +482,7 @@ static const NLTypeSystem rtnl_link_type_system = {
 
 /* IFA_FLAGS was defined in kernel 3.14, but we still support older
  * kernels where IFA_MAX is lower. */
-static const NLType rtnl_address_types[CONST_MAX(IFA_MAX, IFA_FLAGS) + 1] = {
+static const NLType rtnl_address_types[] = {
         [IFA_ADDRESS]           = { .type = NETLINK_TYPE_IN_ADDR },
         [IFA_LOCAL]             = { .type = NETLINK_TYPE_IN_ADDR },
         [IFA_LABEL]             = { .type = NETLINK_TYPE_STRING, .size = IFNAMSIZ - 1 },
@@ -472,7 +500,7 @@ static const NLTypeSystem rtnl_address_type_system = {
         .types = rtnl_address_types,
 };
 
-static const NLType rtnl_route_types[RTA_MAX + 1] = {
+static const NLType rtnl_route_types[] = {
         [RTA_DST]               = { .type = NETLINK_TYPE_IN_ADDR }, /* 6? */
         [RTA_SRC]               = { .type = NETLINK_TYPE_IN_ADDR }, /* 6? */
         [RTA_IIF]               = { .type = NETLINK_TYPE_U32 },
@@ -490,7 +518,11 @@ static const NLType rtnl_route_types[RTA_MAX + 1] = {
         RTA_TABLE,
         RTA_MARK,
         RTA_MFC_STATS,
+        RTA_VIA,
+        RTA_NEWDST,
 */
+        [RTA_PREF]              = { .type = NETLINK_TYPE_U8 },
+
 };
 
 static const NLTypeSystem rtnl_route_type_system = {
@@ -498,7 +530,7 @@ static const NLTypeSystem rtnl_route_type_system = {
         .types = rtnl_route_types,
 };
 
-static const NLType rtnl_neigh_types[NDA_MAX + 1] = {
+static const NLType rtnl_neigh_types[] = {
         [NDA_DST]               = { .type = NETLINK_TYPE_IN_ADDR },
         [NDA_LLADDR]            = { .type = NETLINK_TYPE_ETHER_ADDR },
         [NDA_CACHEINFO]         = { .type = NETLINK_TYPE_CACHE_INFO, .size = sizeof(struct nda_cacheinfo) },
@@ -514,7 +546,7 @@ static const NLTypeSystem rtnl_neigh_type_system = {
         .types = rtnl_neigh_types,
 };
 
-static const NLType rtnl_types[RTM_MAX + 1] = {
+static const NLType rtnl_types[] = {
         [NLMSG_DONE]   = { .type = NETLINK_TYPE_NESTED, .type_system = &empty_type_system, .size = 0 },
         [NLMSG_ERROR]  = { .type = NETLINK_TYPE_NESTED, .type_system = &empty_type_system, .size = sizeof(struct nlmsgerr) },
         [RTM_NEWLINK]  = { .type = NETLINK_TYPE_NESTED, .type_system = &rtnl_link_type_system, .size = sizeof(struct ifinfomsg) },

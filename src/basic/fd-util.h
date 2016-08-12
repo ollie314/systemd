@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -21,12 +19,16 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <stdio.h>
 #include <dirent.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <sys/socket.h>
 
 #include "macro.h"
+
+/* Make sure we can distinguish fd 0 and NULL */
+#define FD_TO_PTR(fd) INT_TO_PTR((fd)+1)
+#define PTR_TO_FD(p) (PTR_TO_INT(p)-1)
 
 int close_nointr(int fd);
 int safe_close(int fd);
@@ -61,6 +63,7 @@ DEFINE_TRIVIAL_CLEANUP_FUNC(DIR*, closedir);
 
 int fd_nonblock(int fd, bool nonblock);
 int fd_cloexec(int fd, bool cloexec);
+void stdio_unset_cloexec(void);
 
 int close_all_fds(const int except[], unsigned n_except);
 
@@ -69,3 +72,9 @@ int same_fd(int a, int b);
 void cmsg_close_all(struct msghdr *mh);
 
 bool fdname_is_valid(const char *s);
+
+int fd_get_path(int fd, char **ret);
+
+/* Hint: ENETUNREACH happens if we try to connect to "non-existing" special IP addresses, such as ::5 */
+#define ERRNO_IS_DISCONNECT(r) \
+        IN_SET(r, ENOTCONN, ECONNRESET, ECONNREFUSED, ECONNABORTED, EPIPE, ENETUNREACH)

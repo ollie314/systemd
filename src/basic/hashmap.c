@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -21,8 +19,9 @@
 ***/
 
 #include <errno.h>
-#include <pthread.h>
+#include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include "alloc-util.h"
 #include "hashmap.h"
@@ -36,6 +35,7 @@
 #include "util.h"
 
 #ifdef ENABLE_DEBUG_HASHMAP
+#include <pthread.h>
 #include "list.h"
 #endif
 
@@ -176,7 +176,7 @@ enum HashmapType {
 };
 
 struct _packed_ indirect_storage {
-        char    *storage;                  /* where buckets and DIBs are stored */
+        void *storage;                     /* where buckets and DIBs are stored */
         uint8_t  hash_key[HASH_KEY_SIZE];  /* hash key; changes during resize */
 
         unsigned n_entries;                /* number of stored entries */
@@ -193,7 +193,7 @@ struct direct_storage {
         /* This gives us 39 bytes on 64bit, or 35 bytes on 32bit.
          * That's room for 4 set_entries + 4 DIB bytes + 3 unused bytes on 64bit,
          *              or 7 set_entries + 7 DIB bytes + 0 unused bytes on 32bit. */
-        char storage[sizeof(struct indirect_storage)];
+        uint8_t storage[sizeof(struct indirect_storage)];
 };
 
 #define DIRECT_BUCKETS(entry_t) \
@@ -278,66 +278,6 @@ static const struct hashmap_type_info hashmap_type_info[_HASHMAP_TYPE_MAX] = {
         },
 };
 
-void string_hash_func(const void *p, struct siphash *state) {
-        siphash24_compress(p, strlen(p) + 1, state);
-}
-
-int string_compare_func(const void *a, const void *b) {
-        return strcmp(a, b);
-}
-
-const struct hash_ops string_hash_ops = {
-        .hash = string_hash_func,
-        .compare = string_compare_func
-};
-
-void trivial_hash_func(const void *p, struct siphash *state) {
-        siphash24_compress(&p, sizeof(p), state);
-}
-
-int trivial_compare_func(const void *a, const void *b) {
-        return a < b ? -1 : (a > b ? 1 : 0);
-}
-
-const struct hash_ops trivial_hash_ops = {
-        .hash = trivial_hash_func,
-        .compare = trivial_compare_func
-};
-
-void uint64_hash_func(const void *p, struct siphash *state) {
-        siphash24_compress(p, sizeof(uint64_t), state);
-}
-
-int uint64_compare_func(const void *_a, const void *_b) {
-        uint64_t a, b;
-        a = *(const uint64_t*) _a;
-        b = *(const uint64_t*) _b;
-        return a < b ? -1 : (a > b ? 1 : 0);
-}
-
-const struct hash_ops uint64_hash_ops = {
-        .hash = uint64_hash_func,
-        .compare = uint64_compare_func
-};
-
-#if SIZEOF_DEV_T != 8
-void devt_hash_func(const void *p, struct siphash *state) {
-        siphash24_compress(p, sizeof(dev_t), state);
-}
-
-int devt_compare_func(const void *_a, const void *_b) {
-        dev_t a, b;
-        a = *(const dev_t*) _a;
-        b = *(const dev_t*) _b;
-        return a < b ? -1 : (a > b ? 1 : 0);
-}
-
-const struct hash_ops devt_hash_ops = {
-        .hash = devt_hash_func,
-        .compare = devt_compare_func
-};
-#endif
-
 static unsigned n_buckets(HashmapBase *h) {
         return h->has_indirect ? h->indirect.n_buckets
                                : hashmap_type_info[h->type].n_direct_buckets;
@@ -362,7 +302,7 @@ static void n_entries_dec(HashmapBase *h) {
                 h->n_direct_entries--;
 }
 
-static char *storage_ptr(HashmapBase *h) {
+static void *storage_ptr(HashmapBase *h) {
         return h->has_indirect ? h->indirect.storage
                                : h->direct.storage;
 }
@@ -380,7 +320,7 @@ static unsigned base_bucket_hash(HashmapBase *h, const void *p) {
 
         h->hash_ops->hash(p, &state);
 
-        siphash24_finalize((uint8_t*)&hash, &state);
+        hash = siphash24_finalize(&state);
 
         return (unsigned) (hash % n_buckets(h));
 }
@@ -407,7 +347,7 @@ static void get_hash_key(uint8_t hash_key[HASH_KEY_SIZE], bool reuse_is_ok) {
 
 static struct hashmap_base_entry *bucket_at(HashmapBase *h, unsigned idx) {
         return (struct hashmap_base_entry*)
-                (storage_ptr(h) + idx * hashmap_type_info[h->type].entry_size);
+                ((uint8_t*) storage_ptr(h) + idx * hashmap_type_info[h->type].entry_size);
 }
 
 static struct plain_hashmap_entry *plain_bucket_at(Hashmap *h, unsigned idx) {
@@ -441,7 +381,7 @@ static struct hashmap_base_entry *bucket_at_virtual(HashmapBase *h, struct swap_
 
 static dib_raw_t *dib_raw_ptr(HashmapBase *h) {
         return (dib_raw_t*)
-                (storage_ptr(h) + hashmap_type_info[h->type].entry_size * n_buckets(h));
+                ((uint8_t*) storage_ptr(h) + hashmap_type_info[h->type].entry_size * n_buckets(h));
 }
 
 static unsigned bucket_distance(HashmapBase *h, unsigned idx, unsigned from) {
@@ -1088,7 +1028,7 @@ static int hashmap_base_put_boldly(HashmapBase *h, unsigned idx,
  */
 static int resize_buckets(HashmapBase *h, unsigned entries_add) {
         struct swap_entries swap;
-        char *new_storage;
+        void *new_storage;
         dib_raw_t *old_dibs, *new_dibs;
         const struct hashmap_type_info *hi;
         unsigned idx, optimal_idx;
@@ -1155,7 +1095,7 @@ static int resize_buckets(HashmapBase *h, unsigned entries_add) {
         h->indirect.n_buckets = (1U << new_shift) /
                                 (hi->entry_size + sizeof(dib_raw_t));
 
-        old_dibs = (dib_raw_t*)(new_storage + hi->entry_size * old_n_buckets);
+        old_dibs = (dib_raw_t*)((uint8_t*) new_storage + hi->entry_size * old_n_buckets);
         new_dibs = dib_raw_ptr(h);
 
         /*
@@ -1824,6 +1764,9 @@ void *ordered_hashmap_next(OrderedHashmap *h, const void *key) {
 int set_consume(Set *s, void *value) {
         int r;
 
+        assert(s);
+        assert(value);
+
         r = set_put(s, value);
         if (r <= 0)
                 free(value);
@@ -1833,25 +1776,25 @@ int set_consume(Set *s, void *value) {
 
 int set_put_strdup(Set *s, const char *p) {
         char *c;
-        int r;
 
         assert(s);
         assert(p);
+
+        if (set_contains(s, (char*) p))
+                return 0;
 
         c = strdup(p);
         if (!c)
                 return -ENOMEM;
 
-        r = set_consume(s, c);
-        if (r == -EEXIST)
-                return 0;
-
-        return r;
+        return set_consume(s, c);
 }
 
 int set_put_strdupv(Set *s, char **l) {
         int n = 0, r;
         char **i;
+
+        assert(s);
 
         STRV_FOREACH(i, l) {
                 r = set_put_strdup(s, *i);
@@ -1862,4 +1805,24 @@ int set_put_strdupv(Set *s, char **l) {
         }
 
         return n;
+}
+
+int set_put_strsplit(Set *s, const char *v, const char *separators, ExtractFlags flags) {
+        const char *p = v;
+        int r;
+
+        assert(s);
+        assert(v);
+
+        for (;;) {
+                char *word;
+
+                r = extract_first_word(&p, &word, separators, flags);
+                if (r <= 0)
+                        return r;
+
+                r = set_consume(s, word);
+                if (r < 0)
+                        return r;
+        }
 }

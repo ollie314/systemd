@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -28,6 +26,7 @@
 #include <string.h>
 
 #include "conf-files.h"
+#include "def.h"
 #include "fd-util.h"
 #include "fileio.h"
 #include "hashmap.h"
@@ -40,7 +39,7 @@
 
 static char **arg_prefixes = NULL;
 
-static const char conf_file_dirs[] = CONF_DIRS_NULSTR("sysctl");
+static const char conf_file_dirs[] = CONF_PATHS_NULSTR("sysctl.d");
 
 static int apply_all(Hashmap *sysctl_options) {
         char *property, *value;
@@ -87,8 +86,7 @@ static int parse_file(Hashmap *sysctl_options, const char *path, bool ignore_eno
                         if (feof(f))
                                 break;
 
-                        log_error_errno(errno, "Failed to read file '%s', ignoring: %m", path);
-                        return -errno;
+                        return log_error_errno(errno, "Failed to read file '%s', ignoring: %m", path);
                 }
 
                 p = strstrip(l);

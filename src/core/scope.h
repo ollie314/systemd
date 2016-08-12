@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -23,7 +21,9 @@
 
 typedef struct Scope Scope;
 
+#include "cgroup.h"
 #include "kill.h"
+#include "unit.h"
 
 typedef enum ScopeResult {
         SCOPE_SUCCESS,
@@ -45,6 +45,7 @@ struct Scope {
         usec_t timeout_stop_usec;
 
         char *controller;
+        bool was_abandoned;
 
         sd_event_source *timer_event_source;
 };

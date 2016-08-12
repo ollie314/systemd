@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -20,14 +18,14 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <stdio.h>
-#include <stdbool.h>
 #include <errno.h>
-#include <unistd.h>
 #include <fcntl.h>
+#include <stdbool.h>
+#include <stdio.h>
 #include <sys/file.h>
-#include <sys/stat.h>
 #include <sys/prctl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 #include "sd-bus.h"
 #include "sd-device.h"
@@ -67,8 +65,8 @@ static bool arg_show_progress = false;
 static const char *arg_repair = "-a";
 
 static void start_target(const char *target, const char *mode) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
-        _cleanup_bus_flush_close_unref_ sd_bus *bus = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         int r;
 
         assert(target);
@@ -264,7 +262,7 @@ static int fsck_progress_socket(void) {
         if (fd < 0)
                 return log_warning_errno(errno, "socket(): %m");
 
-        if (connect(fd, &sa.sa, offsetof(struct sockaddr_un, sun_path) + strlen(sa.un.sun_path)) < 0) {
+        if (connect(fd, &sa.sa, SOCKADDR_UN_LEN(sa.un)) < 0) {
                 r = log_full_errno(errno == ECONNREFUSED || errno == ENOENT ? LOG_DEBUG : LOG_WARNING,
                                    errno, "Failed to connect to progress socket %s, ignoring: %m", sa.un.sun_path);
                 safe_close(fd);
@@ -276,7 +274,7 @@ static int fsck_progress_socket(void) {
 
 int main(int argc, char *argv[]) {
         _cleanup_close_pair_ int progress_pipe[2] = { -1, -1 };
-        _cleanup_device_unref_ sd_device *dev = NULL;
+        _cleanup_(sd_device_unrefp) sd_device *dev = NULL;
         const char *device, *type;
         bool root_directory;
         siginfo_t status;

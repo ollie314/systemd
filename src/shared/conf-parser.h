@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -21,9 +19,14 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <stdio.h>
+#include <errno.h>
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <syslog.h>
 
+#include "alloc-util.h"
+#include "log.h"
 #include "macro.h"
 
 /* An abstract parser for simple, line based, shallow configuration
@@ -122,6 +125,7 @@ int config_parse_log_facility(const char *unit, const char *filename, unsigned l
 int config_parse_log_level(const char *unit, const char *filename, unsigned line, const char *section, unsigned section_line, const char *lvalue, int ltype, const char *rvalue, void *data, void *userdata);
 int config_parse_signal(const char *unit, const char *filename, unsigned line, const char *section, unsigned section_line, const char *lvalue, int ltype, const char *rvalue, void *data, void *userdata);
 int config_parse_personality(const char *unit, const char *filename, unsigned line, const char *section, unsigned section_line, const char *lvalue, int ltype, const char *rvalue, void *data, void *userdata);
+int config_parse_ifname(const char *unit, const char *filename, unsigned line, const char *section, unsigned section_line, const char *lvalue, int ltype, const char *rvalue, void *data, void *userdata);
 
 #define DEFINE_CONFIG_PARSE_ENUM(function,name,type,msg)                \
         int function(const char *unit,                                  \
@@ -175,7 +179,7 @@ int config_parse_personality(const char *unit, const char *filename, unsigned li
                 assert(data);                                                  \
                                                                                \
                 xs = new0(type, 1);                                            \
-                if(!xs)                                                        \
+                if (!xs)                                                       \
                         return -ENOMEM;                                        \
                                                                                \
                 *xs = invalid;                                                 \

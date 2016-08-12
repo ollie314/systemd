@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -24,9 +22,11 @@
 #include <fcntl.h>
 #include <mntent.h>
 #include <stdbool.h>
+#include <stdio.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
+#include "macro.h"
 #include "missing.h"
 
 int fd_is_mount_point(int fd, const char *filename, int flags);
@@ -48,5 +48,7 @@ union file_handle_union {
         struct file_handle handle;
         char padding[sizeof(struct file_handle) + MAX_HANDLE_SZ];
 };
+
+const char* mode_to_inaccessible_node(mode_t mode);
 
 #define FILE_HANDLE_INIT { .handle.handle_bytes = MAX_HANDLE_SZ }

@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -27,16 +25,16 @@ typedef struct ExecContext ExecContext;
 typedef struct ExecRuntime ExecRuntime;
 typedef struct ExecParameters ExecParameters;
 
-#include <sys/capability.h>
+#include <sched.h>
 #include <stdbool.h>
 #include <stdio.h>
-#include <sched.h>
+#include <sys/capability.h>
 
-#include "list.h"
+#include "cgroup-util.h"
 #include "fdset.h"
+#include "list.h"
 #include "missing.h"
 #include "namespace.h"
-#include "bus-endpoint.h"
 
 typedef enum ExecUtmpMode {
         EXEC_UTMP_INIT,
@@ -84,7 +82,8 @@ struct ExecCommand {
         char **argv;
         ExecStatus exec_status;
         LIST_FIELDS(ExecCommand, command); /* useful for chaining commands */
-        bool ignore;
+        bool ignore:1;
+        bool privileged:1;
 };
 
 struct ExecRuntime {
@@ -93,12 +92,15 @@ struct ExecRuntime {
         char *tmp_dir;
         char *var_tmp_dir;
 
+        /* An AF_UNIX socket pair, that contains a datagram containing a file descriptor referring to the network
+         * namespace. */
         int netns_storage_socket[2];
 };
 
 struct ExecContext {
         char **environment;
         char **environment_files;
+        char **pass_environment;
 
         struct rlimit *rlimit[_RLIMIT_MAX];
         char *working_directory, *root_directory;
@@ -121,6 +123,8 @@ struct ExecContext {
 
         nsec_t timer_slack_nsec;
 
+        bool stdio_as_fds;
+
         char *tty_path;
 
         bool tty_reset;
@@ -129,7 +133,7 @@ struct ExecContext {
 
         bool ignore_sigpipe;
 
-        /* Since resolving these names might might involve socket
+        /* Since resolving these names might involve socket
          * connections and we don't want to deadlock ourselves these
          * names are resolved on execution only and in the child
          * process. */
@@ -151,12 +155,11 @@ struct ExecContext {
         bool smack_process_label_ignore;
         char *smack_process_label;
 
-        char **read_write_dirs, **read_only_dirs, **inaccessible_dirs;
+        char **read_write_paths, **read_only_paths, **inaccessible_paths;
         unsigned long mount_flags;
 
-        uint64_t capability_bounding_set_drop;
-
-        cap_t capabilities;
+        uint64_t capability_bounding_set;
+        uint64_t capability_ambient_set;
         int secure_bits;
 
         int syslog_priority;
@@ -168,10 +171,13 @@ struct ExecContext {
         bool private_tmp;
         bool private_network;
         bool private_devices;
+        bool private_users;
         ProtectSystem protect_system;
         ProtectHome protect_home;
 
         bool no_new_privileges;
+
+        bool dynamic_user;
 
         /* This is not exposed to the user but available
          * internally. We need it to make sure that whenever we spawn
@@ -193,18 +199,28 @@ struct ExecContext {
         char **runtime_directory;
         mode_t runtime_directory_mode;
 
+        bool memory_deny_write_execute;
+        bool restrict_realtime;
+
         bool oom_score_adjust_set:1;
         bool nice_set:1;
         bool ioprio_set:1;
         bool cpu_sched_set:1;
         bool no_new_privileges_set:1;
-
-        /* custom dbus enpoint */
-        BusEndpoint *bus_endpoint;
 };
 
-#include "cgroup.h"
-#include "cgroup-util.h"
+typedef enum ExecFlags {
+        EXEC_CONFIRM_SPAWN     = 1U << 0,
+        EXEC_APPLY_PERMISSIONS = 1U << 1,
+        EXEC_APPLY_CHROOT      = 1U << 2,
+        EXEC_APPLY_TTY_STDIN   = 1U << 3,
+
+        /* The following are not used by execute.c, but by consumers internally */
+        EXEC_PASS_FDS          = 1U << 4,
+        EXEC_IS_CONTROL        = 1U << 5,
+        EXEC_SETENV_RESULT     = 1U << 6,
+        EXEC_SET_WATCHDOG      = 1U << 7,
+} ExecFlags;
 
 struct ExecParameters {
         char **argv;
@@ -214,11 +230,7 @@ struct ExecParameters {
         char **fd_names;
         unsigned n_fds;
 
-        bool apply_permissions:1;
-        bool apply_chroot:1;
-        bool apply_tty_stdin:1;
-
-        bool confirm_spawn:1;
+        ExecFlags flags;
         bool selinux_context_net:1;
 
         bool cgroup_delegate:1;
@@ -231,19 +243,20 @@ struct ExecParameters {
 
         int *idle_pipe;
 
-        char *bus_endpoint_path;
-        int bus_endpoint_fd;
-
         int stdin_fd;
         int stdout_fd;
         int stderr_fd;
 };
+
+#include "unit.h"
+#include "dynamic-user.h"
 
 int exec_spawn(Unit *unit,
                ExecCommand *command,
                const ExecContext *context,
                const ExecParameters *exec_params,
                ExecRuntime *runtime,
+               DynamicCreds *dynamic_creds,
                pid_t *ret);
 
 void exec_command_done(ExecCommand *c);

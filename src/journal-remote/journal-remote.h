@@ -1,4 +1,4 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
+#pragma once
 
 /***
   This file is part of systemd.
@@ -19,15 +19,12 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#pragma once
-
-
 #include "sd-event.h"
-#include "hashmap.h"
-#include "microhttpd-util.h"
 
+#include "hashmap.h"
 #include "journal-remote-parse.h"
 #include "journal-remote-write.h"
+#include "microhttpd-util.h"
 
 typedef struct MHDDaemonWrapper MHDDaemonWrapper;
 

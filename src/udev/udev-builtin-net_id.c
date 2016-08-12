@@ -27,21 +27,21 @@
  * http://www.freedesktop.org/wiki/Software/systemd/PredictableNetworkInterfaceNames
  *
  * Two character prefixes based on the type of interface:
- *   en -- ethernet
- *   sl -- serial line IP (slip)
- *   wl -- wlan
- *   ww -- wwan
+ *   en — Ethernet
+ *   sl — serial line IP (slip)
+ *   wl — wlan
+ *   ww — wwan
  *
  * Type of names:
- *   b<number>                             -- BCMA bus core number
- *   ccw<name>                             -- CCW bus group name
- *   o<index>[d<dev_port>]                 -- on-board device index number
- *   s<slot>[f<function>][d<dev_port>]     -- hotplug slot index number
- *   x<MAC>                                -- MAC address
+ *   b<number>                             — BCMA bus core number
+ *   c<bus_id>                             — CCW bus group name, without leading zeros [s390]
+ *   o<index>[d<dev_port>]                 — on-board device index number
+ *   s<slot>[f<function>][d<dev_port>]     — hotplug slot index number
+ *   x<MAC>                                — MAC address
  *   [P<domain>]p<bus>s<slot>[f<function>][d<dev_port>]
- *                                         -- PCI geographical location
+ *                                         — PCI geographical location
  *   [P<domain>]p<bus>s<slot>[f<function>][u<port>][..][c<config>][i<interface>]
- *                                         -- USB port number chain
+ *                                         — USB port number chain
  *
  * All multi-function PCI devices will carry the [f<function>] number in the
  * device name, including the function 0 device.
@@ -53,17 +53,17 @@
  * exported.
  * The usual USB configuration == 1 and interface == 0 values are suppressed.
  *
- * PCI ethernet card with firmware index "1":
+ * PCI Ethernet card with firmware index "1":
  *   ID_NET_NAME_ONBOARD=eno1
  *   ID_NET_NAME_ONBOARD_LABEL=Ethernet Port 1
  *
- * PCI ethernet card in hotplug slot with firmware index number:
+ * PCI Ethernet card in hotplug slot with firmware index number:
  *   /sys/devices/pci0000:00/0000:00:1c.3/0000:05:00.0/net/ens1
  *   ID_NET_NAME_MAC=enx000000000466
  *   ID_NET_NAME_PATH=enp5s0
  *   ID_NET_NAME_SLOT=ens1
  *
- * PCI ethernet multi-function card with 2 ports:
+ * PCI Ethernet multi-function card with 2 ports:
  *   /sys/devices/pci0000:00/0000:00:1c.0/0000:02:00.0/net/enp2s0f0
  *   ID_NET_NAME_MAC=enx78e7d1ea46da
  *   ID_NET_NAME_PATH=enp2s0f0
@@ -100,8 +100,11 @@
 
 #include "fd-util.h"
 #include "fileio.h"
+#include "stdio-util.h"
 #include "string-util.h"
 #include "udev.h"
+
+#define ONBOARD_INDEX_MAX (16*1024-1)
 
 enum netname_type{
         NET_UNDEF,
@@ -137,9 +140,9 @@ static int dev_pci_onboard(struct udev_device *dev, struct netnames *names) {
         const char *attr;
         int idx;
 
-        /* ACPI _DSM  -- device specific method for naming a PCI or PCI Express device */
+        /* ACPI _DSM  — device specific method for naming a PCI or PCI Express device */
         attr = udev_device_get_sysattr_value(names->pcidev, "acpi_index");
-        /* SMBIOS type 41 -- Onboard Devices Extended Information */
+        /* SMBIOS type 41 — Onboard Devices Extended Information */
         if (!attr)
                 attr = udev_device_get_sysattr_value(names->pcidev, "index");
         if (!attr)
@@ -148,6 +151,13 @@ static int dev_pci_onboard(struct udev_device *dev, struct netnames *names) {
         idx = strtoul(attr, NULL, 0);
         if (idx <= 0)
                 return -EINVAL;
+
+        /* Some BIOSes report rubbish indexes that are excessively high (2^24-1 is an index VMware likes to report for
+         * example). Let's define a cut-off where we don't consider the index reliable anymore. We pick some arbitrary
+         * cut-off, which is somewhere beyond the realistic number of physical network interface a system might
+         * have. Ideally the kernel would already filter his crap for us, but it doesn't currently. */
+        if (idx > ONBOARD_INDEX_MAX)
+                return -ENOENT;
 
         /* kernel provided port index for multiple ports on a single PCI function */
         attr = udev_device_get_sysattr_value(dev, "dev_port");
@@ -220,13 +230,13 @@ static int dev_pci_slot(struct udev_device *dev, struct netnames *names) {
         if (l == 0)
                 names->pci_path[0] = '\0';
 
-        /* ACPI _SUN  -- slot user number */
+        /* ACPI _SUN  — slot user number */
         pci = udev_device_new_from_subsystem_sysname(udev, "subsystem", "pci");
         if (!pci) {
                 err = -ENOENT;
                 goto out;
         }
-        snprintf(slots, sizeof(slots), "%s/slots", udev_device_get_syspath(pci));
+        xsprintf(slots, "%s/slots", udev_device_get_syspath(pci));
         dir = opendir(slots);
         if (!dir) {
                 err = -errno;
@@ -245,7 +255,7 @@ static int dev_pci_slot(struct udev_device *dev, struct netnames *names) {
                         continue;
                 if (i < 1)
                         continue;
-                snprintf(str, sizeof(str), "%s/%s/address", slots, dent->d_name);
+                xsprintf(str, "%s/%s/address", slots, dent->d_name);
                 if (read_one_line_file(str, &address) >= 0) {
                         /* match slot address with device by stripping the function */
                         if (strneq(address, udev_device_get_sysname(names->pcidev), strlen(address)))
@@ -378,7 +388,7 @@ static int names_bcma(struct udev_device *dev, struct netnames *names) {
                 return -EINVAL;
         /* suppress the common core == 0 */
         if (core > 0)
-                snprintf(names->bcma_core, sizeof(names->bcma_core), "b%u", core);
+                xsprintf(names->bcma_core, "b%u", core);
 
         names->type = NET_BCMA;
         return 0;
@@ -418,8 +428,15 @@ static int names_ccw(struct  udev_device *dev, struct netnames *names) {
         if (!bus_id_len || bus_id_len < 8 || bus_id_len > 9)
                 return -EINVAL;
 
+        /* Strip leading zeros from the bus id for aesthetic purposes. This
+         * keeps the ccw names stable, yet much shorter in general case of
+         * bus_id 0.0.0600 -> 600. This is similar to e.g. how PCI domain is
+         * not prepended when it is zero.
+         */
+        bus_id += strspn(bus_id, ".0");
+
         /* Store the CCW bus-ID for use as network device name */
-        rc = snprintf(names->ccw_group, sizeof(names->ccw_group), "ccw%s", bus_id);
+        rc = snprintf(names->ccw_group, sizeof(names->ccw_group), "c%s", bus_id);
         if (rc >= 0 && rc < (int)sizeof(names->ccw_group))
                 names->type = NET_CCWGROUP;
         return 0;
@@ -467,9 +484,9 @@ static int ieee_oui(struct udev_device *dev, struct netnames *names, bool test) 
         /* skip commonly misused 00:00:00 (Xerox) prefix */
         if (memcmp(names->mac, "\0\0\0", 3) == 0)
                 return -EINVAL;
-        snprintf(str, sizeof(str), "OUI:%02X%02X%02X%02X%02X%02X",
-                 names->mac[0], names->mac[1], names->mac[2],
-                 names->mac[3], names->mac[4], names->mac[5]);
+        xsprintf(str, "OUI:%02X%02X%02X%02X%02X%02X", names->mac[0],
+                 names->mac[1], names->mac[2], names->mac[3], names->mac[4],
+                 names->mac[5]);
         udev_builtin_hwdb_lookup(dev, NULL, str, NULL, test);
         return 0;
 }
@@ -521,7 +538,7 @@ static int builtin_net_id(struct udev_device *dev, int argc, char *argv[], bool 
         if (err >= 0 && names.mac_valid) {
                 char str[IFNAMSIZ];
 
-                snprintf(str, sizeof(str), "%sx%02x%02x%02x%02x%02x%02x", prefix,
+                xsprintf(str, "%sx%02x%02x%02x%02x%02x%02x", prefix,
                          names.mac[0], names.mac[1], names.mac[2],
                          names.mac[3], names.mac[4], names.mac[5]);
                 udev_builtin_add_property(dev, test, "ID_NET_NAME_MAC", str);

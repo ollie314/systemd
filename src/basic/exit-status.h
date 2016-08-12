@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -23,7 +21,15 @@
 
 #include <stdbool.h>
 
+#include "hashmap.h"
+#include "macro.h"
 #include "set.h"
+
+/* This defines pretty names for the LSB 'start' verb exit codes. Note that they shouldn't be confused with the LSB
+ * 'status' verb exit codes which are defined very differently. For details see:
+ *
+ * https://refspecs.linuxbase.org/LSB_5.0.0/LSB-Core-generic/LSB-Core-generic/iniscrptact.html
+ */
 
 typedef enum ExitStatus {
         /* EXIT_SUCCESS defined by libc */
@@ -37,9 +43,7 @@ typedef enum ExitStatus {
 
         /* The LSB suggests that error codes >= 200 are "reserved". We
          * use them here under the assumption that they hence are
-         * unused by init scripts.
-         *
-         * http://refspecs.linuxfoundation.org/LSB_3.2.0/LSB-Core-generic/LSB-Core-generic/iniscrptact.html */
+         * unused by init scripts. */
 
         EXIT_CHDIR = 200,
         EXIT_NICE,
@@ -77,14 +81,13 @@ typedef enum ExitStatus {
         EXIT_RUNTIME_DIRECTORY,
         EXIT_MAKE_STARTER,
         EXIT_CHOWN,
-        EXIT_BUS_ENDPOINT,
         EXIT_SMACK_PROCESS_LABEL,
 } ExitStatus;
 
 typedef enum ExitStatusLevel {
-        EXIT_STATUS_MINIMAL,
-        EXIT_STATUS_SYSTEMD,
-        EXIT_STATUS_LSB,
+        EXIT_STATUS_MINIMAL,   /* only cover libc EXIT_STATUS/EXIT_FAILURE */
+        EXIT_STATUS_SYSTEMD,   /* cover libc and systemd's own exit codes */
+        EXIT_STATUS_LSB,       /* cover libc, systemd's own and LSB exit codes */
         EXIT_STATUS_FULL = EXIT_STATUS_LSB
 } ExitStatusLevel;
 

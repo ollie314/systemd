@@ -17,18 +17,25 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <assert.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <stdarg.h>
+#include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/inotify.h>
+#include <sys/socket.h>
+#include <sys/sysmacros.h>
+#include <sys/time.h>
 #include <linux/kd.h>
 #include <linux/tiocl.h>
 #include <linux/vt.h>
 #include <poll.h>
 #include <signal.h>
 #include <sys/ioctl.h>
-#include <sys/stat.h>
 #include <sys/types.h>
 #include <termios.h>
-#include <time.h>
 #include <unistd.h>
 
 #include "alloc-util.h"
@@ -36,12 +43,14 @@
 #include "fileio.h"
 #include "fs-util.h"
 #include "io-util.h"
+#include "log.h"
+#include "macro.h"
 #include "parse-util.h"
-#include "path-util.h"
 #include "process-util.h"
 #include "socket-util.h"
 #include "stat-util.h"
 #include "string-util.h"
+#include "strv.h"
 #include "terminal-util.h"
 #include "time-util.h"
 #include "util.h"
@@ -120,7 +129,7 @@ int read_one_char(FILE *f, char *ret, usec_t t, bool *need_nl) {
 
         errno = 0;
         if (!fgets(line, sizeof(line), f))
-                return errno ? -errno : -EIO;
+                return errno > 0 ? -errno : -EIO;
 
         truncate_nl(line);
 
@@ -146,14 +155,14 @@ int ask_char(char *ret, const char *replies, const char *text, ...) {
                 char c;
                 bool need_nl = true;
 
-                if (on_tty())
+                if (colors_enabled())
                         fputs(ANSI_HIGHLIGHT, stdout);
 
                 va_start(ap, text);
                 vprintf(text, ap);
                 va_end(ap);
 
-                if (on_tty())
+                if (colors_enabled())
                         fputs(ANSI_NORMAL, stdout);
 
                 fflush(stdout);
@@ -190,21 +199,21 @@ int ask_string(char **ret, const char *text, ...) {
                 char line[LINE_MAX];
                 va_list ap;
 
-                if (on_tty())
+                if (colors_enabled())
                         fputs(ANSI_HIGHLIGHT, stdout);
 
                 va_start(ap, text);
                 vprintf(text, ap);
                 va_end(ap);
 
-                if (on_tty())
+                if (colors_enabled())
                         fputs(ANSI_NORMAL, stdout);
 
                 fflush(stdout);
 
                 errno = 0;
                 if (!fgets(line, sizeof(line), stdin))
-                        return errno ? -errno : -EIO;
+                        return errno > 0 ? -errno : -EIO;
 
                 if (!endswith(line, "\n"))
                         putchar('\n');
@@ -420,7 +429,7 @@ int acquire_terminal(
 
                 assert_se(sigaction(SIGHUP, &sa_old, NULL) == 0);
 
-                /* Sometimes it makes sense to ignore TIOCSCTTY
+                /* Sometimes, it makes sense to ignore TIOCSCTTY
                  * returning EPERM, i.e. when very likely we already
                  * are have this controlling terminal. */
                 if (r < 0 && r == -EPERM && ignore_tiocstty_eperm)
@@ -700,6 +709,64 @@ char *resolve_dev_console(char **active) {
         return tty;
 }
 
+int get_kernel_consoles(char ***consoles) {
+        _cleanup_strv_free_ char **con = NULL;
+        _cleanup_free_ char *line = NULL;
+        const char *active;
+        int r;
+
+        assert(consoles);
+
+        r = read_one_line_file("/sys/class/tty/console/active", &line);
+        if (r < 0)
+                return r;
+
+        active = line;
+        for (;;) {
+                _cleanup_free_ char *tty = NULL;
+                char *path;
+
+                r = extract_first_word(&active, &tty, NULL, 0);
+                if (r < 0)
+                        return r;
+                if (r == 0)
+                        break;
+
+                if (streq(tty, "tty0")) {
+                        tty = mfree(tty);
+                        r = read_one_line_file("/sys/class/tty/tty0/active", &tty);
+                        if (r < 0)
+                                return r;
+                }
+
+                path = strappend("/dev/", tty);
+                if (!path)
+                        return -ENOMEM;
+
+                if (access(path, F_OK) < 0) {
+                        log_debug_errno(errno, "Console device %s is not accessible, skipping: %m", path);
+                        free(path);
+                        continue;
+                }
+
+                r = strv_consume(&con, path);
+                if (r < 0)
+                        return r;
+        }
+
+        if (strv_isempty(con)) {
+                log_debug("No devices found for system console");
+
+                r = strv_extend(&con, "/dev/console");
+                if (r < 0)
+                        return r;
+        }
+
+        *consoles = con;
+        con = NULL;
+        return 0;
+}
+
 bool tty_is_vc_resolve(const char *tty) {
         _cleanup_free_ char *active = NULL;
 
@@ -718,9 +785,7 @@ bool tty_is_vc_resolve(const char *tty) {
 }
 
 const char *default_term_for_tty(const char *tty) {
-        assert(tty);
-
-        return tty_is_vc_resolve(tty) ? "TERM=linux" : "TERM=vt220";
+        return tty && tty_is_vc_resolve(tty) ? "linux" : "vt220";
 }
 
 int fd_columns(int fd) {
@@ -823,9 +888,7 @@ int make_stdio(int fd) {
 
         /* Explicitly unset O_CLOEXEC, since if fd was < 3, then
          * dup2() was a NOP and the bit hence possibly set. */
-        fd_cloexec(STDIN_FILENO, false);
-        fd_cloexec(STDOUT_FILENO, false);
-        fd_cloexec(STDERR_FILENO, false);
+        stdio_unset_cloexec();
 
         return 0;
 }
@@ -1126,4 +1189,33 @@ int open_terminal_in_namespace(pid_t pid, const char *name, int mode) {
                 return -EIO;
 
         return receive_one_fd(pair[0], 0);
+}
+
+bool terminal_is_dumb(void) {
+        const char *e;
+
+        if (!on_tty())
+                return true;
+
+        e = getenv("TERM");
+        if (!e)
+                return true;
+
+        return streq(e, "dumb");
+}
+
+bool colors_enabled(void) {
+        static int enabled = -1;
+
+        if (_unlikely_(enabled < 0)) {
+                const char *colors;
+
+                colors = getenv("SYSTEMD_COLORS");
+                if (colors)
+                        enabled = parse_boolean(colors) != 0;
+                else
+                        enabled = !terminal_is_dumb();
+        }
+
+        return enabled;
 }

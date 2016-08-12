@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -25,8 +23,7 @@
 #  include <libaudit.h>
 #endif
 
-#include "audit-type.h"
-#include "macro.h"
 #include "missing.h"
-
+#include "audit-type.h"
 #include "audit_type-to-name.h"
+#include "macro.h"

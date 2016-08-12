@@ -52,6 +52,7 @@
     <cmdsynopsis>
       <command>systemd-cgtop</command>
       <arg choice="opt" rep="repeat">OPTIONS</arg>
+      <arg choice="opt">GROUP</arg>
     </cmdsynopsis>
   </refsynopsisdiv>
 
@@ -62,7 +63,9 @@
     groups of the local Linux control group hierarchy, ordered by
     their CPU, memory, or disk I/O load. The display is refreshed in
     regular intervals (by default every 1s), similar in style to
-    <citerefentry project='man-pages'><refentrytitle>top</refentrytitle><manvolnum>1</manvolnum></citerefentry>.</para>
+    <citerefentry project='man-pages'><refentrytitle>top</refentrytitle><manvolnum>1</manvolnum></citerefentry>.
+    If a control group path is specified, shows only the services of
+    the specified control group.</para>
 
     <para>If <command>systemd-cgtop</command> is not connected to a
     tty, no column headers are printed and the default is to only run
@@ -154,7 +157,7 @@
         <term><option>-r</option></term>
         <term><option>--raw</option></term>
 
-	<listitem><para>Format byte counts (as in memory usage and IO metrics)
+	<listitem><para>Format byte counts (as in memory usage and I/O metrics)
 	with raw numeric values rather than human-readable
         numbers.</para></listitem>
       </varlistentry>
@@ -164,7 +167,7 @@
         <term><option>--cpu=time</option></term>
 
         <listitem><para>Controls whether the CPU usage is shown as
-        percentage or time. By default the CPU usage is shown as
+        percentage or time. By default, the CPU usage is shown as
         percentage. This setting may also be toggled at runtime by
         pressing the <keycap>%</keycap> key.</para></listitem>
       </varlistentry>
@@ -173,8 +176,8 @@
         <term><option>-P</option></term>
 
         <listitem><para>Count only userspace processes instead of all
-        tasks. By default all tasks are counted: each kernel thread
-        and each userspace thread individually. With this setting
+        tasks. By default, all tasks are counted: each kernel thread
+        and each userspace thread individually. With this setting,
         kernel threads are excluded from the counting and each
         userspace process only counts as one, regardless how many
         threads it consists of. This setting may also be toggled at
@@ -187,9 +190,9 @@
         <term><option>-k</option></term>
 
         <listitem><para>Count only userspace processes and kernel
-        threads instead of all tasks. By default all tasks are
+        threads instead of all tasks. By default, all tasks are
         counted: each kernel thread and each userspace thread
-        individually. With this setting kernel threads are included in
+        individually. With this setting, kernel threads are included in
         the counting and each userspace process only counts as on one,
         regardless how many threads it consists of. This setting may
         also be toggled at runtime by pressing the <keycap>k</keycap>
@@ -203,9 +206,9 @@
         <listitem><para>Controls whether the number of processes shown
         for a control group shall include all processes that are
         contained in any of the child control groups as well. Takes a
-        boolean argument, defaults to <literal>yes</literal>. If
-        enabled the processes in child control groups are included, if
-        disabled only the processes in the control group itself are
+        boolean argument, which defaults to <literal>yes</literal>. If
+        enabled, the processes in child control groups are included, if
+        disabled, only the processes in the control group itself are
         counted. This setting may also be toggled at runtime by
         pressing the <keycap>r</keycap> key. Note that this setting
         only applies to process counting, i.e. when the
@@ -252,7 +255,8 @@
 
         <listitem><para>Limit control groups shown to the part
         corresponding to the container
-        <replaceable>MACHINE</replaceable>.</para></listitem>
+        <replaceable>MACHINE</replaceable>.
+        This option may not be used when a control group path is specified.</para></listitem>
       </varlistentry>
 
       <xi:include href="standard-options.xml" xpointer="help" />
@@ -294,7 +298,7 @@
         <term><keycap>i</keycap></term>
 
         <listitem><para>Sort the control groups by path, number of
-        tasks, CPU load, memory usage, or IO load, respectively.  This
+        tasks, CPU load, memory usage, or I/O load, respectively.  This
         setting may also be controlled using the
         <option>--order=</option> command line
         switch.</para></listitem>
@@ -343,7 +347,7 @@
         excluding processes in child control groups in control group
         process counts. This setting may also be controlled using the
         <option>--recursive=</option> command line switch. This key is
-        not available of all tasks are counted, it is only available
+        not available if all tasks are counted, it is only available
         if processes are counted, as enabled with the
         <keycap>P</keycap> or <keycap>k</keycap>
         keys.</para></listitem>

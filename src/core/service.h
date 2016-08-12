@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 #pragma once
 
 /***
@@ -24,10 +22,10 @@
 typedef struct Service Service;
 typedef struct ServiceFDStore ServiceFDStore;
 
+#include "exit-status.h"
+#include "kill.h"
 #include "path.h"
 #include "ratelimit.h"
-#include "kill.h"
-#include "exit-status.h"
 
 typedef enum ServiceRestart {
         SERVICE_RESTART_NO,
@@ -82,13 +80,13 @@ typedef enum NotifyState {
 
 typedef enum ServiceResult {
         SERVICE_SUCCESS,
-        SERVICE_FAILURE_RESOURCES,
+        SERVICE_FAILURE_RESOURCES, /* a bit of a misnomer, just our catch-all error for errnos we didn't expect */
         SERVICE_FAILURE_TIMEOUT,
         SERVICE_FAILURE_EXIT_CODE,
         SERVICE_FAILURE_SIGNAL,
         SERVICE_FAILURE_CORE_DUMP,
         SERVICE_FAILURE_WATCHDOG,
-        SERVICE_FAILURE_START_LIMIT,
+        SERVICE_FAILURE_START_LIMIT_HIT,
         _SERVICE_RESULT_MAX,
         _SERVICE_RESULT_INVALID = -1
 } ServiceResult;
@@ -118,9 +116,12 @@ struct Service {
         usec_t restart_usec;
         usec_t timeout_start_usec;
         usec_t timeout_stop_usec;
+        usec_t runtime_max_usec;
 
         dual_timestamp watchdog_timestamp;
         usec_t watchdog_usec;
+        usec_t watchdog_override_usec;
+        bool watchdog_override_enable;
         sd_event_source *watchdog_event_source;
 
         ExecCommand* exec_command[_SERVICE_EXEC_COMMAND_MAX];
@@ -147,12 +148,12 @@ struct Service {
 
         /* Runtime data of the execution context */
         ExecRuntime *exec_runtime;
+        DynamicCreds dynamic_creds;
 
         pid_t main_pid, control_pid;
         int socket_fd;
+        SocketPeer *peer;
         bool socket_fd_selinux_context_net;
-
-        int bus_endpoint_fd;
 
         bool permissions_start_only;
         bool root_directory_start_only;
@@ -172,14 +173,12 @@ struct Service {
         bool reset_cpu_usage:1;
 
         char *bus_name;
+        char *bus_name_owner; /* unique name of the current owner */
 
         char *status_text;
         int status_errno;
 
-        RateLimit start_limit;
-        FailureAction start_limit_action;
         FailureAction failure_action;
-        char *reboot_arg;
 
         UnitRef accept_socket;
 
@@ -204,6 +203,7 @@ struct Service {
 extern const UnitVTable service_vtable;
 
 int service_set_socket_fd(Service *s, int fd, struct Socket *socket, bool selinux_context_net);
+void service_close_socket_fd(Service *s);
 
 const char* service_restart_to_string(ServiceRestart i) _const_;
 ServiceRestart service_restart_from_string(const char *s) _pure_;

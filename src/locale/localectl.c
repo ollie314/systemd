@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -47,14 +45,6 @@ static bool arg_ask_password = true;
 static BusTransport arg_transport = BUS_TRANSPORT_LOCAL;
 static char *arg_host = NULL;
 static bool arg_convert = true;
-
-static void pager_open_if_enabled(void) {
-
-        if (arg_no_pager)
-                return;
-
-        pager_open(false);
-}
 
 static void polkit_agent_open_if_enabled(void) {
 
@@ -126,11 +116,11 @@ static void print_overridden_variables(void) {
                 if (variables[j]) {
                         if (print_warning) {
                                 log_warning("Warning: Settings on kernel command line override system locale settings in /etc/locale.conf.\n"
-                                            "  Command Line: %s=%s", locale_variable_to_string(j), variables[j]);
+                                            "    Command Line: %s=%s", locale_variable_to_string(j), variables[j]);
 
                                 print_warning = false;
                         } else
-                                log_warning("                %s=%s", locale_variable_to_string(j), variables[j]);
+                                log_warning("                  %s=%s", locale_variable_to_string(j), variables[j]);
                 }
  finish:
         for (j = 0; j < _VARIABLE_LC_MAX; j++)
@@ -141,7 +131,7 @@ static void print_status_info(StatusInfo *i) {
         assert(i);
 
         if (strv_isempty(i->locale))
-                puts("   System Locale: n/a\n");
+                puts("   System Locale: n/a");
         else {
                 char **j;
 
@@ -195,8 +185,8 @@ static int show_status(sd_bus *bus, char **args, unsigned n) {
 }
 
 static int set_locale(sd_bus *bus, char **args, unsigned n) {
-        _cleanup_bus_message_unref_ sd_bus_message *m = NULL;
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         int r;
 
         assert(bus);
@@ -241,14 +231,14 @@ static int list_locales(sd_bus *bus, char **args, unsigned n) {
         if (r < 0)
                 return log_error_errno(r, "Failed to read list of locales: %m");
 
-        pager_open_if_enabled();
+        pager_open(arg_no_pager, false);
         strv_print(l);
 
         return 0;
 }
 
 static int set_vconsole_keymap(sd_bus *bus, char **args, unsigned n) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         const char *map, *toggle_map;
         int r;
 
@@ -343,7 +333,7 @@ static int list_vconsole_keymaps(sd_bus *bus, char **args, unsigned n) {
 
         strv_sort(l);
 
-        pager_open_if_enabled();
+        pager_open(arg_no_pager, false);
 
         strv_print(l);
 
@@ -351,7 +341,7 @@ static int list_vconsole_keymaps(sd_bus *bus, char **args, unsigned n) {
 }
 
 static int set_x11_keymap(sd_bus *bus, char **args, unsigned n) {
-        _cleanup_bus_error_free_ sd_bus_error error = SD_BUS_ERROR_NULL;
+        _cleanup_(sd_bus_error_free) sd_bus_error error = SD_BUS_ERROR_NULL;
         const char *layout, *model, *variant, *options;
         int r;
 
@@ -481,7 +471,7 @@ static int list_x11_keymaps(sd_bus *bus, char **args, unsigned n) {
         strv_sort(list);
         strv_uniq(list);
 
-        pager_open_if_enabled();
+        pager_open(arg_no_pager, false);
 
         strv_print(list);
         return 0;
@@ -666,7 +656,7 @@ static int localectl_main(sd_bus *bus, int argc, char *argv[]) {
 }
 
 int main(int argc, char*argv[]) {
-        _cleanup_bus_flush_close_unref_ sd_bus *bus = NULL;
+        sd_bus *bus = NULL;
         int r;
 
         setlocale(LC_ALL, "");
@@ -686,6 +676,7 @@ int main(int argc, char*argv[]) {
         r = localectl_main(bus, argc, argv);
 
 finish:
+        sd_bus_flush_close_unref(bus);
         pager_close();
 
         return r < 0 ? EXIT_FAILURE : EXIT_SUCCESS;

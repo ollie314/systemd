@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -25,6 +23,7 @@
 #include <unistd.h>
 
 #include "alloc-util.h"
+#include "def.h"
 #include "fd-util.h"
 #include "formats-util.h"
 #include "killall.h"
@@ -35,9 +34,7 @@
 #include "terminal-util.h"
 #include "util.h"
 
-#define TIMEOUT_USEC (10 * USEC_PER_SEC)
-
-static bool ignore_proc(pid_t pid) {
+static bool ignore_proc(pid_t pid, bool warn_rootfs) {
         _cleanup_fclose_ FILE *f = NULL;
         char c;
         const char *p;
@@ -72,7 +69,22 @@ static bool ignore_proc(pid_t pid) {
          * spree.
          *
          * http://www.freedesktop.org/wiki/Software/systemd/RootStorageDaemons */
-        if (count == 1 && c == '@')
+        if (c == '@' && warn_rootfs) {
+                _cleanup_free_ char *comm = NULL;
+
+                r = pid_from_same_root_fs(pid);
+                if (r < 0)
+                        return true;
+
+                get_process_comm(pid, &comm);
+
+                if (r)
+                        log_notice("Process " PID_FMT " (%s) has been marked to be excluded from killing. It is "
+                                   "running from the root file system, and thus likely to block re-mounting of the "
+                                   "root file system to read-only. Please consider moving it into an initrd file "
+                                   "system instead.", pid, strna(comm));
+                return true;
+        } else if (c == '@')
                 return true;
 
         return false;
@@ -86,7 +98,7 @@ static void wait_for_children(Set *pids, sigset_t *mask) {
         if (set_isempty(pids))
                 return;
 
-        until = now(CLOCK_MONOTONIC) + TIMEOUT_USEC;
+        until = now(CLOCK_MONOTONIC) + DEFAULT_TIMEOUT_USEC;
         for (;;) {
                 struct timespec ts;
                 int k;
@@ -171,7 +183,7 @@ static int killall(int sig, Set *pids, bool send_sighup) {
                 if (parse_pid(d->d_name, &pid) < 0)
                         continue;
 
-                if (ignore_proc(pid))
+                if (ignore_proc(pid, sig == SIGKILL && !in_initrd()))
                         continue;
 
                 if (sig == SIGKILL) {

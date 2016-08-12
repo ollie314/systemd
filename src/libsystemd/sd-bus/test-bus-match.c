@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,13 +17,12 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include "log.h"
-#include "macro.h"
-
 #include "bus-match.h"
 #include "bus-message.h"
-#include "bus-util.h"
 #include "bus-slot.h"
+#include "bus-util.h"
+#include "log.h"
+#include "macro.h"
 
 static bool mask[32];
 
@@ -91,8 +88,8 @@ int main(int argc, char *argv[]) {
                 .type = BUS_MATCH_ROOT,
         };
 
-        _cleanup_bus_message_unref_ sd_bus_message *m = NULL;
-        _cleanup_bus_flush_close_unref_ sd_bus *bus = NULL;
+        _cleanup_(sd_bus_message_unrefp) sd_bus_message *m = NULL;
+        _cleanup_(sd_bus_flush_close_unrefp) sd_bus *bus = NULL;
         enum bus_match_node_type i;
         sd_bus_slot slots[19];
         int r;

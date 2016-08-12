@@ -1,5 +1,3 @@
-/*-*- Mode: C; c-basic-offset: 8; indent-tabs-mode: nil -*-*/
-
 /***
   This file is part of systemd.
 
@@ -19,11 +17,11 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-#include <string.h>
 #include <stdio.h>
+#include <string.h>
 
-#include "loopback-setup.h"
 #include "log.h"
+#include "loopback-setup.h"
 
 int main(int argc, char* argv[]) {
         int r;
@@ -33,7 +31,7 @@ int main(int argc, char* argv[]) {
 
         r = loopback_setup();
         if (r < 0)
-                fprintf(stderr, "loopback: %s\n", strerror(-r));
+                log_error("loopback: %m");
 
-        return 0;
+        return r >= 0 ? EXIT_SUCCESS : EXIT_FAILURE;
 }
