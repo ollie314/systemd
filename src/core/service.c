@@ -1471,6 +1471,9 @@ static void service_enter_dead(Service *s, ServiceResult f, bool allow_restart) 
         /* Also, remove the runtime directory */
         exec_context_destroy_runtime_directory(&s->exec_context, manager_get_runtime_prefix(UNIT(s)->manager));
 
+        /* Get rid of the IPC bits of the user */
+        unit_unref_uid_gid(UNIT(s), true);
+
         /* Release the user, and destroy it if we are the only remaining owner */
         dynamic_creds_destroy(&s->dynamic_creds);
 
@@ -2866,7 +2869,7 @@ static void service_sigchld_event(Unit *u, pid_t pid, int code, int status) {
 
         /* If the PID set is empty now, then let's finish this off
            (On unified we use proper notifications) */
-        if (cg_unified() <= 0 && set_isempty(u->pids))
+        if (cg_unified(SYSTEMD_CGROUP_CONTROLLER) <= 0 && set_isempty(u->pids))
                 service_notify_cgroup_empty_event(u);
 }
 

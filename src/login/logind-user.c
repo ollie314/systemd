@@ -26,6 +26,7 @@
 #include "bus-common-errors.h"
 #include "bus-error.h"
 #include "bus-util.h"
+#include "cgroup-util.h"
 #include "clean-ipc.h"
 #include "conf-parser.h"
 #include "escape.h"
@@ -612,9 +613,14 @@ int user_finalize(User *u) {
         if (k < 0)
                 r = k;
 
-        /* Clean SysV + POSIX IPC objects */
-        if (u->manager->remove_ipc) {
-                k = clean_ipc(u->uid);
+        /* Clean SysV + POSIX IPC objects, but only if this is not a system user. Background: in many setups cronjobs
+         * are run in full PAM and thus logind sessions, even if the code run doesn't belong to actual users but to
+         * system components. Since enable RemoveIPC= globally for all users, we need to be a bit careful with such
+         * cases, as we shouldn't accidentally remove a system service's IPC objects while it is running, just because
+         * a cronjob running as the same user just finished. Hence: exclude system users generally from IPC clean-up,
+         * and do it only for normal users. */
+        if (u->manager->remove_ipc && u->uid > SYSTEM_UID_MAX) {
+                k = clean_ipc_by_uid(u->uid);
                 if (k < 0)
                         r = k;
         }
@@ -891,7 +897,17 @@ int config_parse_user_tasks_max(
         assert(rvalue);
         assert(data);
 
-        /* First, try to parse as percentage */
+        if (isempty(rvalue)) {
+                *m = system_tasks_max_scale(DEFAULT_USER_TASKS_MAX_PERCENTAGE, 100U);
+                return 0;
+        }
+
+        if (streq(rvalue, "infinity")) {
+                *m = CGROUP_LIMIT_MAX;
+                return 0;
+        }
+
+        /* Try to parse as percentage */
         r = parse_percent(rvalue);
         if (r >= 0)
                 k = system_tasks_max_scale(r, 100U);

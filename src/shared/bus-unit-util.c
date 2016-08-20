@@ -204,7 +204,7 @@ int bus_append_unit_property_assignment(sd_bus_message *m, const char *assignmen
                               "IgnoreSIGPIPE", "TTYVHangup", "TTYReset", "RemainAfterExit",
                               "PrivateTmp", "PrivateDevices", "PrivateNetwork", "PrivateUsers", "NoNewPrivileges",
                               "SyslogLevelPrefix", "Delegate", "RemainAfterElapse", "MemoryDenyWriteExecute",
-                              "RestrictRealtime", "DynamicUser")) {
+                              "RestrictRealtime", "DynamicUser", "RemoveIPC")) {
 
                 r = parse_boolean(eq);
                 if (r < 0)
@@ -564,6 +564,21 @@ finish:
         r = sd_bus_message_close_container(m);
         if (r < 0)
                 return bus_log_create_error(r);
+
+        return 0;
+}
+
+int bus_append_unit_property_assignment_many(sd_bus_message *m, char **l) {
+        char **i;
+        int r;
+
+        assert(m);
+
+        STRV_FOREACH(i, l) {
+                r = bus_append_unit_property_assignment(m, *i);
+                if (r < 0)
+                        return r;
+        }
 
         return 0;
 }

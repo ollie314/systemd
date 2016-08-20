@@ -1505,7 +1505,8 @@ int main(int argc, char *argv[]) {
         if (getpid() == 1) {
                 /* Don't limit the core dump size, so that coredump handlers such as systemd-coredump (which honour the limit)
                  * will process core dumps for system services by default. */
-                (void) setrlimit(RLIMIT_CORE, &RLIMIT_MAKE_CONST(RLIM_INFINITY));
+                if (setrlimit(RLIMIT_CORE, &RLIMIT_MAKE_CONST(RLIM_INFINITY)) < 0)
+                        log_warning_errno(errno, "Failed to set RLIMIT_CORE: %m");
 
                 /* But at the same time, turn off the core_pattern logic by default, so that no coredumps are stored
                  * until the systemd-coredump tool is enabled via sysctl. */
@@ -1559,7 +1560,7 @@ int main(int argc, char *argv[]) {
         (void) reset_all_signal_handlers();
         (void) ignore_signals(SIGNALS_IGNORE, -1);
 
-        arg_default_tasks_max = system_tasks_max_scale(15U, 100U); /* 15% the system PIDs equals 4915 by default. */
+        arg_default_tasks_max = system_tasks_max_scale(DEFAULT_TASKS_MAX_PERCENTAGE, 100U);
 
         if (parse_config_file() < 0) {
                 error_message = "Failed to parse config file";
@@ -2013,9 +2014,6 @@ finish:
                                 log_error_errno(r, "Failed to switch root, trying to continue: %m");
                 }
 
-                /* Reopen the console */
-                (void) make_console_stdio();
-
                 args_size = MAX(6, argc+1);
                 args = newa(const char*, args_size);
 
@@ -2062,6 +2060,9 @@ finish:
 
                 arg_serialization = safe_fclose(arg_serialization);
                 fds = fdset_free(fds);
+
+                /* Reopen the console */
+                (void) make_console_stdio();
 
                 for (j = 1, i = 1; j < (unsigned) argc; j++)
                         args[i++] = argv[j];
