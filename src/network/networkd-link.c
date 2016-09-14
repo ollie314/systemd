@@ -1787,6 +1787,31 @@ static int link_down(Link *link) {
         return 0;
 }
 
+static int link_up_can(Link *link) {
+        _cleanup_(sd_netlink_message_unrefp) sd_netlink_message *req = NULL;
+        int r;
+
+        assert(link);
+
+        log_link_debug(link, "Bringing CAN link up");
+
+        r = sd_rtnl_message_new_link(link->manager->rtnl, &req, RTM_SETLINK, link->ifindex);
+        if (r < 0)
+                return log_link_error_errno(link, r, "Could not allocate RTM_SETLINK message: %m");
+
+        r = sd_rtnl_message_link_set_flags(req, IFF_UP, IFF_UP);
+        if (r < 0)
+                return log_link_error_errno(link, r, "Could not set link flags: %m");
+
+        r = sd_netlink_call_async(link->manager->rtnl, req, link_up_handler, link, 0, NULL);
+        if (r < 0)
+                return log_link_error_errno(link, r, "Could not send rtnetlink message: %m");
+
+        link_ref(link);
+
+        return 0;
+}
+
 static int link_handle_bound_to_list(Link *link) {
         Link *l;
         Iterator i;
@@ -2431,6 +2456,19 @@ static int link_configure(Link *link) {
         assert(link->network);
         assert(link->state == LINK_STATE_PENDING);
 
+        if (streq_ptr(link->kind, "vcan")) {
+
+                if (!(link->flags & IFF_UP)) {
+                        r = link_up_can(link);
+                        if (r < 0) {
+                                link_enter_failed(link);
+                                return r;
+                        }
+                }
+
+                return 0;
+        }
+
         /* Drop foreign config, but ignore loopback or critical devices.
          * We do not want to remove loopback address or addresses used for root NFS. */
         if (!(link->flags & IFF_LOOPBACK) && !(link->network->dhcp_critical)) {
@@ -2805,17 +2843,17 @@ network_file_fail:
         if (dhcp4_address) {
                 r = in_addr_from_string(AF_INET, dhcp4_address, &address);
                 if (r < 0) {
-                        log_link_debug_errno(link, r, "Falied to parse DHCPv4 address %s: %m", dhcp4_address);
+                        log_link_debug_errno(link, r, "Failed to parse DHCPv4 address %s: %m", dhcp4_address);
                         goto dhcp4_address_fail;
                 }
 
                 r = sd_dhcp_client_new(&link->dhcp_client);
                 if (r < 0)
-                        return log_link_error_errno(link, r, "Falied to create DHCPv4 client: %m");
+                        return log_link_error_errno(link, r, "Failed to create DHCPv4 client: %m");
 
                 r = sd_dhcp_client_set_request_address(link->dhcp_client, &address.in);
                 if (r < 0)
-                        return log_link_error_errno(link, r, "Falied to set initial DHCPv4 address %s: %m", dhcp4_address);
+                        return log_link_error_errno(link, r, "Failed to set initial DHCPv4 address %s: %m", dhcp4_address);
         }
 
 dhcp4_address_fail:
@@ -2823,17 +2861,17 @@ dhcp4_address_fail:
         if (ipv4ll_address) {
                 r = in_addr_from_string(AF_INET, ipv4ll_address, &address);
                 if (r < 0) {
-                        log_link_debug_errno(link, r, "Falied to parse IPv4LL address %s: %m", ipv4ll_address);
+                        log_link_debug_errno(link, r, "Failed to parse IPv4LL address %s: %m", ipv4ll_address);
                         goto ipv4ll_address_fail;
                 }
 
                 r = sd_ipv4ll_new(&link->ipv4ll);
                 if (r < 0)
-                        return log_link_error_errno(link, r, "Falied to create IPv4LL client: %m");
+                        return log_link_error_errno(link, r, "Failed to create IPv4LL client: %m");
 
                 r = sd_ipv4ll_set_address(link->ipv4ll, &address.in);
                 if (r < 0)
-                        return log_link_error_errno(link, r, "Falied to set initial IPv4LL address %s: %m", ipv4ll_address);
+                        return log_link_error_errno(link, r, "Failed to set initial IPv4LL address %s: %m", ipv4ll_address);
         }
 
 ipv4ll_address_fail:
@@ -2957,9 +2995,11 @@ static int link_carrier_lost(Link *link) {
         if (r < 0)
                 return r;
 
-        r = link_drop_foreign_config(link);
-        if (r < 0)
-                return r;
+        if (link->state != LINK_STATE_UNMANAGED) {
+                r = link_drop_foreign_config(link);
+                if (r < 0)
+                        return r;
+        }
 
         r = link_handle_bound_by_list(link);
         if (r < 0)

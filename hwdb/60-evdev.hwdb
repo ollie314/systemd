@@ -45,6 +45,8 @@
 
 #  Macbook2,1 (late 2006), single-button touchpad
 evdev:input:b0003v05ACp021B*
+# Macbook4,1
+evdev:input:b0003v05ACp0229*
  EVDEV_ABS_00=256:1471:12
  EVDEV_ABS_01=256:831:12
 
@@ -155,6 +157,11 @@ evdev:name:SynPS/2 Synaptics TouchPad:dmi:bvn*:bvr*:bd*:svnDellInc.:pnXPS159550*
  EVDEV_ABS_35=::41
  EVDEV_ABS_36=::43
 
+# Dell XPS M1530
+evdev:name:AlpsPS/2 ALPS GlidePoint:dmi:bvn*:bvr*:bd*:svnDellInc.:pnXPSM1530*
+ EVDEV_ABS_00=85:947:15
+ EVDEV_ABS_01=154:726:18
+
 #########################################
 # Google
 #########################################
@@ -187,6 +194,13 @@ evdev:name:SynPS/2 Synaptics TouchPad:dmi:*svnLENOVO:pn*ThinkPadEdgeE530*
  EVDEV_ABS_01=1105:4820:68
  EVDEV_ABS_35=1241:5703:49
  EVDEV_ABS_36=1105:4820:68
+
+# Lenovo L430
+evdev:name:ETPS/2 Elantech Touchpad:dmi:*svnLENOVO*:pvrThinkPadL430*
+ EVDEV_ABS_00=19:2197:29
+ EVDEV_ABS_01=12:1151:25
+ EVDEV_ABS_35=19:2197:29
+ EVDEV_ABS_36=12:1151:25
 
 # Lenovo P50
 evdev:name:SynPS/2 Synaptics TouchPad:dmi:*svnLENOVO*:pn*ThinkPad*P50*
@@ -232,6 +246,20 @@ evdev:name:AlpsPS/2 ALPS GlidePoint:dmi:*svnLENOVO:*pvrLenovoideapadY700-14ISK*
  EVDEV_ABS_01=::29
  EVDEV_ABS_35=::27
  EVDEV_ABS_36=::29
+
+# Lenovo Ideapad 500S-13ISK
+evdev:name:AlpsPS/2 ALPS GlidePoint:dmi:*svnLENOVO:*pvrLenovoideapad500S-13ISK*
+ EVDEV_ABS_00=125:3955:37
+ EVDEV_ABS_01=104:1959:27
+ EVDEV_ABS_35=125:3954:37
+ EVDEV_ABS_36=104:1959:27
+
+# Lenovo Yoga 500-14ISK
+evdev:name:AlpsPS/2 ALPS GlidePoint:dmi:*svnLENOVO:*pvrLenovoYoga500-14ISK*
+ EVDEV_ABS_00=124:3955:36
+ EVDEV_ABS_01=103:1959:26
+ EVDEV_ABS_35=124:3955:36
+ EVDEV_ABS_36=103:1959:26
 
 #########################################
 # Samsung

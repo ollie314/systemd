@@ -108,6 +108,10 @@ struct Unit {
         /* The slot used for watching NameOwnerChanged signals */
         sd_bus_slot *match_bus_slot;
 
+        /* References to this unit from clients */
+        sd_bus_track *bus_track;
+        char **deserialized_refs;
+
         /* Job timeout and action to take */
         usec_t job_timeout;
         FailureAction job_timeout_action;
@@ -190,6 +194,7 @@ struct Unit {
 
         /* Where the cpu.stat or cpuacct.usage was at the time the unit was started */
         nsec_t cpu_usage_base;
+        nsec_t cpu_usage_last; /* the most recently read value */
 
         /* Counterparts in the cgroup filesystem */
         char *cgroup_path;
@@ -247,6 +252,9 @@ struct Unit {
 
         /* Did we already invoke unit_coldplug() for this unit? */
         bool coldplugged:1;
+
+        /* For transient units: whether to add a bus track reference after creating the unit */
+        bool bus_track_add:1;
 };
 
 struct UnitStatusMessageFormats {
@@ -639,7 +647,7 @@ void unit_notify_user_lookup(Unit *u, uid_t uid, gid_t gid);
 
 #define log_unit_full(unit, level, error, ...)                          \
         ({                                                              \
-                Unit *_u = (unit);                                      \
+                const Unit *_u = (unit);                                \
                 _u ? log_object_internal(level, error, __FILE__, __LINE__, __func__, _u->manager->unit_log_field, _u->id, ##__VA_ARGS__) : \
                         log_internal(level, error, __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
         })

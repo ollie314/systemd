@@ -66,6 +66,7 @@ void cgroup_context_init(CGroupContext *c) {
 
         c->memory_high = CGROUP_LIMIT_MAX;
         c->memory_max = CGROUP_LIMIT_MAX;
+        c->memory_swap_max = CGROUP_LIMIT_MAX;
 
         c->memory_limit = CGROUP_LIMIT_MAX;
 
@@ -173,6 +174,7 @@ void cgroup_context_dump(CGroupContext *c, FILE* f, const char *prefix) {
                 "%sMemoryLow=%" PRIu64 "\n"
                 "%sMemoryHigh=%" PRIu64 "\n"
                 "%sMemoryMax=%" PRIu64 "\n"
+                "%sMemorySwapMax=%" PRIu64 "\n"
                 "%sMemoryLimit=%" PRIu64 "\n"
                 "%sTasksMax=%" PRIu64 "\n"
                 "%sDevicePolicy=%s\n"
@@ -194,6 +196,7 @@ void cgroup_context_dump(CGroupContext *c, FILE* f, const char *prefix) {
                 prefix, c->memory_low,
                 prefix, c->memory_high,
                 prefix, c->memory_max,
+                prefix, c->memory_swap_max,
                 prefix, c->memory_limit,
                 prefix, c->tasks_max,
                 prefix, cgroup_device_policy_to_string(c->device_policy),
@@ -617,7 +620,7 @@ static unsigned cgroup_apply_blkio_device_limit(Unit *u, const char *dev_path, u
 }
 
 static bool cgroup_context_has_unified_memory_config(CGroupContext *c) {
-        return c->memory_low > 0 || c->memory_high != CGROUP_LIMIT_MAX || c->memory_max != CGROUP_LIMIT_MAX;
+        return c->memory_low > 0 || c->memory_high != CGROUP_LIMIT_MAX || c->memory_max != CGROUP_LIMIT_MAX || c->memory_swap_max != CGROUP_LIMIT_MAX;
 }
 
 static void cgroup_apply_unified_memory_limit(Unit *u, const char *file, uint64_t v) {
@@ -848,10 +851,12 @@ static void cgroup_context_apply(Unit *u, CGroupMask mask, ManagerState state) {
         if ((mask & CGROUP_MASK_MEMORY) && !is_root) {
                 if (cg_all_unified() > 0) {
                         uint64_t max = c->memory_max;
+                        uint64_t swap_max = c->memory_swap_max;
 
-                        if (cgroup_context_has_unified_memory_config(c))
+                        if (cgroup_context_has_unified_memory_config(c)) {
                                 max = c->memory_max;
-                        else {
+                                swap_max = c->memory_swap_max;
+                        } else {
                                 max = c->memory_limit;
 
                                 if (max != CGROUP_LIMIT_MAX)
@@ -861,6 +866,7 @@ static void cgroup_context_apply(Unit *u, CGroupMask mask, ManagerState state) {
                         cgroup_apply_unified_memory_limit(u, "memory.low", c->memory_low);
                         cgroup_apply_unified_memory_limit(u, "memory.high", c->memory_high);
                         cgroup_apply_unified_memory_limit(u, "memory.max", max);
+                        cgroup_apply_unified_memory_limit(u, "memory.swap.max", swap_max);
                 } else {
                         char buf[DECIMAL_STR_MAX(uint64_t) + 1];
                         uint64_t val = c->memory_limit;
@@ -1524,6 +1530,8 @@ void unit_prune_cgroup(Unit *u) {
         if (!u->cgroup_path)
                 return;
 
+        (void) unit_get_cpu_usage(u, NULL); /* Cache the last CPU usage value before we destroy the cgroup */
+
         is_root_slice = unit_has_name(u, SPECIAL_ROOT_SLICE);
 
         r = cg_trim_everywhere(u->manager->cgroup_supported, u->cgroup_path, !is_root_slice);
@@ -2044,7 +2052,21 @@ int unit_get_cpu_usage(Unit *u, nsec_t *ret) {
         nsec_t ns;
         int r;
 
+        assert(u);
+
+        /* Retrieve the current CPU usage counter. This will subtract the CPU counter taken when the unit was
+         * started. If the cgroup has been removed already, returns the last cached value. To cache the value, simply
+         * call this function with a NULL return value. */
+
         r = unit_get_cpu_usage_raw(u, &ns);
+        if (r == -ENODATA && u->cpu_usage_last != NSEC_INFINITY) {
+                /* If we can't get the CPU usage anymore (because the cgroup was already removed, for example), use our
+                 * cached value. */
+
+                if (ret)
+                        *ret = u->cpu_usage_last;
+                return 0;
+        }
         if (r < 0)
                 return r;
 
@@ -2053,7 +2075,10 @@ int unit_get_cpu_usage(Unit *u, nsec_t *ret) {
         else
                 ns = 0;
 
-        *ret = ns;
+        u->cpu_usage_last = ns;
+        if (ret)
+                *ret = ns;
+
         return 0;
 }
 
@@ -2062,6 +2087,8 @@ int unit_reset_cpu_usage(Unit *u) {
         int r;
 
         assert(u);
+
+        u->cpu_usage_last = NSEC_INFINITY;
 
         r = unit_get_cpu_usage_raw(u, &ns);
         if (r < 0) {

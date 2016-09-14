@@ -1,9 +1,7 @@
-#pragma once
-
 /***
   This file is part of systemd.
 
-  Copyright 2013 Lennart Poettering
+  Copyright 2016 Susant Sahani
 
   systemd is free software; you can redistribute it and/or modify it
   under the terms of the GNU Lesser General Public License as published by
@@ -19,5 +17,9 @@
   along with systemd; If not, see <http://www.gnu.org/licenses/>.
 ***/
 
-void bus_track_dispatch(sd_bus_track *track);
-void bus_track_close(sd_bus_track *track);
+#include "networkd-netdev-vcan.h"
+
+const NetDevVTable vcan_vtable = {
+        .object_size = sizeof(VCan),
+        .create_type = NETDEV_CREATE_INDEPENDENT,
+};

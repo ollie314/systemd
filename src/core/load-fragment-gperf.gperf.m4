@@ -131,6 +131,7 @@ $1.MemoryAccounting,             config_parse_bool,                  0,         
 $1.MemoryLow,                    config_parse_memory_limit,          0,                             offsetof($1, cgroup_context)
 $1.MemoryHigh,                   config_parse_memory_limit,          0,                             offsetof($1, cgroup_context)
 $1.MemoryMax,                    config_parse_memory_limit,          0,                             offsetof($1, cgroup_context)
+$1.MemorySwapMax,                config_parse_memory_limit,          0,                             offsetof($1, cgroup_context)
 $1.MemoryLimit,                  config_parse_memory_limit,          0,                             offsetof($1, cgroup_context)
 $1.DeviceAllow,                  config_parse_device_allow,          0,                             offsetof($1, cgroup_context)
 $1.DevicePolicy,                 config_parse_device_policy,         0,                             offsetof($1, cgroup_context.device_policy)
@@ -355,6 +356,8 @@ Mount.Type,                      config_parse_string,                0,         
 Mount.TimeoutSec,                config_parse_sec,                   0,                             offsetof(Mount, timeout_usec)
 Mount.DirectoryMode,             config_parse_mode,                  0,                             offsetof(Mount, directory_mode)
 Mount.SloppyOptions,             config_parse_bool,                  0,                             offsetof(Mount, sloppy_options)
+Mount.LazyUnmount,               config_parse_bool,                  0,                             offsetof(Mount, lazy_unmount)
+Mount.ForceUnmount,              config_parse_bool,                  0,                             offsetof(Mount, force_unmount)
 EXEC_CONTEXT_CONFIG_ITEMS(Mount)m4_dnl
 CGROUP_CONTEXT_CONFIG_ITEMS(Mount)m4_dnl
 KILL_CONTEXT_CONFIG_ITEMS(Mount)m4_dnl

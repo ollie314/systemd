@@ -590,7 +590,7 @@ int manager_new(UnitFileScope scope, bool test_run, Manager **_m) {
         m->idle_pipe[0] = m->idle_pipe[1] = m->idle_pipe[2] = m->idle_pipe[3] = -1;
 
         m->pin_cgroupfs_fd = m->notify_fd = m->cgroups_agent_fd = m->signal_fd = m->time_change_fd =
-                m->dev_autofs_fd = m->private_listen_fd = m->kdbus_fd = m->cgroup_inotify_fd =
+                m->dev_autofs_fd = m->private_listen_fd = m->cgroup_inotify_fd =
                 m->ask_password_inotify_fd = -1;
 
         m->user_lookup_fds[0] = m->user_lookup_fds[1] = -1;
@@ -661,9 +661,8 @@ int manager_new(UnitFileScope scope, bool test_run, Manager **_m) {
                 goto fail;
         }
 
-        /* Note that we set up neither kdbus, nor the notify fd
-         * here. We do that after deserialization, since they might
-         * have gotten serialized across the reexec. */
+        /* Note that we do not set up the notify fd here. We do that after deserialization,
+         * since they might have gotten serialized across the reexec. */
 
         m->taint_usr = dir_is_empty("/usr") > 0;
 
@@ -879,7 +878,6 @@ static int manager_connect_bus(Manager *m, bool reexecuting) {
                 return 0;
 
         try_bus_connect =
-                m->kdbus_fd >= 0 ||
                 reexecuting ||
                 (MANAGER_IS_USER(m) && getenv("DBUS_SESSION_BUS_ADDRESS"));
 
@@ -1084,7 +1082,6 @@ Manager* manager_free(Manager *m) {
         safe_close(m->notify_fd);
         safe_close(m->cgroups_agent_fd);
         safe_close(m->time_change_fd);
-        safe_close(m->kdbus_fd);
         safe_close_pair(m->user_lookup_fds);
 
         manager_close_ask_password(m);
@@ -1287,10 +1284,11 @@ int manager_startup(Manager *m, FILE *serialization, FDSet *fds) {
         if (q < 0 && r == 0)
                 r = q;
 
-        /* We might have deserialized the kdbus control fd, but if we
-         * didn't, then let's create the bus now. */
-        manager_connect_bus(m, !!serialization);
-        bus_track_coldplug(m, &m->subscribed, &m->deserialized_subscribed);
+        /* Let's connect to the bus now. */
+        (void) manager_connect_bus(m, !!serialization);
+
+        (void) bus_track_coldplug(m, &m->subscribed, false, m->deserialized_subscribed);
+        m->deserialized_subscribed = strv_free(m->deserialized_subscribed);
 
         /* Third, fire things up! */
         manager_coldplug(m);
@@ -2480,17 +2478,7 @@ int manager_serialize(Manager *m, FILE *f, FDSet *fds, bool switching_root) {
                 fprintf(f, "user-lookup=%i %i\n", copy0, copy1);
         }
 
-        if (m->kdbus_fd >= 0) {
-                int copy;
-
-                copy = fdset_put_dup(fds, m->kdbus_fd);
-                if (copy < 0)
-                        return copy;
-
-                fprintf(f, "kdbus-fd=%i\n", copy);
-        }
-
-        bus_track_serialize(m->subscribed, f);
+        bus_track_serialize(m->subscribed, f, "subscribed");
 
         r = dynamic_user_serialize(m, f, fds);
         if (r < 0)
@@ -2677,31 +2665,19 @@ int manager_deserialize(Manager *m, FILE *f, FDSet *fds) {
                                 m->user_lookup_fds[1] = fdset_remove(fds, fd1);
                         }
 
-                } else if (startswith(l, "kdbus-fd=")) {
-                        int fd;
-
-                        if (safe_atoi(l + 9, &fd) < 0 || fd < 0 || !fdset_contains(fds, fd))
-                                log_debug("Failed to parse kdbus fd: %s", l + 9);
-                        else {
-                                safe_close(m->kdbus_fd);
-                                m->kdbus_fd = fdset_remove(fds, fd);
-                        }
-
                 } else if (startswith(l, "dynamic-user="))
                         dynamic_user_deserialize_one(m, l + 13, fds);
                 else if (startswith(l, "destroy-ipc-uid="))
                         manager_deserialize_uid_refs_one(m, l + 16);
                 else if (startswith(l, "destroy-ipc-gid="))
                         manager_deserialize_gid_refs_one(m, l + 16);
-                else {
-                        int k;
+                else if (startswith(l, "subscribed=")) {
 
-                        k = bus_track_deserialize_item(&m->deserialized_subscribed, l);
-                        if (k < 0)
-                                log_debug_errno(k, "Failed to deserialize bus tracker object: %m");
-                        else if (k == 0)
-                                log_debug("Unknown serialization item '%s'", l);
-                }
+                        if (strv_extend(&m->deserialized_subscribed, l+11) < 0)
+                                log_oom();
+
+                } else if (!startswith(l, "kdbus-fd=")) /* ignore this one */
+                        log_debug("Unknown serialization item '%s'", l);
         }
 
         for (;;) {
