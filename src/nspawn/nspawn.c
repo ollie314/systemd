@@ -1045,7 +1045,8 @@ static int parse_argv(int argc, char *argv[]) {
         parse_share_ns_env("SYSTEMD_NSPAWN_SHARE_NS_UTS", CLONE_NEWUTS);
         parse_share_ns_env("SYSTEMD_NSPAWN_SHARE_SYSTEM", CLONE_NEWIPC|CLONE_NEWPID|CLONE_NEWUTS);
 
-        if (arg_clone_ns_flags != (CLONE_NEWIPC|CLONE_NEWPID|CLONE_NEWUTS)) {
+        if (!(arg_clone_ns_flags & CLONE_NEWPID) ||
+            !(arg_clone_ns_flags & CLONE_NEWUTS)) {
                 arg_register = false;
                 if (arg_start_mode != START_PID1) {
                         log_error("--boot cannot be used without namespacing.");
@@ -1219,7 +1220,13 @@ static int setup_timezone(const char *dest) {
         /* Fix the timezone, if possible */
         r = readlink_malloc("/etc/localtime", &p);
         if (r < 0) {
-                log_warning("/etc/localtime is not a symlink, not updating container timezone.");
+                log_warning("host's /etc/localtime is not a symlink, not updating container timezone.");
+                /* to handle warning, delete /etc/localtime and replace it
+                 * it /w a symbolic link to a time zone data file.
+                 *
+                 * Example:
+                 * ln -s /usr/share/zoneinfo/UTC /etc/localtime
+                 */
                 return 0;
         }
 

@@ -1474,7 +1474,7 @@ static int server_parse_proc_cmdline(Server *s) {
 static int server_parse_config_file(Server *s) {
         assert(s);
 
-        return config_parse_many(PKGSYSCONFDIR "/journald.conf",
+        return config_parse_many_nulstr(PKGSYSCONFDIR "/journald.conf",
                                  CONF_PATHS_NULSTR("systemd/journald.conf.d"),
                                  "Journal\0",
                                  config_item_perf_lookup, journald_gperf_lookup,
@@ -1587,7 +1587,7 @@ static int dispatch_notify_event(sd_event_source *es, int fd, uint32_t revents, 
         assert(s->notify_fd == fd);
 
         /* The $NOTIFY_SOCKET is writable again, now send exactly one
-         * message on it. Either it's the wtachdog event, the initial
+         * message on it. Either it's the watchdog event, the initial
          * READY=1 event or an stdout stream event. If there's nothing
          * to write anymore, turn our event source off. The next time
          * there's something to send it will be turned on again. */
