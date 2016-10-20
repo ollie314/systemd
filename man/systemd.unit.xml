@@ -195,7 +195,7 @@
     instantiated units, this logic will first look for the instance <literal>.d/</literal>
     subdirectory and read its <literal>.conf</literal> files, followed by the template
     <literal>.d/</literal> subdirectory and the <literal>.conf</literal> files there. Also note that
-    settings from the <literal>[Install]</literal> section are not honoured in drop-in unit files,
+    settings from the <literal>[Install]</literal> section are not honored in drop-in unit files,
     and have no effect.</para>
 
     <para>In addition to <filename>/etc/systemd/system</filename>, the drop-in <literal>.d</literal>
@@ -203,9 +203,7 @@
     <filename>/run/systemd/system</filename> directories. Drop-in files in <filename>/etc</filename>
     take precedence over those in <filename>/run</filename> which in turn take precedence over those
     in <filename>/usr/lib</filename>. Drop-in files under any of these directories take precedence
-    over unit files wherever located.  (Of course, since <filename>/run</filename> is temporary and
-    <filename>/usr/lib</filename> is for vendors, it is unlikely drop-ins should be used in either
-    of those places.)</para>
+    over unit files wherever located.</para>
 
     <!-- Note that we do not document .include here, as we consider it mostly obsolete, and want
          people to use .d/ drop-ins instead. -->
@@ -1254,7 +1252,7 @@
           <row>
       <entry><literal>%r</literal></entry>
       <entry>Control group path of the slice the unit is placed in</entry>
-      <entry>This usually maps to the parent cgroup path of <literal>%c</literal>.</entry>
+      <entry>This usually maps to the parent control group path of <literal>%c</literal>.</entry>
           </row>
           <row>
       <entry><literal>%R</literal></entry>

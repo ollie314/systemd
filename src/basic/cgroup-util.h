@@ -23,6 +23,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <sys/statfs.h>
 #include <sys/types.h>
 
 #include "def.h"
@@ -185,6 +186,9 @@ int cg_get_keyed_attribute(const char *controller, const char *path, const char 
 int cg_set_group_access(const char *controller, const char *path, mode_t mode, uid_t uid, gid_t gid);
 int cg_set_task_access(const char *controller, const char *path, mode_t mode, uid_t uid, gid_t gid);
 
+int cg_set_xattr(const char *controller, const char *path, const char *name, const void *value, size_t size, int flags);
+int cg_get_xattr(const char *controller, const char *path, const char *name, void *value, size_t size);
+
 int cg_install_release_agent(const char *controller, const char *agent);
 int cg_uninstall_release_agent(const char *controller);
 
@@ -251,3 +255,6 @@ CGroupController cgroup_controller_from_string(const char *s) _pure_;
 int cg_weight_parse(const char *s, uint64_t *ret);
 int cg_cpu_shares_parse(const char *s, uint64_t *ret);
 int cg_blkio_weight_parse(const char *s, uint64_t *ret);
+
+bool is_cgroup_fs(const struct statfs *s);
+bool fd_is_cgroup_fs(int fd);

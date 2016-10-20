@@ -524,7 +524,6 @@ dist_systemunit_DATA_busnames += \
 nodist_systemunit_DATA = \
 	units/getty@.service \
 	units/serial-getty@.service \
-	units/console-shell.service \
 	units/console-getty.service \
 	units/container-getty@.service \
 	units/systemd-initctl.service \
@@ -587,7 +586,6 @@ dist_systempreset_DATA = \
 EXTRA_DIST += \
 	units/getty@.service.m4 \
 	units/serial-getty@.service.m4 \
-	units/console-shell.service.m4.in \
 	units/console-getty.service.m4.in \
 	units/container-getty@.service.m4.in \
 	units/rescue.service.in \
@@ -1641,6 +1639,9 @@ EXTRA_DIST += \
 	test/test-execute/exec-privatedevices-yes.service \
 	test/test-execute/exec-privatedevices-no-capability-mknod.service \
 	test/test-execute/exec-privatedevices-yes-capability-mknod.service \
+	test/test-execute/exec-protectkernelmodules-no-capabilities.service \
+	test/test-execute/exec-protectkernelmodules-yes-capabilities.service \
+	test/test-execute/exec-protectkernelmodules-yes-mount-propagation.service \
 	test/test-execute/exec-privatetmp-no.service \
 	test/test-execute/exec-privatetmp-yes.service \
 	test/test-execute/exec-readonlypaths.service \
@@ -5904,8 +5905,10 @@ pam_systemd_la_LIBADD = \
 pamlib_LTLIBRARIES = \
 	pam_systemd.la
 
+if ENABLE_PAM_CONFIG
 dist_pamconf_DATA = \
 	src/login/systemd-user
+endif
 
 EXTRA_DIST += \
 	src/login/systemd-user.m4
@@ -6027,6 +6030,10 @@ EXTRA_DIST += \
 	test/TEST-11-ISSUE-3166/test.sh \
 	test/TEST-12-ISSUE-3171/Makefile \
 	test/TEST-12-ISSUE-3171/test.sh \
+	test/TEST-13-NSPAWN-SMOKE/Makefile \
+	test/TEST-13-NSPAWN-SMOKE/has-overflow.c \
+	test/TEST-13-NSPAWN-SMOKE/create-busybox-container \
+	test/TEST-13-NSPAWN-SMOKE/test.sh \
 	test/test-functions
 
 EXTRA_DIST += \

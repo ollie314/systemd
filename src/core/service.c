@@ -2033,6 +2033,10 @@ static int service_start(Unit *u) {
                 return r;
         }
 
+        r = unit_acquire_invocation_id(u);
+        if (r < 0)
+                return r;
+
         s->result = SERVICE_SUCCESS;
         s->reload_result = SERVICE_SUCCESS;
         s->main_pid_known = false;
@@ -2600,8 +2604,7 @@ static void service_sigchld_event(Unit *u, pid_t pid, int code, int status) {
         assert(s);
         assert(pid >= 0);
 
-        if (UNIT(s)->fragment_path ? is_clean_exit(code, status, &s->success_status) :
-                                     is_clean_exit_lsb(code, status, &s->success_status))
+        if (is_clean_exit(code, status, s->type == SERVICE_ONESHOT ? EXIT_CLEAN_COMMAND : EXIT_CLEAN_DAEMON, &s->success_status))
                 f = SERVICE_SUCCESS;
         else if (code == CLD_EXITED)
                 f = SERVICE_FAILURE_EXIT_CODE;
@@ -2643,7 +2646,14 @@ static void service_sigchld_event(Unit *u, pid_t pid, int code, int status) {
                                 f = SERVICE_SUCCESS;
                 }
 
-                log_struct(f == SERVICE_SUCCESS ? LOG_DEBUG : LOG_NOTICE,
+                /* When this is a successful exit, let's log about the exit code on DEBUG level. If this is a failure
+                 * and the process exited on its own via exit(), then let's make this a NOTICE, under the assumption
+                 * that the service already logged the reason at a higher log level on its own. However, if the service
+                 * died due to a signal, then it most likely didn't say anything about any reason, hence let's raise
+                 * our log level to WARNING then. */
+
+                log_struct(f == SERVICE_SUCCESS ? LOG_DEBUG :
+                           (code == CLD_EXITED ? LOG_NOTICE : LOG_WARNING),
                            LOG_UNIT_ID(u),
                            LOG_UNIT_MESSAGE(u, "Main process exited, code=%s, status=%i/%s",
                                             sigchld_code_to_string(code), status,
@@ -3085,9 +3095,7 @@ static void service_notify_message(Unit *u, pid_t pid, char **tags, FDSet *fds) 
 
                 if (!streq_ptr(s->status_text, t)) {
 
-                        free(s->status_text);
-                        s->status_text = t;
-                        t = NULL;
+                        free_and_replace(s->status_text, t);
 
                         notify_dbus = true;
                 }

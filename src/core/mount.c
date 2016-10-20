@@ -830,7 +830,7 @@ static void mount_enter_signal(Mount *m, MountState state, MountResult f) {
 fail:
         log_unit_warning_errno(UNIT(m), r, "Failed to kill processes: %m");
 
-        if (state == MOUNT_REMOUNTING_SIGTERM || state == MOUNT_REMOUNTING_SIGKILL)
+        if (IN_SET(state, MOUNT_REMOUNTING_SIGTERM, MOUNT_REMOUNTING_SIGKILL))
                 mount_enter_mounted(m, MOUNT_FAILURE_RESOURCES);
         else
                 mount_enter_dead(m, MOUNT_FAILURE_RESOURCES);
@@ -986,24 +986,29 @@ static int mount_start(Unit *u) {
 
         /* We cannot fulfill this request right now, try again later
          * please! */
-        if (m->state == MOUNT_UNMOUNTING ||
-            m->state == MOUNT_UNMOUNTING_SIGTERM ||
-            m->state == MOUNT_UNMOUNTING_SIGKILL ||
-            m->state == MOUNT_MOUNTING_SIGTERM ||
-            m->state == MOUNT_MOUNTING_SIGKILL)
+        if (IN_SET(m->state,
+                   MOUNT_UNMOUNTING,
+                   MOUNT_UNMOUNTING_SIGTERM,
+                   MOUNT_UNMOUNTING_SIGKILL,
+                   MOUNT_MOUNTING_SIGTERM,
+                   MOUNT_MOUNTING_SIGKILL))
                 return -EAGAIN;
 
         /* Already on it! */
         if (m->state == MOUNT_MOUNTING)
                 return 0;
 
-        assert(m->state == MOUNT_DEAD || m->state == MOUNT_FAILED);
+        assert(IN_SET(m->state, MOUNT_DEAD, MOUNT_FAILED));
 
         r = unit_start_limit_test(u);
         if (r < 0) {
                 mount_enter_dead(m, MOUNT_FAILURE_START_LIMIT_HIT);
                 return r;
         }
+
+        r = unit_acquire_invocation_id(u);
+        if (r < 0)
+                return r;
 
         m->result = MOUNT_SUCCESS;
         m->reload_result = MOUNT_SUCCESS;
@@ -1019,19 +1024,21 @@ static int mount_stop(Unit *u) {
         assert(m);
 
         /* Already on it */
-        if (m->state == MOUNT_UNMOUNTING ||
-            m->state == MOUNT_UNMOUNTING_SIGKILL ||
-            m->state == MOUNT_UNMOUNTING_SIGTERM ||
-            m->state == MOUNT_MOUNTING_SIGTERM ||
-            m->state == MOUNT_MOUNTING_SIGKILL)
+        if (IN_SET(m->state,
+                   MOUNT_UNMOUNTING,
+                   MOUNT_UNMOUNTING_SIGKILL,
+                   MOUNT_UNMOUNTING_SIGTERM,
+                   MOUNT_MOUNTING_SIGTERM,
+                   MOUNT_MOUNTING_SIGKILL))
                 return 0;
 
-        assert(m->state == MOUNT_MOUNTING ||
-               m->state == MOUNT_MOUNTING_DONE ||
-               m->state == MOUNT_MOUNTED ||
-               m->state == MOUNT_REMOUNTING ||
-               m->state == MOUNT_REMOUNTING_SIGTERM ||
-               m->state == MOUNT_REMOUNTING_SIGKILL);
+        assert(IN_SET(m->state,
+                      MOUNT_MOUNTING,
+                      MOUNT_MOUNTING_DONE,
+                      MOUNT_MOUNTED,
+                      MOUNT_REMOUNTING,
+                      MOUNT_REMOUNTING_SIGTERM,
+                      MOUNT_REMOUNTING_SIGKILL));
 
         mount_enter_unmounting(m);
         return 1;
@@ -1159,7 +1166,7 @@ static void mount_sigchld_event(Unit *u, pid_t pid, int code, int status) {
 
         m->control_pid = 0;
 
-        if (is_clean_exit(code, status, NULL))
+        if (is_clean_exit(code, status, EXIT_CLEAN_COMMAND, NULL))
                 f = MOUNT_SUCCESS;
         else if (code == CLD_EXITED)
                 f = MOUNT_FAILURE_EXIT_CODE;
@@ -1197,9 +1204,10 @@ static void mount_sigchld_event(Unit *u, pid_t pid, int code, int status) {
         case MOUNT_MOUNTING_SIGKILL:
         case MOUNT_MOUNTING_SIGTERM:
 
-                if (f == MOUNT_SUCCESS)
-                        mount_enter_mounted(m, f);
-                else if (m->from_proc_self_mountinfo)
+                if (f == MOUNT_SUCCESS || m->from_proc_self_mountinfo)
+                        /* If /bin/mount returned success, or if we see the mount point in /proc/self/mountinfo we are
+                         * happy. If we see the first condition first, we should see the the second condition
+                         * immediately after – or /bin/mount lies to us and is broken. */
                         mount_enter_mounted(m, f);
                 else
                         mount_enter_dead(m, f);
@@ -1476,17 +1484,9 @@ static int mount_setup_unit(
 
         MOUNT(u)->from_proc_self_mountinfo = true;
 
-        free(p->what);
-        p->what = w;
-        w = NULL;
-
-        free(p->options);
-        p->options = o;
-        o = NULL;
-
-        free(p->fstype);
-        p->fstype = f;
-        f = NULL;
+        free_and_replace(p->what, w);
+        free_and_replace(p->options, o);
+        free_and_replace(p->fstype, f);
 
         if (load_extras) {
                 r = mount_add_extras(MOUNT(u));
@@ -1742,9 +1742,10 @@ static int mount_dispatch_io(sd_event_source *source, int fd, uint32_t revents, 
 
                         case MOUNT_DEAD:
                         case MOUNT_FAILED:
-                                /* This has just been mounted by
-                                 * somebody else, follow the state
-                                 * change. */
+
+                                /* This has just been mounted by somebody else, follow the state change, but let's
+                                 * generate a new invocation ID for this implicitly and automatically. */
+                                (void) unit_acquire_invocation_id(UNIT(mount));
                                 mount_enter_mounted(mount, MOUNT_SUCCESS);
                                 break;
 

@@ -131,6 +131,7 @@ static bool arg_default_memory_accounting = false;
 static bool arg_default_tasks_accounting = true;
 static uint64_t arg_default_tasks_max = UINT64_MAX;
 static sd_id128_t arg_machine_id = {};
+static CADBurstAction arg_cad_burst_action = CAD_BURST_ACTION_REBOOT;
 
 noreturn static void freeze_or_reboot(void) {
 
@@ -202,7 +203,7 @@ noreturn static void crash(int sig) {
                                               pid, sigchld_code_to_string(status.si_code),
                                               status.si_status,
                                               strna(status.si_code == CLD_EXITED
-                                                    ? exit_status_to_string(status.si_status, EXIT_STATUS_FULL)
+                                                    ? exit_status_to_string(status.si_status, EXIT_STATUS_MINIMAL)
                                                     : signal_to_string(status.si_status)));
                         else
                                 log_emergency("Caught <%s>, dumped core as pid "PID_FMT".", signal_to_string(sig), pid);
@@ -648,6 +649,8 @@ static int config_parse_join_controllers(const char *unit,
         return 0;
 }
 
+static DEFINE_CONFIG_PARSE_ENUM(config_parse_cad_burst_action, cad_burst_action, CADBurstAction, "Failed to parse service restart specifier");
+
 static int parse_config_file(void) {
 
         const ConfigTableItem items[] = {
@@ -702,6 +705,7 @@ static int parse_config_file(void) {
                 { "Manager", "DefaultMemoryAccounting",   config_parse_bool,             0, &arg_default_memory_accounting         },
                 { "Manager", "DefaultTasksAccounting",    config_parse_bool,             0, &arg_default_tasks_accounting          },
                 { "Manager", "DefaultTasksMax",           config_parse_tasks_max,        0, &arg_default_tasks_max                 },
+                { "Manager", "CtrlAltDelBurstAction",     config_parse_cad_burst_action, 0, &arg_cad_burst_action},
                 {}
         };
 
@@ -1528,15 +1532,9 @@ int main(int argc, char *argv[]) {
                  * need to do that for user instances since they never log
                  * into the console. */
                 log_show_color(colors_enabled());
-                make_null_stdio();
-        }
-
-        /* Initialize default unit */
-        r = free_and_strdup(&arg_default_unit, SPECIAL_DEFAULT_TARGET);
-        if (r < 0) {
-                log_emergency_errno(r, "Failed to set default unit %s: %m", SPECIAL_DEFAULT_TARGET);
-                error_message = "Failed to set default unit";
-                goto finish;
+                r = make_null_stdio();
+                if (r < 0)
+                        log_warning_errno(r, "Failed to redirect standard streams to /dev/null: %m");
         }
 
         r = initialize_join_controllers();
@@ -1586,6 +1584,16 @@ int main(int argc, char *argv[]) {
                 goto finish;
         }
 
+        /* Initialize default unit */
+        if (!arg_default_unit) {
+                arg_default_unit = strdup(SPECIAL_DEFAULT_TARGET);
+                if (!arg_default_unit) {
+                        r = log_oom();
+                        error_message = "Failed to set default unit";
+                        goto finish;
+                }
+        }
+
         if (arg_action == ACTION_TEST &&
             geteuid() == 0) {
                 log_error("Don't run test mode as root.");
@@ -1606,11 +1614,10 @@ int main(int argc, char *argv[]) {
                 goto finish;
         }
 
-        if (arg_action == ACTION_TEST)
-                skip_setup = true;
-
-        if (arg_action == ACTION_TEST || arg_action == ACTION_HELP)
+        if (arg_action == ACTION_TEST || arg_action == ACTION_HELP) {
                 pager_open(arg_no_pager, false);
+                skip_setup = true;
+        }
 
         if (arg_action == ACTION_HELP) {
                 retval = help();
@@ -1794,6 +1801,7 @@ int main(int argc, char *argv[]) {
         m->initrd_timestamp = initrd_timestamp;
         m->security_start_timestamp = security_start_timestamp;
         m->security_finish_timestamp = security_finish_timestamp;
+        m->cad_burst_action = arg_cad_burst_action;
 
         manager_set_defaults(m);
         manager_set_show_status(m, arg_show_status);

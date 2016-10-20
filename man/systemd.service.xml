@@ -96,9 +96,12 @@
     <varname>After=</varname> on
     <filename>dbus.socket</filename>.</para>
 
-    <para>Socket activated service are automatically ordered after
-    their activated <filename>.socket</filename> units via an
-    automatic <varname>After=</varname> dependency.</para>
+    <para>Socket activated services are automatically ordered after
+    their activating <filename>.socket</filename> units via an
+    automatic <varname>After=</varname> dependency.
+    Services also pull in all <filename>.socket</filename> units
+    listed in <varname>Sockets=</varname> via automatic
+    <varname>Wants=</varname> and <varname>After=</varname> dependencies.</para>
 
     <para>Unless <varname>DefaultDependencies=</varname> in the <literal>[Unit]</literal> is set to
     <option>false</option>, service units will implicitly have dependencies of type <varname>Requires=</varname> and
@@ -209,11 +212,11 @@
         if used in combination with
         <varname>PrivateNetwork=</varname><option>yes</option>.</para>
 
-        <para>Behavior of <option>idle</option> is very similar to
-        <option>simple</option>; however, actual execution of the
-        service binary is delayed until all jobs are dispatched. This
-        may be used to avoid interleaving of output of shell services
-        with the status output on the console.</para>
+        <para>Behavior of <option>idle</option> is very similar to <option>simple</option>; however, actual execution
+        of the service binary is delayed until all active jobs are dispatched. This may be used to avoid interleaving
+        of output of shell services with the status output on the console. Note that this type is useful only to
+        improve console output, it is not useful as a general unit ordering tool, and the effect of this service type
+        is subject to a 5s time-out, after which the service binary is invoked anyway.</para>
         </listitem>
       </varlistentry>
 

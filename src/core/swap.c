@@ -861,6 +861,10 @@ static int swap_start(Unit *u) {
                 return r;
         }
 
+        r = unit_acquire_invocation_id(u);
+        if (r < 0)
+                return r;
+
         s->result = SWAP_SUCCESS;
         s->reset_cpu_usage = true;
 
@@ -988,7 +992,7 @@ static void swap_sigchld_event(Unit *u, pid_t pid, int code, int status) {
 
         s->control_pid = 0;
 
-        if (is_clean_exit(code, status, NULL))
+        if (is_clean_exit(code, status, EXIT_CLEAN_COMMAND, NULL))
                 f = SWAP_SUCCESS;
         else if (code == CLD_EXITED)
                 f = SWAP_FAILURE_EXIT_CODE;
@@ -1189,6 +1193,7 @@ static int swap_dispatch_io(sd_event_source *source, int fd, uint32_t revents, v
 
                         case SWAP_DEAD:
                         case SWAP_FAILED:
+                                (void) unit_acquire_invocation_id(UNIT(swap));
                                 swap_enter_active(swap, SWAP_SUCCESS);
                                 break;
 

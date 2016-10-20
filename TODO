@@ -32,15 +32,13 @@ Janitorial Clean-ups:
 
 Features:
 
-* switch to ProtectSystem=strict for all our long-running services where that's possible
+* on cgroupsv2 add DelegateControllers=, to pick the precise cgroup controllers to delegate
 
-* introduce an "invocation ID" for units, that is randomly generated, and
-  identifies each runtime-cycle of a unit. It should be set freshly each time
-  we traverse inactive → activating/active, and should be the primary key to
-  map offline data (stored in the journal) with online bus objects. Let's pass
-  this as $SYSTEMD_INVOCATION_ID to services, as well as set this as xattr on
-  the cgroup of a services. The former is accessible without privileges, the
-  latter ensures the ID cannot be faked.
+* in networkd, when matching device types, fix up DEVTYPE rubbish the kernel passes to us
+
+* enable LockMLOCK to take a percentage value relative to physical memory
+
+* switch to ProtectSystem=strict for all our long-running services where that's possible
 
 * If RootDirectory= is used, mount /proc, /sys, /dev into it, if not mounted yet
 
@@ -67,6 +65,12 @@ Features:
 * ProtectKeyRing= to take keyring calls away
 
 * RemoveKeyRing= to remove all keyring entries of the specified user
+
+* ProtectReboot= that masks reboot() and kexec_load() syscalls, prohibits kill
+  on PID 1 with the relevant signals, and makes relevant files in /sys and
+  /proc (such as the sysrq stuff) unavailable
+
+* DeviceAllow= should also generate seccomp filters for mknod()
 
 * Add DataDirectory=, CacheDirectory= and LogDirectory= to match
   RuntimeDirectory=, and create it as necessary when starting a service, owned by the right user.
@@ -486,7 +490,6 @@ Features:
     message that works, but alraedy after a short tiemout
   - check if we can make journalctl by default use --follow mode inside of less if called without args?
   - maybe add API to send pairs of iovecs via sd_journal_send
-  - journal: when writing journal auto-rotate if time jumps backwards
   - journal: add a setgid "systemd-journal" utility to invoke from libsystemd-journal, which passes fds via STDOUT and does PK access
   - journactl: support negative filtering, i.e. FOOBAR!="waldo",
     and !FOOBAR for events without FOOBAR.

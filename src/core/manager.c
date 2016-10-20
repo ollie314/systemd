@@ -522,6 +522,7 @@ static void manager_clean_environment(Manager *m) {
                         "LISTEN_FDNAMES",
                         "WATCHDOG_PID",
                         "WATCHDOG_USEC",
+                        "INVOCATION_ID",
                         NULL);
 }
 
@@ -582,9 +583,15 @@ int manager_new(UnitFileScope scope, bool test_run, Manager **_m) {
         if (MANAGER_IS_SYSTEM(m)) {
                 m->unit_log_field = "UNIT=";
                 m->unit_log_format_string = "UNIT=%s";
+
+                m->invocation_log_field = "INVOCATION_ID=";
+                m->invocation_log_format_string = "INVOCATION_ID=" SD_ID128_FORMAT_STR;
         } else {
                 m->unit_log_field = "USER_UNIT=";
                 m->unit_log_format_string = "USER_UNIT=%s";
+
+                m->invocation_log_field = "USER_INVOCATION_ID=";
+                m->invocation_log_format_string = "USER_INVOCATION_ID=" SD_ID128_FORMAT_STR;
         }
 
         m->idle_pipe[0] = m->idle_pipe[1] = m->idle_pipe[2] = m->idle_pipe[3] = -1;
@@ -1062,6 +1069,7 @@ Manager* manager_free(Manager *m) {
         hashmap_free(m->dynamic_users);
 
         hashmap_free(m->units);
+        hashmap_free(m->units_by_invocation_id);
         hashmap_free(m->jobs);
         hashmap_free(m->watch_pids1);
         hashmap_free(m->watch_pids2);
@@ -1111,8 +1119,7 @@ Manager* manager_free(Manager *m) {
         hashmap_free(m->uid_refs);
         hashmap_free(m->gid_refs);
 
-        free(m);
-        return NULL;
+        return mfree(m);
 }
 
 void manager_enumerate(Manager *m) {
@@ -1720,16 +1727,15 @@ static int manager_dispatch_notify_fd(sd_event_source *source, int fd, uint32_t 
                 return 0;
         }
 
-        n = recvmsg(m->notify_fd, &msghdr, MSG_DONTWAIT|MSG_CMSG_CLOEXEC);
+        n = recvmsg(m->notify_fd, &msghdr, MSG_DONTWAIT|MSG_CMSG_CLOEXEC|MSG_TRUNC);
         if (n < 0) {
-                if (!IN_SET(errno, EAGAIN, EINTR))
-                        log_error("Failed to receive notification message: %m");
+                if (IN_SET(errno, EAGAIN, EINTR))
+                        return 0; /* Spurious wakeup, try again */
 
-                /* It's not an option to return an error here since it
-                 * would disable the notification handler entirely. Services
-                 * wouldn't be able to send the WATCHDOG message for
-                 * example... */
-                return 0;
+                /* If this is any other, real error, then let's stop processing this socket. This of course means we
+                 * won't take notification messages anymore, but that's still better than busy looping around this:
+                 * being woken up over and over again but being unable to actually read the message off the socket. */
+                return log_error_errno(errno, "Failed to receive notification message: %m");
         }
 
         CMSG_FOREACH(cmsg, &msghdr) {
@@ -1762,13 +1768,19 @@ static int manager_dispatch_notify_fd(sd_event_source *source, int fd, uint32_t 
                 return 0;
         }
 
-        if ((size_t) n >= sizeof(buf)) {
+        if ((size_t) n >= sizeof(buf) || (msghdr.msg_flags & MSG_TRUNC)) {
                 log_warning("Received notify message exceeded maximum size. Ignoring.");
                 return 0;
         }
 
-        /* The message should be a string. Here we make sure it's NUL-terminated,
-         * but only the part until first NUL will be used anyway. */
+        /* As extra safety check, let's make sure the string we get doesn't contain embedded NUL bytes. We permit one
+         * trailing NUL byte in the message, but don't expect it. */
+        if (n > 1 && memchr(buf, 0, n-1)) {
+                log_warning("Received notify message with embedded NUL bytes. Ignoring.");
+                return 0;
+        }
+
+        /* Make sure it's NUL-terminated. */
         buf[n] = 0;
 
         /* Notify every unit that might be interested, but try
@@ -1894,6 +1906,35 @@ static int manager_start_target(Manager *m, const char *name, JobMode mode) {
         return r;
 }
 
+static void manager_handle_ctrl_alt_del(Manager *m) {
+        /* If the user presses C-A-D more than
+         * 7 times within 2s, we reboot/shutdown immediately,
+         * unless it was disabled in system.conf */
+
+        if (ratelimit_test(&m->ctrl_alt_del_ratelimit) || m->cad_burst_action == CAD_BURST_ACTION_IGNORE)
+                manager_start_target(m, SPECIAL_CTRL_ALT_DEL_TARGET, JOB_REPLACE_IRREVERSIBLY);
+        else {
+                switch (m->cad_burst_action) {
+
+                case CAD_BURST_ACTION_REBOOT:
+                        m->exit_code = MANAGER_REBOOT;
+                        break;
+
+                case CAD_BURST_ACTION_POWEROFF:
+                        m->exit_code = MANAGER_POWEROFF;
+                        break;
+
+                default:
+                        assert_not_reached("Unknown action.");
+                }
+
+                log_notice("Ctrl-Alt-Del was pressed more than 7 times within 2s, performing immediate %s.",
+                                cad_burst_action_to_string(m->cad_burst_action));
+                status_printf(NULL, true, false, "Ctrl-Alt-Del was pressed more than 7 times within 2s, performing immediate %s.",
+                                cad_burst_action_to_string(m->cad_burst_action));
+        }
+}
+
 static int manager_dispatch_signal_fd(sd_event_source *source, int fd, uint32_t revents, void *userdata) {
         Manager *m = userdata;
         ssize_t n;
@@ -1912,14 +1953,17 @@ static int manager_dispatch_signal_fd(sd_event_source *source, int fd, uint32_t 
         for (;;) {
                 n = read(m->signal_fd, &sfsi, sizeof(sfsi));
                 if (n != sizeof(sfsi)) {
+                        if (n >= 0) {
+                                log_warning("Truncated read from signal fd (%zu bytes)!", n);
+                                return 0;
+                        }
 
-                        if (n >= 0)
-                                return -EIO;
-
-                        if (errno == EINTR || errno == EAGAIN)
+                        if (IN_SET(errno, EINTR, EAGAIN))
                                 break;
 
-                        return -errno;
+                        /* We return an error here, which will kill this handler,
+                         * to avoid a busy loop on read error. */
+                        return log_error_errno(errno, "Reading from signal fd failed: %m");
                 }
 
                 log_received_signal(sfsi.ssi_signo == SIGCHLD ||
@@ -1945,19 +1989,7 @@ static int manager_dispatch_signal_fd(sd_event_source *source, int fd, uint32_t 
 
                 case SIGINT:
                         if (MANAGER_IS_SYSTEM(m)) {
-
-                                /* If the user presses C-A-D more than
-                                 * 7 times within 2s, we reboot
-                                 * immediately. */
-
-                                if (ratelimit_test(&m->ctrl_alt_del_ratelimit))
-                                        manager_start_target(m, SPECIAL_CTRL_ALT_DEL_TARGET, JOB_REPLACE_IRREVERSIBLY);
-                                else {
-                                        log_notice("Ctrl-Alt-Del was pressed more than 7 times within 2s, rebooting immediately.");
-                                        status_printf(NULL, true, false, "Ctrl-Alt-Del was pressed more than 7 times within 2s, rebooting immediately.");
-                                        m->exit_code = MANAGER_REBOOT;
-                                }
-
+                                manager_handle_ctrl_alt_del(m);
                                 break;
                         }
 
@@ -2243,6 +2275,7 @@ int manager_loop(Manager *m) {
 
 int manager_load_unit_from_dbus_path(Manager *m, const char *s, sd_bus_error *e, Unit **_u) {
         _cleanup_free_ char *n = NULL;
+        sd_id128_t invocation_id;
         Unit *u;
         int r;
 
@@ -2254,12 +2287,25 @@ int manager_load_unit_from_dbus_path(Manager *m, const char *s, sd_bus_error *e,
         if (r < 0)
                 return r;
 
+        /* Permit addressing units by invocation ID: if the passed bus path is suffixed by a 128bit ID then we use it
+         * as invocation ID. */
+        r = sd_id128_from_string(n, &invocation_id);
+        if (r >= 0) {
+                u = hashmap_get(m->units_by_invocation_id, &invocation_id);
+                if (u) {
+                        *_u = u;
+                        return 0;
+                }
+
+                return sd_bus_error_setf(e, BUS_ERROR_NO_UNIT_FOR_INVOCATION_ID, "No unit with the specified invocation ID " SD_ID128_FORMAT_STR " known.", SD_ID128_FORMAT_VAL(invocation_id));
+        }
+
+        /* If this didn't work, we use the suffix as unit name. */
         r = manager_load_unit(m, n, NULL, e, &u);
         if (r < 0)
                 return r;
 
         *_u = u;
-
         return 0;
 }
 
@@ -3544,3 +3590,11 @@ static const char *const manager_state_table[_MANAGER_STATE_MAX] = {
 };
 
 DEFINE_STRING_TABLE_LOOKUP(manager_state, ManagerState);
+
+static const char *const cad_burst_action_table[_CAD_BURST_ACTION_MAX] = {
+        [CAD_BURST_ACTION_IGNORE] = "ignore",
+        [CAD_BURST_ACTION_REBOOT] = "reboot-force",
+        [CAD_BURST_ACTION_POWEROFF] = "poweroff-force",
+};
+
+DEFINE_STRING_TABLE_LOOKUP(cad_burst_action, CADBurstAction);
